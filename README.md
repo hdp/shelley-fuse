@@ -109,10 +109,35 @@ sudo systemctl start shelley-fuse@username.service
 - Add directory listing for conversations
 - Improve error handling and reporting
 - Add support for additional Shelley API features
-## Easy Testing with Tools
+## Easy Testing with Justfile
 
-For easier testing of the FUSE filesystem, use the provided Go tools in the `tools/` directory:
+For easier testing of the FUSE filesystem, install [just](https://github.com/casey/just) and use the provided Justfile:
 
+```bash
+# Quick demo (starts server and FUSE)
+just demo
+
+# Start test server and FUSE for manual testing
+just test-shell
+
+# Or step by step
+just build-tools        # Build the test tools
+just start-server       # Start test server
+just fuse              # Mount FUSE (auto-detects server)
+```
+
+**Available Justfile commands:**
+- `just build` - Build all binaries
+- `just build-tools` - Build just the test tools
+- `just start-server` - Start test server
+- `just fuse` - Mount FUSE filesystem
+- `just demo` - Quick demo with defaults
+- `just test-shell` - Start environment for testing
+- `just status` - Show environment status
+- `just stop` - Stop all test services
+- `just clean` - Clean up artifacts
+
+Manual testing without just:
 ```bash
 # Build the tools
 cd tools
@@ -120,15 +145,6 @@ go build -o bin/start-test-server ./start-test-server
 go build -o bin/start-fuse ./start-fuse
 
 # Start test server and mount FUSE in one step
-./bin/start-fuse -mount /tmp/shelley-test
-```
-
-Or step by step:
-```bash
-# Start test server
-./bin/start-test-server &
-
-# Mount FUSE (auto-detects running server)
 ./bin/start-fuse -mount /tmp/shelley-test
 
 # Test the filesystem
