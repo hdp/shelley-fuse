@@ -222,6 +222,7 @@ func (c *ConversationDirNode) Readdir(ctx context.Context) (fs.DirStream, syscal
 type ConversationNode struct {
 	fs.Inode
 	conversationID string
+	model         string
 	client        *shelley.Client
 }
 
@@ -251,7 +252,7 @@ func (c *ConversationNode) Write(ctx context.Context, f fs.FileHandle, data []by
 		return uint32(len(data)), 0
 	}
 	
-	if err := c.client.SendMessage(c.conversationID, message); err != nil {
+	if err := c.client.SendMessage(c.conversationID, message, ""); err != nil {
 		return 0, syscall.EIO
 	}
 	

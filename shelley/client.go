@@ -136,9 +136,14 @@ func (c *Client) GetConversation(conversationID string) ([]byte, error) {
 }
 
 // SendMessage sends a message to an existing conversation
-func (c *Client) SendMessage(conversationID, message string) error {
+func (c *Client) SendMessage(conversationID, message, model string) error {
 	reqBody := ChatRequest{
 		Message: message,
+	}
+	
+	// Only set model if provided (non-empty)
+	if model != "" {
+		reqBody.Model = model
 	}
 	
 	body, err := json.Marshal(reqBody)
@@ -161,7 +166,7 @@ func (c *Client) SendMessage(conversationID, message string) error {
 	}
 	defer resp.Body.Close()
 	
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
 		body, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(body))
 	}

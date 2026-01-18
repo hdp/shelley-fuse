@@ -130,7 +130,7 @@ func TestSendMessage(t *testing.T) {
 	client := NewClient(server.URL)
 	
 	// Test sending a message
-	err := client.SendMessage("test-conversation-id", "Hello, assistant!")
+	err := client.SendMessage("test-conversation-id", "Hello, assistant!", "predictable")
 	if err != nil {
 		t.Fatalf("SendMessage failed: %v", err)
 	}
@@ -165,6 +165,10 @@ func TestSendMessage(t *testing.T) {
 	
 	if reqBody.Message != "Hello, assistant!" {
 		t.Errorf("Expected message 'Hello, assistant!', got '%s'", reqBody.Message)
+	}
+	
+	if reqBody.Model != "predictable" {
+		t.Errorf("Expected model 'predictable', got '%s'", reqBody.Model)
 	}
 }
 

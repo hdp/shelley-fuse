@@ -23,13 +23,15 @@ func TestIntegrationWithRealServer(t *testing.T) {
 	}
 	defer os.RemoveAll(tmpDir)
 	
-	// Start a Shelley server
+	// Start a Shelley server with predictable-only mode and clean environment
 	cmd := exec.Command("/usr/local/bin/shelley", 
 		"-db", tmpDir+"/test.db",
-		"-model", "predictable",
+		"-predictable-only",
 		"serve",
 		"-port", "10999",
 		"-require-header", "X-Exedev-Userid")
+	// Clear environment variables that might interfere with testing
+	cmd.Env = append(os.Environ(), "FIREWORKS_API_KEY=", "ANTHROPIC_API_KEY=", "OPENAI_API_KEY=")
 	
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("Failed to start Shelley server: %v", err)
@@ -60,7 +62,7 @@ func TestIntegrationWithRealServer(t *testing.T) {
 	}
 	
 	// Test sending a message
-	err = client.SendMessage(conversationID, "How are you?")
+	err = client.SendMessage(conversationID, "How are you?", "predictable")
 	if err != nil {
 		t.Fatalf("Failed to send message: %v", err)
 	}
