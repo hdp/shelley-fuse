@@ -27,7 +27,8 @@ func NewFS(defaultClient *shelley.Client) *FS {
 
 // Root returns the root node of the filesystem
 func (f *FS) Root() *fs.Inode {
-	return f.NewInode(context.Background(), &RootNode{fs: f}, fs.StableAttr{})
+	attr := fs.StableAttr{Mode: fuse.S_IFDIR, Ino: 0}
+	return f.NewInode(context.Background(), &RootNode{fs: f}, attr)
 }
 
 // RootNode represents the root directory of the filesystem
@@ -40,7 +41,12 @@ type RootNode struct {
 func (r *RootNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
 	// Handle special names: "default" and host:port formats
 	if name == "default" {
-		return r.NewInode(ctx, &HostNode{client: r.fs.defaultClient}, fs.StableAttr{}), 0
+		if r.fs.defaultClient == nil {
+			return nil, syscall.EINVAL
+		}
+		out.Mode = fuse.S_IFDIR | 0755
+	attr := fs.StableAttr{Mode: fuse.S_IFDIR, Ino: 3}
+	return r.NewInode(ctx, &HostNode{client: r.fs.defaultClient}, attr), 0
 	}
 	
 	// Check if name is in host:port format
@@ -51,11 +57,18 @@ func (r *RootNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) 
 			client = shelley.NewClient("http://" + name)
 			r.fs.clients[name] = client
 		}
-		return r.NewInode(ctx, &HostNode{client: client}, fs.StableAttr{}), 0
+			out.Mode = fuse.S_IFDIR | 0755
+			attr := fs.StableAttr{Mode: fuse.S_IFDIR, Ino: 2}
+			return r.NewInode(ctx, &HostNode{client: client}, attr), 0
 	}
 	
 	// Fall back to default client for other names
-	return r.NewInode(ctx, &HostNode{client: r.fs.defaultClient}, fs.StableAttr{}), 0
+	if r.fs.defaultClient == nil {
+		return nil, syscall.EINVAL
+	}
+	out.Mode = fuse.S_IFDIR | 0755
+	attr := fs.StableAttr{Mode: fuse.S_IFDIR, Ino: 1}
+	return r.NewInode(ctx, &HostNode{client: r.fs.defaultClient}, attr), 0
 }
 
 // Readdir reads the root directory contents
@@ -288,19 +301,24 @@ type HostNode struct {
 func (h *HostNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
 	switch name {
 	case "models":
-		return h.NewInode(ctx, &ModelsNode{client: h.client}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
+		out.Mode = fuse.S_IFREG | 0444
+		attr := fs.StableAttr{Mode: fuse.S_IFREG, Ino: 4}
+		return h.NewInode(ctx, &ModelsNode{client: h.client}, attr), 0
 	case "model":
-		return h.NewInode(ctx, &ModelDirNode{client: h.client}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
+		out.Mode = fuse.S_IFDIR | 0755
+		attr := fs.StableAttr{Mode: fuse.S_IFDIR, Ino: 5}
+		return h.NewInode(ctx, &ModelDirNode{client: h.client}, attr), 0
 	case "new":
-		return h.NewInode(ctx, &NewDirNode{client: h.client}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
+		out.Mode = fuse.S_IFDIR | 0755
+		attr := fs.StableAttr{Mode: fuse.S_IFDIR, Ino: 6}
+		return h.NewInode(ctx, &NewDirNode{client: h.client}, attr), 0
 	case "conversations":
-		return h.NewInode(ctx, &ConversationsDirNode{client: h.client}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
+		out.Mode = fuse.S_IFDIR | 0755
+		attr := fs.StableAttr{Mode: fuse.S_IFDIR, Ino: 7}
+		return h.NewInode(ctx, &ConversationsDirNode{client: h.client}, attr), 0
 	}
-	
 	return nil, syscall.ENOENT
-}
-
-// Readdir reads the host directory contents
+}// Readdir reads the host directory contents
 func (h *HostNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
 	entries := []fuse.DirEntry{
 		{Name: "models", Mode: fuse.S_IFREG | 0444},
