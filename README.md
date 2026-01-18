@@ -109,3 +109,29 @@ sudo systemctl start shelley-fuse@username.service
 - Add directory listing for conversations
 - Improve error handling and reporting
 - Add support for additional Shelley API features
+## Easy Testing with Helper Script
+
+For easier testing of the FUSE filesystem, use the provided helper script:
+
+```bash
+./test-fuse.sh [mount_point] [port]
+```
+
+This script will:
+- Start a predictable-only Shelley server
+- Build the FUSE filesystem
+- Mount the FUSE filesystem
+- Provide helpful commands for testing
+- Clean up resources on exit
+
+Example:
+```bash
+./test-fuse.sh /tmp/shelley-test 11005
+```
+
+Then in another terminal:
+```bash
+ls /tmp/shelley-test/default/
+cat /tmp/shelley-test/default/models
+echo 'Hello, Shelley!' > /tmp/shelley-test/default/model/predictable/new/test
+```
