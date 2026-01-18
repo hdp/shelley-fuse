@@ -45,10 +45,11 @@ func (r *RootNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) 
 			return nil, syscall.EINVAL
 		}
 		out.Mode = fuse.S_IFDIR | 0755
-	attr := fs.StableAttr{Mode: fuse.S_IFDIR, Ino: 3}
-	return r.NewInode(ctx, &HostNode{client: r.fs.defaultClient}, attr), 0
+		attr := fs.StableAttr{Mode: fuse.S_IFDIR, Ino: 3}
+		hostNode := &HostNode{client: r.fs.defaultClient}
+		return r.NewInode(ctx, hostNode, attr), 0
 	}
-	
+
 	// Check if name is in host:port format
 	if strings.Contains(name, ":") {
 		// Create client for this host if it doesn't exist
@@ -57,18 +58,20 @@ func (r *RootNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) 
 			client = shelley.NewClient("http://" + name)
 			r.fs.clients[name] = client
 		}
-			out.Mode = fuse.S_IFDIR | 0755
-			attr := fs.StableAttr{Mode: fuse.S_IFDIR, Ino: 2}
-			return r.NewInode(ctx, &HostNode{client: client}, attr), 0
+		out.Mode = fuse.S_IFDIR | 0755
+		attr := fs.StableAttr{Mode: fuse.S_IFDIR, Ino: 2}
+		hostNode := &HostNode{client: client}
+		return r.NewInode(ctx, hostNode, attr), 0
 	}
-	
+
 	// Fall back to default client for other names
 	if r.fs.defaultClient == nil {
 		return nil, syscall.EINVAL
 	}
 	out.Mode = fuse.S_IFDIR | 0755
 	attr := fs.StableAttr{Mode: fuse.S_IFDIR, Ino: 1}
-	return r.NewInode(ctx, &HostNode{client: r.fs.defaultClient}, attr), 0
+	hostNode := &HostNode{client: r.fs.defaultClient}
+		return r.NewInode(ctx, hostNode, attr), 0
 }
 
 // Readdir reads the root directory contents
@@ -92,7 +95,7 @@ func (m *ModelsNode) Read(ctx context.Context, f fs.FileHandle, dest []byte, off
 	if err != nil {
 		return nil, syscall.EIO
 	}
-	
+
 	result := readAt(data, dest, off)
 	return fuse.ReadResultData(result), 0
 }
@@ -188,12 +191,12 @@ func (n *NewConversationNode) Write(ctx context.Context, f fs.FileHandle, data [
 		// For simplicity, we'll just use the new data
 		message = message[int(off):]
 	}
-	
+
 	_, err := n.client.StartConversation(message, n.model, n.cwd)
 	if err != nil {
 		return 0, syscall.EIO
 	}
-	
+
 	// In a real implementation, we might want to store the conversation ID
 	// somewhere accessible. For now, we'll just return success.
 	return uint32(len(data)), 0
@@ -235,8 +238,8 @@ func (c *ConversationDirNode) Readdir(ctx context.Context) (fs.DirStream, syscal
 type ConversationNode struct {
 	fs.Inode
 	conversationID string
-	model         string
-	client        *shelley.Client
+	model          string
+	client         *shelley.Client
 }
 
 // Read reads the conversation content
@@ -245,7 +248,7 @@ func (c *ConversationNode) Read(ctx context.Context, f fs.FileHandle, dest []byt
 	if err != nil {
 		return nil, syscall.EIO
 	}
-	
+
 	result := readAt(data, dest, off)
 	return fuse.ReadResultData(result), 0
 }
@@ -257,18 +260,18 @@ func (c *ConversationNode) Write(ctx context.Context, f fs.FileHandle, data []by
 		// Append to existing message
 		message = message[int(off):]
 	}
-	
+
 	// Trim any trailing newlines that might be added by shell redirection
 	message = strings.TrimRight(message, "\n")
-	
+
 	if message == "" {
 		return uint32(len(data)), 0
 	}
-	
+
 	if err := c.client.SendMessage(c.conversationID, message, ""); err != nil {
 		return 0, syscall.EIO
 	}
-	
+
 	return uint32(len(data)), 0
 }
 
@@ -283,14 +286,15 @@ func readAt(data, dest []byte, off int64) []byte {
 	if off >= int64(len(data)) {
 		return []byte{}
 	}
-	
+
 	end := int64(len(data))
 	if int64(len(dest)) < end-off {
 		end = off + int64(len(dest))
 	}
-	
+
 	return data[off:end]
 }
+
 // HostNode represents a specific Shelley host
 type HostNode struct {
 	fs.Inode
@@ -318,7 +322,7 @@ func (h *HostNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) 
 		return h.NewInode(ctx, &ConversationsDirNode{client: h.client}, attr), 0
 	}
 	return nil, syscall.ENOENT
-}// Readdir reads the host directory contents
+} // Readdir reads the host directory contents
 func (h *HostNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
 	entries := []fuse.DirEntry{
 		{Name: "models", Mode: fuse.S_IFREG | 0444},
@@ -328,6 +332,7 @@ func (h *HostNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
 	}
 	return fs.NewListDirStream(entries), 0
 }
+
 // NewDirNode represents the new conversation directory
 type NewDirNode struct {
 	fs.Inode
