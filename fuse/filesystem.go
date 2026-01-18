@@ -368,3 +368,9 @@ func (c *ConversationsDirNode) Readdir(ctx context.Context) (fs.DirStream, sysca
 	// For now, return empty list
 	return fs.NewListDirStream([]fuse.DirEntry{}), 0
 }
+
+// Getattr sets attributes for the root directory
+func (r *RootNode) Getattr(ctx context.Context, file fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
+	out.Mode = fuse.S_IFDIR | 0755
+	return 0
+}

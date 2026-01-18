@@ -1,5 +1,9 @@
 package fuse
 
+	"github.com/hanwen/go-fuse/v2/fuse"
+	"shelley-fuse/shelley"
+)
+
 import (
 	"testing"
 )
