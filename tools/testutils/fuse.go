@@ -16,6 +16,11 @@ type FUSEMount struct {
 	LogPath    string
 }
 
+func stateDir(mountPoint string) string {
+	return fmt.Sprintf("/tmp/%s", strings.ReplaceAll(mountPoint, "/", "__"))
+}
+
+
 // StartFUSE starts a shelley-fuse filesystem
 func StartFUSE(mountPoint, serverURL string) (*FUSEMount, error) {
 	if mountPoint == "" {
@@ -41,8 +46,9 @@ func StartFUSE(mountPoint, serverURL string) (*FUSEMount, error) {
 
 	// Start FUSE process
 	fuseExe := "../bin/shelley-fuse"
-	logPath := fmt.Sprintf("%s/fuse.log", mountPoint)
-	pidFile := fmt.Sprintf("%s/fuse.pid", mountPoint)
+	d := stateDir(mountPoint)
+	logPath := fmt.Sprintf("%s/fuse.log", stateDir)
+	pidFile := fmt.Sprintf("%s/fuse.pid", stateDir)
 
 	cmd := exec.Command(fuseExe, mountPoint, serverURL)
 
@@ -84,7 +90,7 @@ func StartFUSE(mountPoint, serverURL string) (*FUSEMount, error) {
 
 // Stop unmounts and stops the FUSE filesystem
 func (fm *FUSEMount) Stop() error {
-	pidFile := fmt.Sprintf("%s/fuse.pid", fm.MountPoint)
+	pidFile := fmt.Sprintf("%s/fuse.pid", stateDir(fm.MountPoint))
 	defer os.Remove(pidFile)
 
 	// Unmount first
