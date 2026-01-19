@@ -10,7 +10,7 @@ A FUSE filesystem that exposes the Shelley API as a filesystem, allowing standar
 - Create new conversation: `cat /default/model/predictable/new/$PWD` (returns conversationID)
 - Get conversation: `cat /default/conversation/{conversationID}`
 - Send message to conversation: `cat >> /default/conversation/{conversationID}`
-- Simple conversation creation: `cat /default/new` (uses defaults)
+- Simple conversation creation: `cat /default/new`
 
 ## Usage
 
@@ -68,6 +68,30 @@ go test -v ./shelley -run TestIntegration
 ```
 
 The integration tests use the real `/usr/local/bin/shelley` binary with the `predictable` model for testing.
+
+### In-Process FUSE Server Testing
+
+The project now includes enhanced testing capabilities with in-process FUSE server support:
+
+- **New `testutil` package**: Provides generic in-process FUSE server testing capabilities
+- **Enhanced `testhelper` package**: Uses the shared library for both external and in-process testing
+- **Better error collection**: In-process servers can capture and report errors more easily
+- **Flexible API**: Generic interface allows testing of any FUSE filesystem
+
+Example usage in tests:
+
+```go
+config := &testutil.InProcessFUSEConfig{
+    MountPoint: "/tmp/mount",
+    CreateFS: func() (fs.InodeEmbedder, error) {
+        client := shelley.NewClient(serverURL)
+        return fuse.NewFS(client), nil
+    },
+}
+
+server, err := testutil.StartInProcessFUSE(config)
+// ... use server, check for errors, etc.
+```
 
 ## Systemd Service
 

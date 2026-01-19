@@ -15,8 +15,6 @@ import (
 )
 
 func main() {
-	// Parse command line arguments
-	server := flag.Bool("server", false, "run as server")
 	debug := flag.Bool("debug", false, "enable debug output")
 	flag.Parse()
 
@@ -61,10 +59,5 @@ func main() {
 		os.Exit(0)
 	}()
 
-	// Run the server
-	if *server {
-		fssrv.Wait()
-	} else {
-		fssrv.Wait()
-	}
+	fssrv.Wait()
 }
