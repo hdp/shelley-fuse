@@ -138,6 +138,35 @@ func (s *Store) GetByShelleyID(shelleyID string) string {
 	return ""
 }
 
+// GetBySlug returns the local ID for a given slug, or empty string if not found.
+func (s *Store) GetBySlug(slug string) string {
+	if slug == "" {
+		return ""
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	for _, cs := range s.Conversations {
+		if cs.Slug == slug {
+			return cs.LocalID
+		}
+	}
+	return ""
+}
+
+// ListMappings returns all conversations with their server IDs and slugs.
+// Used by FUSE to create symlinks for alternative access paths.
+func (s *Store) ListMappings() []ConversationState {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	result := make([]ConversationState, 0, len(s.Conversations))
+	for _, cs := range s.Conversations {
+		result = append(result, *cs)
+	}
+	return result
+}
+
 // Adopt creates a local conversation entry for an existing Shelley server conversation.
 // Returns the new local ID. If the Shelley ID is already tracked locally, returns the existing local ID.
 func (s *Store) Adopt(shelleyConversationID string) (string, error) {

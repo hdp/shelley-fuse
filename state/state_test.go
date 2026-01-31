@@ -467,3 +467,92 @@ func TestAdoptWithSlugUpdatesEmptySlug(t *testing.T) {
 		t.Errorf("expected Slug=updated-slug, got %s", cs.Slug)
 	}
 }
+
+func TestGetBySlug(t *testing.T) {
+	s, err := NewStore(tempStatePath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Empty slug returns empty string
+	if got := s.GetBySlug(""); got != "" {
+		t.Errorf("GetBySlug('') = %q, want empty", got)
+	}
+
+	// No conversations yet
+	if got := s.GetBySlug("some-slug"); got != "" {
+		t.Errorf("GetBySlug('some-slug') = %q, want empty", got)
+	}
+
+	// Add a conversation with a slug
+	localID, err := s.AdoptWithSlug("server-id-1", "my-slug")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Now it should be found
+	if got := s.GetBySlug("my-slug"); got != localID {
+		t.Errorf("GetBySlug('my-slug') = %q, want %q", got, localID)
+	}
+
+	// Different slug not found
+	if got := s.GetBySlug("other-slug"); got != "" {
+		t.Errorf("GetBySlug('other-slug') = %q, want empty", got)
+	}
+}
+
+func TestListMappings(t *testing.T) {
+	s, err := NewStore(tempStatePath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Empty store
+	mappings := s.ListMappings()
+	if len(mappings) != 0 {
+		t.Errorf("expected 0 mappings, got %d", len(mappings))
+	}
+
+	// Add some conversations
+	localID1, _ := s.Clone()
+	s.MarkCreated(localID1, "server-id-1", "slug-1")
+
+	localID2, _ := s.AdoptWithSlug("server-id-2", "slug-2")
+
+	localID3, _ := s.Clone() // uncreated, no server ID or slug
+
+	mappings = s.ListMappings()
+	if len(mappings) != 3 {
+		t.Errorf("expected 3 mappings, got %d", len(mappings))
+	}
+
+	// Verify we can find all the data
+	found := make(map[string]ConversationState)
+	for _, m := range mappings {
+		found[m.LocalID] = m
+	}
+
+	if m, ok := found[localID1]; !ok {
+		t.Errorf("missing mapping for %s", localID1)
+	} else {
+		if m.ShelleyConversationID != "server-id-1" || m.Slug != "slug-1" {
+			t.Errorf("wrong mapping for %s: %+v", localID1, m)
+		}
+	}
+
+	if m, ok := found[localID2]; !ok {
+		t.Errorf("missing mapping for %s", localID2)
+	} else {
+		if m.ShelleyConversationID != "server-id-2" || m.Slug != "slug-2" {
+			t.Errorf("wrong mapping for %s: %+v", localID2, m)
+		}
+	}
+
+	if m, ok := found[localID3]; !ok {
+		t.Errorf("missing mapping for %s", localID3)
+	} else {
+		if m.ShelleyConversationID != "" || m.Slug != "" {
+			t.Errorf("unexpected mapping for uncreated %s: %+v", localID3, m)
+		}
+	}
+}

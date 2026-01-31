@@ -607,41 +607,85 @@ func TestServerConversationListing(t *testing.T) {
 	var adoptedLocalID string
 
 	// 1. Verify server conversations are immediately adopted with local IDs
-	// (no server IDs should appear in the listing)
+	// Directory listing should show: local ID (directory) + server ID (symlink) + slug (symlink if exists)
 	t.Run("ServerConversationAdoptedImmediately", func(t *testing.T) {
 		entries, err := ioutil.ReadDir(filepath.Join(mountPoint, "conversation"))
 		if err != nil {
 			t.Fatalf("Failed to read conversation dir: %v", err)
 		}
 
-		// Should have exactly 1 entry (the adopted server conversation)
-		if len(entries) != 1 {
-			t.Fatalf("Expected 1 entry (adopted server conversation), got %d: %v", len(entries), entryNames(entries))
+		// Find the directory entry (local ID) vs symlink entries
+		var dirs, symlinks []os.FileInfo
+		for _, e := range entries {
+			if e.Mode()&os.ModeSymlink != 0 {
+				symlinks = append(symlinks, e)
+			} else if e.IsDir() {
+				dirs = append(dirs, e)
+			}
 		}
 
-		// The entry should be a local ID (8-char hex), not the server ID
-		adoptedLocalID = entries[0].Name()
+		// Should have exactly 1 directory (the local ID)
+		if len(dirs) != 1 {
+			t.Fatalf("Expected 1 directory (local ID), got %d: %v", len(dirs), entryNames(dirs))
+		}
+
+		// The directory should be a local ID (8-char hex)
+		adoptedLocalID = dirs[0].Name()
 		if len(adoptedLocalID) != 8 {
 			t.Errorf("Expected 8-char local ID, got %q", adoptedLocalID)
 		}
-		if adoptedLocalID == serverConvID {
-			t.Errorf("Server ID should not appear directly; expected local ID, got %q", adoptedLocalID)
-		}
-		if !entries[0].IsDir() {
-			t.Errorf("Conversation %s should be a directory", adoptedLocalID)
-		}
 		t.Logf("Server conversation adopted as local ID: %s", adoptedLocalID)
+
+		// Should have at least 1 symlink (the server ID)
+		if len(symlinks) < 1 {
+			t.Fatalf("Expected at least 1 symlink (server ID), got %d", len(symlinks))
+		}
+
+		// One of the symlinks should be the server ID
+		foundServerID := false
+		for _, s := range symlinks {
+			if s.Name() == serverConvID {
+				foundServerID = true
+				break
+			}
+		}
+		if !foundServerID {
+			t.Errorf("Expected symlink for server ID %q, symlinks: %v", serverConvID, entryNames(symlinks))
+		}
+		t.Logf("Found %d symlinks: %v", len(symlinks), entryNames(symlinks))
 	})
 
-	// 2. Verify we can still access via server ID (for backwards compatibility)
-	// This should work because Lookup still supports server IDs
+	// 2. Verify we can access via server ID symlink
+	// The symlink should point to the local ID directory
 	t.Run("AccessViaServerID", func(t *testing.T) {
-		info, err := os.Stat(filepath.Join(mountPoint, "conversation", serverConvID))
+		serverIDPath := filepath.Join(mountPoint, "conversation", serverConvID)
+
+		// Verify it's a symlink
+		linkInfo, err := os.Lstat(serverIDPath)
 		if err != nil {
-			t.Fatalf("Failed to stat server conversation by server ID: %v", err)
+			t.Fatalf("Failed to lstat server ID path: %v", err)
+		}
+		if linkInfo.Mode()&os.ModeSymlink == 0 {
+			t.Errorf("Expected symlink for server ID, got mode %v", linkInfo.Mode())
+		}
+
+		// Read the symlink target
+		target, err := os.Readlink(serverIDPath)
+		if err != nil {
+			t.Fatalf("Failed to readlink: %v", err)
+		}
+		if target != adoptedLocalID {
+			t.Errorf("Symlink target = %q, want %q", target, adoptedLocalID)
+		}
+		t.Logf("Server ID symlink %s -> %s", serverConvID, target)
+
+		// Verify we can follow the symlink and access content
+		info, err := os.Stat(serverIDPath)
+		if err != nil {
+			t.Fatalf("Failed to stat (follow symlink) server ID path: %v", err)
 		}
 		if !info.IsDir() {
-			t.Error("expected directory")
+			t.Error("expected directory after following symlink")
 		}
 	})
 
@@ -719,4 +763,366 @@ func entryNames(entries []os.FileInfo) []string {
 		names[i] = e.Name()
 	}
 	return names
+}
+
+// TestSymlinkAccess tests that symlinks for server IDs and slugs work correctly.
+// Users should be able to access conversations through symlinks just like directories.
+func TestSymlinkAccess(t *testing.T) {
+	skipIfNoFusermount(t)
+	skipIfNoShelley(t)
+
+	serverURL := startShelleyServer(t)
+	mountPoint := mountTestFS(t, serverURL)
+
+	// Create a conversation through the normal flow to get both local ID and server ID
+	var localID, serverID string
+
+	t.Run("Setup", func(t *testing.T) {
+		// Clone and create a conversation
+		data, err := ioutil.ReadFile(filepath.Join(mountPoint, "new", "clone"))
+		if err != nil {
+			t.Fatalf("Failed to clone: %v", err)
+		}
+		localID = strings.TrimSpace(string(data))
+
+		// Configure and send first message
+		err = ioutil.WriteFile(filepath.Join(mountPoint, "conversation", localID, "ctl"), []byte("model=predictable"), 0644)
+		if err != nil {
+			t.Fatalf("Failed to write ctl: %v", err)
+		}
+		err = ioutil.WriteFile(filepath.Join(mountPoint, "conversation", localID, "new"), []byte("Hello symlink test"), 0644)
+		if err != nil {
+			t.Fatalf("Failed to send message: %v", err)
+		}
+
+		// Get the server ID
+		data, err = ioutil.ReadFile(filepath.Join(mountPoint, "conversation", localID, "id"))
+		if err != nil {
+			t.Fatalf("Failed to read server ID: %v", err)
+		}
+		serverID = strings.TrimSpace(string(data))
+		t.Logf("Created conversation: local=%s, server=%s", localID, serverID)
+	})
+
+	t.Run("SymlinkAppearsInListing", func(t *testing.T) {
+		entries, err := ioutil.ReadDir(filepath.Join(mountPoint, "conversation"))
+		if err != nil {
+			t.Fatalf("Failed to read conversation dir: %v", err)
+		}
+
+		// Find the server ID symlink
+		var foundSymlink bool
+		for _, e := range entries {
+			if e.Name() == serverID && e.Mode()&os.ModeSymlink != 0 {
+				foundSymlink = true
+				break
+			}
+		}
+		if !foundSymlink {
+			t.Errorf("Server ID symlink %q not found in listing", serverID)
+		}
+	})
+
+	t.Run("ReadlinkReturnsLocalID", func(t *testing.T) {
+		target, err := os.Readlink(filepath.Join(mountPoint, "conversation", serverID))
+		if err != nil {
+			t.Fatalf("Readlink failed: %v", err)
+		}
+		if target != localID {
+			t.Errorf("Symlink target = %q, want %q", target, localID)
+		}
+	})
+
+	t.Run("StatFollowsSymlink", func(t *testing.T) {
+		// os.Stat follows symlinks, should return directory info
+		info, err := os.Stat(filepath.Join(mountPoint, "conversation", serverID))
+		if err != nil {
+			t.Fatalf("Stat failed: %v", err)
+		}
+		if !info.IsDir() {
+			t.Errorf("Expected directory after following symlink, got mode %v", info.Mode())
+		}
+	})
+
+	t.Run("LstatReturnsSymlink", func(t *testing.T) {
+		// os.Lstat does NOT follow symlinks
+		info, err := os.Lstat(filepath.Join(mountPoint, "conversation", serverID))
+		if err != nil {
+			t.Fatalf("Lstat failed: %v", err)
+		}
+		if info.Mode()&os.ModeSymlink == 0 {
+			t.Errorf("Expected symlink, got mode %v", info.Mode())
+		}
+	})
+
+	t.Run("ReadFileThroughSymlink", func(t *testing.T) {
+		// Read all.json through the symlink
+		data, err := ioutil.ReadFile(filepath.Join(mountPoint, "conversation", serverID, "all.json"))
+		if err != nil {
+			t.Fatalf("Failed to read all.json through symlink: %v", err)
+		}
+
+		var msgs []map[string]interface{}
+		if err := json.Unmarshal(data, &msgs); err != nil {
+			t.Fatalf("Failed to parse JSON: %v", err)
+		}
+		if len(msgs) == 0 {
+			t.Error("Expected messages in conversation")
+		}
+	})
+
+	t.Run("ReadStatusThroughSymlink", func(t *testing.T) {
+		data, err := ioutil.ReadFile(filepath.Join(mountPoint, "conversation", serverID, "status.json"))
+		if err != nil {
+			t.Fatalf("Failed to read status.json through symlink: %v", err)
+		}
+
+		var status map[string]interface{}
+		if err := json.Unmarshal(data, &status); err != nil {
+			t.Fatalf("Failed to parse status: %v", err)
+		}
+		if status["local_id"] != localID {
+			t.Errorf("status.local_id = %v, want %s", status["local_id"], localID)
+		}
+		if status["shelley_conversation_id"] != serverID {
+			t.Errorf("status.shelley_conversation_id = %v, want %s", status["shelley_conversation_id"], serverID)
+		}
+	})
+
+	t.Run("ListDirThroughSymlink", func(t *testing.T) {
+		entries, err := ioutil.ReadDir(filepath.Join(mountPoint, "conversation", serverID))
+		if err != nil {
+			t.Fatalf("Failed to list dir through symlink: %v", err)
+		}
+
+		expected := map[string]bool{"ctl": false, "new": false, "status.json": false, "all.json": false}
+		for _, e := range entries {
+			if _, ok := expected[e.Name()]; ok {
+				expected[e.Name()] = true
+			}
+		}
+		for name, found := range expected {
+			if !found {
+				t.Errorf("Expected %q in directory listing through symlink", name)
+			}
+		}
+	})
+
+	t.Run("AccessNestedPathThroughSymlink", func(t *testing.T) {
+		// Access last/2.json through symlink
+		data, err := ioutil.ReadFile(filepath.Join(mountPoint, "conversation", serverID, "last", "2.json"))
+		if err != nil {
+			t.Fatalf("Failed to read last/2.json through symlink: %v", err)
+		}
+
+		var msgs []map[string]interface{}
+		if err := json.Unmarshal(data, &msgs); err != nil {
+			t.Fatalf("Failed to parse JSON: %v", err)
+		}
+		if len(msgs) != 2 {
+			t.Errorf("Expected 2 messages, got %d", len(msgs))
+		}
+	})
+
+	t.Run("SymlinkAndDirectoryBothWork", func(t *testing.T) {
+		// Read the same file via local ID and server ID, should be identical
+		dataViaLocal, err := ioutil.ReadFile(filepath.Join(mountPoint, "conversation", localID, "all.json"))
+		if err != nil {
+			t.Fatalf("Failed to read via local ID: %v", err)
+		}
+
+		dataViaServer, err := ioutil.ReadFile(filepath.Join(mountPoint, "conversation", serverID, "all.json"))
+		if err != nil {
+			t.Fatalf("Failed to read via server ID: %v", err)
+		}
+
+		if string(dataViaLocal) != string(dataViaServer) {
+			t.Errorf("Content differs between local ID and server ID access")
+		}
+	})
+}
+
+// TestSymlinkEdgeCases tests edge cases in symlink handling.
+func TestSymlinkEdgeCases(t *testing.T) {
+	skipIfNoFusermount(t)
+	skipIfNoShelley(t)
+
+	serverURL := startShelleyServer(t)
+	mountPoint := mountTestFS(t, serverURL)
+
+	t.Run("NonexistentSymlinkReturnsENOENT", func(t *testing.T) {
+		_, err := os.Stat(filepath.Join(mountPoint, "conversation", "nonexistent-id"))
+		if err == nil {
+			t.Error("Expected error for nonexistent ID")
+		}
+		if !os.IsNotExist(err) {
+			t.Errorf("Expected ENOENT, got %v", err)
+		}
+	})
+
+	t.Run("LocalIDTakesPriorityOverSymlink", func(t *testing.T) {
+		// Clone creates a local ID that's always a directory
+		data, err := ioutil.ReadFile(filepath.Join(mountPoint, "new", "clone"))
+		if err != nil {
+			t.Fatalf("Failed to clone: %v", err)
+		}
+		localID := strings.TrimSpace(string(data))
+
+		// The local ID should be a directory, not a symlink
+		info, err := os.Lstat(filepath.Join(mountPoint, "conversation", localID))
+		if err != nil {
+			t.Fatalf("Lstat failed: %v", err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			t.Errorf("Local ID should be a directory, not a symlink")
+		}
+		if !info.IsDir() {
+			t.Errorf("Local ID should be a directory, got mode %v", info.Mode())
+		}
+	})
+
+	t.Run("MultipleConversationsHaveDistinctSymlinks", func(t *testing.T) {
+		// Create two conversations
+		var ids []string
+		for i := 0; i < 2; i++ {
+			data, err := ioutil.ReadFile(filepath.Join(mountPoint, "new", "clone"))
+			if err != nil {
+				t.Fatalf("Failed to clone: %v", err)
+			}
+			localID := strings.TrimSpace(string(data))
+
+			err = ioutil.WriteFile(filepath.Join(mountPoint, "conversation", localID, "ctl"), []byte("model=predictable"), 0644)
+			if err != nil {
+				t.Fatalf("Failed to write ctl: %v", err)
+			}
+			err = ioutil.WriteFile(filepath.Join(mountPoint, "conversation", localID, "new"), []byte(fmt.Sprintf("Message %d", i)), 0644)
+			if err != nil {
+				t.Fatalf("Failed to send message: %v", err)
+			}
+
+			data, err = ioutil.ReadFile(filepath.Join(mountPoint, "conversation", localID, "id"))
+			if err != nil {
+				t.Fatalf("Failed to read server ID: %v", err)
+			}
+			serverID := strings.TrimSpace(string(data))
+			ids = append(ids, localID, serverID)
+		}
+
+		// List conversations
+		entries, err := ioutil.ReadDir(filepath.Join(mountPoint, "conversation"))
+		if err != nil {
+			t.Fatalf("Failed to read conversation dir: %v", err)
+		}
+
+		// Count directories and symlinks
+		var dirs, symlinks int
+		for _, e := range entries {
+			if e.Mode()&os.ModeSymlink != 0 {
+				symlinks++
+			} else if e.IsDir() {
+				dirs++
+			}
+		}
+
+		// Should have at least 2 directories (local IDs) and 2 symlinks (server IDs)
+		// (might have more from earlier tests)
+		if dirs < 2 {
+			t.Errorf("Expected at least 2 directories, got %d", dirs)
+		}
+		if symlinks < 2 {
+			t.Errorf("Expected at least 2 symlinks, got %d", symlinks)
+		}
+		t.Logf("Found %d directories, %d symlinks", dirs, symlinks)
+	})
+}
+
+// TestSymlinkWithSlug tests symlinks for conversation slugs.
+func TestSymlinkWithSlug(t *testing.T) {
+	skipIfNoFusermount(t)
+	skipIfNoShelley(t)
+
+	serverURL := startShelleyServer(t)
+
+	// Create a conversation with a slug directly via API
+	client := shelley.NewClient(serverURL)
+	result, err := client.StartConversation("Test message for slug symlink", "predictable", t.TempDir())
+	if err != nil {
+		t.Fatalf("Failed to create conversation: %v", err)
+	}
+	serverID := result.ConversationID
+	slug := result.Slug
+	t.Logf("Created conversation: serverID=%s, slug=%s", serverID, slug)
+
+	// Mount filesystem
+	mountPoint := mountTestFS(t, serverURL)
+
+	// Trigger adoption by listing
+	_, err = ioutil.ReadDir(filepath.Join(mountPoint, "conversation"))
+	if err != nil {
+		t.Fatalf("Failed to list conversations: %v", err)
+	}
+
+	t.Run("SlugSymlinkAppears", func(t *testing.T) {
+		if slug == "" {
+			t.Skip("No slug for this conversation")
+		}
+
+		entries, err := ioutil.ReadDir(filepath.Join(mountPoint, "conversation"))
+		if err != nil {
+			t.Fatalf("Failed to read conversation dir: %v", err)
+		}
+
+		var foundSlug bool
+		for _, e := range entries {
+			if e.Name() == slug && e.Mode()&os.ModeSymlink != 0 {
+				foundSlug = true
+				break
+			}
+		}
+		if !foundSlug {
+			t.Errorf("Slug symlink %q not found in listing", slug)
+			t.Logf("Entries: %v", entryNames(entries))
+		}
+	})
+
+	t.Run("AccessViaSlugSymlink", func(t *testing.T) {
+		if slug == "" {
+			t.Skip("No slug for this conversation")
+		}
+
+		// Read content through slug symlink
+		data, err := ioutil.ReadFile(filepath.Join(mountPoint, "conversation", slug, "all.json"))
+		if err != nil {
+			t.Fatalf("Failed to read all.json via slug: %v", err)
+		}
+
+		var msgs []map[string]interface{}
+		if err := json.Unmarshal(data, &msgs); err != nil {
+			t.Fatalf("Failed to parse JSON: %v", err)
+		}
+		if len(msgs) == 0 {
+			t.Error("Expected messages")
+		}
+	})
+
+	t.Run("SlugAndServerIDPointToSameLocalID", func(t *testing.T) {
+		if slug == "" {
+			t.Skip("No slug for this conversation")
+		}
+
+		targetViaSlug, err := os.Readlink(filepath.Join(mountPoint, "conversation", slug))
+		if err != nil {
+			t.Fatalf("Readlink via slug failed: %v", err)
+		}
+
+		targetViaServerID, err := os.Readlink(filepath.Join(mountPoint, "conversation", serverID))
+		if err != nil {
+			t.Fatalf("Readlink via server ID failed: %v", err)
+		}
+
+		if targetViaSlug != targetViaServerID {
+			t.Errorf("Slug and server ID symlinks point to different targets: %s vs %s", targetViaSlug, targetViaServerID)
+		}
+		t.Logf("Both slug and server ID symlinks point to: %s", targetViaSlug)
+	})
 }

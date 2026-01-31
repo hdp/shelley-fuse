@@ -14,6 +14,26 @@ import (
 	"shelley-fuse/state"
 )
 
+// --- SymlinkNode: a symlink pointing to a target path ---
+
+type SymlinkNode struct {
+	fs.Inode
+	target string
+}
+
+var _ = (fs.NodeReadlinker)((*SymlinkNode)(nil))
+var _ = (fs.NodeGetattrer)((*SymlinkNode)(nil))
+
+func (s *SymlinkNode) Readlink(ctx context.Context) ([]byte, syscall.Errno) {
+	return []byte(s.target), 0
+}
+
+func (s *SymlinkNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
+	out.Mode = syscall.S_IFLNK | 0777
+	out.Size = uint64(len(s.target))
+	return 0
+}
+
 // FS is the root inode of the Shelley FUSE filesystem.
 type FS struct {
 	fs.Inode
@@ -215,10 +235,21 @@ func (c *ConversationListNode) Lookup(ctx context.Context, name string, out *fus
 		}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
 	}
 
-	// For backwards compatibility, also support lookup by Shelley server ID.
-	// This handles cases where someone has a server ID from another source
-	// (e.g., web UI, API, or old scripts) and wants to access it directly.
-	// The conversation will be adopted and assigned a local ID.
+	// Check if it's a known server ID (return symlink to local ID)
+	if localID := c.state.GetByShelleyID(name); localID != "" {
+		return c.NewInode(ctx, &SymlinkNode{target: localID}, fs.StableAttr{Mode: syscall.S_IFLNK}), 0
+	}
+
+	// Check if it's a known slug (return symlink to local ID)
+	if localID := c.state.GetBySlug(name); localID != "" {
+		return c.NewInode(ctx, &SymlinkNode{target: localID}, fs.StableAttr{Mode: syscall.S_IFLNK}), 0
+	}
+
+	// For backwards compatibility, also support lookup by Shelley server ID
+	// that isn't yet tracked locally. This handles cases where someone has
+	// a server ID from another source (e.g., web UI, API, or old scripts)
+	// and wants to access it directly. The conversation will be adopted
+	// and assigned a local ID, then a symlink returned.
 	serverConvs, err := c.fetchServerConversations()
 	if err == nil {
 		for _, conv := range serverConvs {
@@ -232,11 +263,16 @@ func (c *ConversationListNode) Lookup(ctx context.Context, name string, out *fus
 				if err != nil {
 					return nil, syscall.EIO
 				}
-				return c.NewInode(ctx, &ConversationNode{
-					localID: localID,
-					client:  c.client,
-					state:   c.state,
-				}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
+				// Return symlink to the local ID
+				return c.NewInode(ctx, &SymlinkNode{target: localID}, fs.StableAttr{Mode: syscall.S_IFLNK}), 0
+			}
+			// Also check by slug for not-yet-adopted conversations
+			if conv.Slug != nil && *conv.Slug == name {
+				localID, err := c.state.AdoptWithSlug(conv.ConversationID, *conv.Slug)
+				if err != nil {
+					return nil, syscall.EIO
+				}
+				return c.NewInode(ctx, &SymlinkNode{target: localID}, fs.StableAttr{Mode: syscall.S_IFLNK}), 0
 			}
 		}
 	}
@@ -267,14 +303,52 @@ func (c *ConversationListNode) Readdir(ctx context.Context) (fs.DirStream, sysca
 	// Note: if fetchServerConversations fails, we still return local entries
 	// This is intentional - local state should always be accessible
 
-	// Return all local IDs (which now includes any just-adopted server conversations)
-	localIDs := c.state.List()
-	entries := make([]fuse.DirEntry, len(localIDs))
-	for i, id := range localIDs {
-		entries[i] = fuse.DirEntry{Name: id, Mode: fuse.S_IFDIR}
+	// Build entries: directories for local IDs, symlinks for server IDs and slugs
+	mappings := c.state.ListMappings()
+	
+	// Track names we've used to avoid duplicates
+	usedNames := make(map[string]bool)
+	var entries []fuse.DirEntry
+
+	// First add all local IDs as directories (they take priority)
+	for _, cs := range mappings {
+		entries = append(entries, fuse.DirEntry{Name: cs.LocalID, Mode: fuse.S_IFDIR})
+		usedNames[cs.LocalID] = true
+	}
+
+	// Then add symlinks for server IDs and slugs (if they don't conflict)
+	for _, cs := range mappings {
+		// Add symlink for server ID if it exists and doesn't conflict
+		if cs.ShelleyConversationID != "" && !usedNames[cs.ShelleyConversationID] {
+			entries = append(entries, fuse.DirEntry{Name: cs.ShelleyConversationID, Mode: syscall.S_IFLNK})
+			usedNames[cs.ShelleyConversationID] = true
+		}
+
+		// Add symlink for slug if it exists, is valid, and doesn't conflict
+		if cs.Slug != "" && !usedNames[cs.Slug] && isValidFilename(cs.Slug) {
+			entries = append(entries, fuse.DirEntry{Name: cs.Slug, Mode: syscall.S_IFLNK})
+			usedNames[cs.Slug] = true
+		}
 	}
 
 	return fs.NewListDirStream(entries), 0
+}
+
+// isValidFilename checks if a string is valid for use as a filename.
+// Rejects empty strings and strings containing path separators or null bytes.
+func isValidFilename(name string) bool {
+	if name == "" {
+		return false
+	}
+	// Reject path separators and null bytes
+	if strings.ContainsAny(name, "/\x00") {
+		return false
+	}
+	// Reject . and .. which have special meaning
+	if name == "." || name == ".." {
+		return false
+	}
+	return true
 }
 
 // fetchServerConversations retrieves the list of conversations from the Shelley server.

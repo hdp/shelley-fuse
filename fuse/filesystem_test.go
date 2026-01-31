@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -145,7 +146,9 @@ func TestConversationListNode_ReaddirLocalOnly(t *testing.T) {
 
 func TestConversationListNode_ReaddirServerConversationsAdopted(t *testing.T) {
 	// Server returns conversations, no prior local state.
-	// Readdir should adopt them all immediately, returning local IDs.
+	// Readdir should adopt them all immediately, returning:
+	// - 2 directories for local IDs
+	// - 2 symlinks for server IDs
 	serverConvs := []shelley.Conversation{
 		{ConversationID: "server-conv-aaa"},
 		{ConversationID: "server-conv-bbb"},
@@ -167,24 +170,38 @@ func TestConversationListNode_ReaddirServerConversationsAdopted(t *testing.T) {
 		t.Fatalf("Readdir failed with errno %d", errno)
 	}
 
-	var names []string
+	var dirs, symlinks []string
 	for stream.HasNext() {
 		entry, _ := stream.Next()
-		names = append(names, entry.Name)
-	}
-
-	// Should have 2 entries (adopted server conversations)
-	if len(names) != 2 {
-		t.Fatalf("expected 2 entries, got %d: %v", len(names), names)
-	}
-
-	// All entries should be local IDs (8-char hex), not server IDs
-	for _, name := range names {
-		if len(name) != 8 {
-			t.Errorf("expected 8-char local ID, got %q", name)
+		if entry.Mode&syscall.S_IFLNK != 0 {
+			symlinks = append(symlinks, entry.Name)
+		} else if entry.Mode&syscall.S_IFDIR != 0 {
+			dirs = append(dirs, entry.Name)
 		}
-		if name == "server-conv-aaa" || name == "server-conv-bbb" {
-			t.Errorf("server ID should not appear in listing: %q", name)
+	}
+
+	// Should have 2 directories (adopted server conversations as local IDs)
+	if len(dirs) != 2 {
+		t.Fatalf("expected 2 directories, got %d: %v", len(dirs), dirs)
+	}
+
+	// Should have 2 symlinks (server IDs pointing to local IDs)
+	if len(symlinks) != 2 {
+		t.Fatalf("expected 2 symlinks, got %d: %v", len(symlinks), symlinks)
+	}
+
+	// Directory entries should be local IDs (8-char hex)
+	for _, name := range dirs {
+		if len(name) != 8 {
+			t.Errorf("expected 8-char local ID for directory, got %q", name)
+		}
+	}
+
+	// Symlink entries should be the server IDs
+	serverIDSet := map[string]bool{"server-conv-aaa": true, "server-conv-bbb": true}
+	for _, name := range symlinks {
+		if !serverIDSet[name] {
+			t.Errorf("unexpected symlink %q, expected server IDs", name)
 		}
 	}
 
@@ -216,7 +233,9 @@ func TestConversationListNode_ReaddirServerConversationsAdopted(t *testing.T) {
 
 func TestConversationListNode_ReaddirMergedLocalAndServer(t *testing.T) {
 	// Server returns some conversations, some overlap with local.
-	// All should appear with local IDs, server conversations should be adopted.
+	// Readdir returns:
+	// - Directories for all local IDs (4 total after adoption)
+	// - Symlinks for server IDs (3 total)
 	serverConvs := []shelley.Conversation{
 		{ConversationID: "server-conv-111"},
 		{ConversationID: "server-conv-222"}, // This one is already tracked locally
@@ -244,38 +263,52 @@ func TestConversationListNode_ReaddirMergedLocalAndServer(t *testing.T) {
 		t.Fatalf("Readdir failed with errno %d", errno)
 	}
 
-	var names []string
+	var dirs, symlinks []string
 	for stream.HasNext() {
 		entry, _ := stream.Next()
-		names = append(names, entry.Name)
+		if entry.Mode&syscall.S_IFLNK != 0 {
+			symlinks = append(symlinks, entry.Name)
+		} else if entry.Mode&syscall.S_IFDIR != 0 {
+			dirs = append(dirs, entry.Name)
+		}
 	}
 
-	// Should have 4 entries:
-	// - localOnly (existing local ID)
+	// Should have 4 directories:
+	// - localOnly (existing local ID, no server ID)
 	// - localTracked (existing local ID, tracks server-conv-222)
 	// - new local ID for server-conv-111 (adopted)
 	// - new local ID for server-conv-333 (adopted)
-	// server-conv-222 should NOT create a new entry because it's already tracked
-
-	if len(names) != 4 {
-		t.Fatalf("expected 4 entries, got %d: %v", len(names), names)
+	if len(dirs) != 4 {
+		t.Fatalf("expected 4 directories, got %d: %v", len(dirs), dirs)
 	}
 
-	// All entries should be local IDs (8-char hex), not server IDs
-	for _, name := range names {
+	// Should have 3 symlinks for server IDs:
+	// - server-conv-111 -> its local ID
+	// - server-conv-222 -> localTracked
+	// - server-conv-333 -> its local ID
+	if len(symlinks) != 3 {
+		t.Fatalf("expected 3 symlinks, got %d: %v", len(symlinks), symlinks)
+	}
+
+	// Directory entries should be local IDs (8-char hex)
+	for _, name := range dirs {
 		if len(name) != 8 {
-			t.Errorf("expected 8-char local ID, got %q", name)
-		}
-		if strings.HasPrefix(name, "server-conv-") {
-			t.Errorf("server ID should not appear in listing: %q", name)
+			t.Errorf("expected 8-char local ID for directory, got %q", name)
 		}
 	}
 
-	// Verify original local IDs are still present
-	sort.Strings(names)
+	// Symlink entries should be the server IDs
+	serverIDSet := map[string]bool{"server-conv-111": true, "server-conv-222": true, "server-conv-333": true}
+	for _, name := range symlinks {
+		if !serverIDSet[name] {
+			t.Errorf("unexpected symlink %q, expected server IDs", name)
+		}
+	}
+
+	// Verify original local IDs are still present as directories
 	foundLocalOnly := false
 	foundLocalTracked := false
-	for _, name := range names {
+	for _, name := range dirs {
 		if name == localOnly {
 			foundLocalOnly = true
 		}
@@ -284,10 +317,10 @@ func TestConversationListNode_ReaddirMergedLocalAndServer(t *testing.T) {
 		}
 	}
 	if !foundLocalOnly {
-		t.Errorf("localOnly %s not found in listing", localOnly)
+		t.Errorf("localOnly %s not found in directories", localOnly)
 	}
 	if !foundLocalTracked {
-		t.Errorf("localTracked %s not found in listing", localTracked)
+		t.Errorf("localTracked %s not found in directories", localTracked)
 	}
 
 	// After Readdir: should have 4 conversations (2 original + 2 adopted)
@@ -582,32 +615,43 @@ func TestConversationListingMounted(t *testing.T) {
 		t.Fatalf("Failed to read conversation directory: %v", err)
 	}
 
-	var names []string
+	// Separate directories (local IDs) from symlinks (server IDs)
+	var dirs, symlinks []string
 	for _, entry := range entries {
-		names = append(names, entry.Name())
-		if !entry.IsDir() {
-			t.Errorf("entry %q should be a directory", entry.Name())
+		if entry.Mode()&os.ModeSymlink != 0 {
+			symlinks = append(symlinks, entry.Name())
+		} else if entry.IsDir() {
+			dirs = append(dirs, entry.Name())
 		}
 	}
 
-	// Should have 3 entries: 1 original local + 2 adopted server conversations
-	if len(names) != 3 {
-		t.Fatalf("expected 3 entries, got %d: %v", len(names), names)
+	// Should have 3 directories: 1 original local + 2 adopted server conversations
+	if len(dirs) != 3 {
+		t.Fatalf("expected 3 directories, got %d: %v", len(dirs), dirs)
 	}
 
-	// All entries should be local IDs (8-char hex), not server IDs
-	for _, name := range names {
+	// Should have 2 symlinks for server IDs
+	if len(symlinks) != 2 {
+		t.Fatalf("expected 2 symlinks, got %d: %v", len(symlinks), symlinks)
+	}
+
+	// Directory entries should be local IDs (8-char hex)
+	for _, name := range dirs {
 		if len(name) != 8 {
-			t.Errorf("expected 8-char local ID, got %q", name)
-		}
-		if strings.HasPrefix(name, "mounted-server-conv-") {
-			t.Errorf("server ID should not appear in listing: %q", name)
+			t.Errorf("expected 8-char local ID for directory, got %q", name)
 		}
 	}
 
-	// Verify original local ID is present
+	// Symlink entries should be the server IDs
+	for _, name := range symlinks {
+		if !strings.HasPrefix(name, "mounted-server-conv-") {
+			t.Errorf("expected server ID symlink, got %q", name)
+		}
+	}
+
+	// Verify original local ID is present as a directory
 	foundLocal := false
-	for _, name := range names {
+	for _, name := range dirs {
 		if name == localID {
 			foundLocal = true
 			break

@@ -17,7 +17,7 @@ test-integration:
     go test -v ./fuse -run TestPlan9Flow -timeout 60s
 
 # Start shelley-fuse for manual testing (Ctrl+C to stop and unmount)
-dev mount="/tmp/shelley-fuse" url="http://localhost:9999":
+dev mount="/shelley" url="http://localhost:9999":
     just build
     mkdir -p {{mount}}
     ./shelley-fuse {{mount}} {{url}}
