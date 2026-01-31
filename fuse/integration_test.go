@@ -367,29 +367,29 @@ func TestPlan9Flow(t *testing.T) {
 		}
 	})
 
-	// 19. Read from/agent/1.json (most recent agent message)
+	// 19. Read from/user/1.json (most recent user message)
 	t.Run("ReadFromJSON", func(t *testing.T) {
-		data, err := ioutil.ReadFile(filepath.Join(mountPoint, "conversation", convID, "from", "agent", "1.json"))
+		data, err := ioutil.ReadFile(filepath.Join(mountPoint, "conversation", convID, "from", "user", "1.json"))
 		if err != nil {
-			t.Fatalf("Failed to read from/agent/1.json: %v", err)
+			t.Fatalf("Failed to read from/user/1.json: %v", err)
 		}
 		var msgs []shelley.Message
 		if err := json.Unmarshal(data, &msgs); err != nil {
-			t.Fatalf("Failed to parse from/agent/1.json: %v", err)
+			t.Fatalf("Failed to parse from/user/1.json: %v", err)
 		}
 		if len(msgs) != 1 {
 			t.Errorf("Expected 1 message, got %d", len(msgs))
 		}
 	})
 
-	// 20. Read from/agent/1.md
+	// 20. Read from/user/1.md
 	t.Run("ReadFromMD", func(t *testing.T) {
-		data, err := ioutil.ReadFile(filepath.Join(mountPoint, "conversation", convID, "from", "agent", "1.md"))
+		data, err := ioutil.ReadFile(filepath.Join(mountPoint, "conversation", convID, "from", "user", "1.md"))
 		if err != nil {
-			t.Fatalf("Failed to read from/agent/1.md: %v", err)
+			t.Fatalf("Failed to read from/user/1.md: %v", err)
 		}
 		if !strings.Contains(string(data), "##") {
-			t.Error("Expected markdown header in from/agent/1.md")
+			t.Error("Expected markdown header in from/user/1.md")
 		}
 	})
 

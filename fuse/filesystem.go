@@ -460,33 +460,48 @@ type ConvContentNode struct {
 }
 
 var _ = (fs.NodeOpener)((*ConvContentNode)(nil))
-var _ = (fs.NodeReader)((*ConvContentNode)(nil))
 var _ = (fs.NodeGetattrer)((*ConvContentNode)(nil))
 
 func (c *ConvContentNode) Open(ctx context.Context, flags uint32) (fs.FileHandle, uint32, syscall.Errno) {
-	return nil, fuse.FOPEN_DIRECT_IO, 0
-}
-
-func (c *ConvContentNode) Read(ctx context.Context, f fs.FileHandle, dest []byte, off int64) (fuse.ReadResult, syscall.Errno) {
+	// Fetch and cache content at open time to ensure consistent reads.
+	// Without caching, multiple read() calls would regenerate data each time,
+	// and if the conversation changed between reads, the result would be corrupted.
 	cs := c.state.Get(c.localID)
 	if cs == nil || !cs.Created || cs.ShelleyConversationID == "" {
-		return nil, syscall.ENOENT
+		// Return handle that will report ENOENT on read (preserves original behavior)
+		return &ConvContentFileHandle{errno: syscall.ENOENT}, fuse.FOPEN_DIRECT_IO, 0
 	}
 
 	convData, err := c.client.GetConversation(cs.ShelleyConversationID)
 	if err != nil {
-		return nil, syscall.EIO
+		return &ConvContentFileHandle{errno: syscall.EIO}, fuse.FOPEN_DIRECT_IO, 0
 	}
 	msgs, err := shelley.ParseMessages(convData)
 	if err != nil {
-		return nil, syscall.EIO
+		return &ConvContentFileHandle{errno: syscall.EIO}, fuse.FOPEN_DIRECT_IO, 0
 	}
 
 	data, errno := c.formatResult(msgs)
 	if errno != 0 {
-		return nil, errno
+		// Return handle that will report the error on read (preserves original behavior)
+		return &ConvContentFileHandle{errno: errno}, fuse.FOPEN_DIRECT_IO, 0
 	}
-	return fuse.ReadResultData(readAt(data, dest, off)), 0
+	return &ConvContentFileHandle{content: data}, fuse.FOPEN_DIRECT_IO, 0
+}
+
+// ConvContentFileHandle caches content for consistent reads across multiple read() calls
+type ConvContentFileHandle struct {
+	content []byte
+	errno   syscall.Errno
+}
+
+var _ = (fs.FileReader)((*ConvContentFileHandle)(nil))
+
+func (h *ConvContentFileHandle) Read(ctx context.Context, dest []byte, off int64) (fuse.ReadResult, syscall.Errno) {
+	if h.errno != 0 {
+		return nil, h.errno
+	}
+	return fuse.ReadResultData(readAt(h.content, dest, off)), 0
 }
 
 func (c *ConvContentNode) formatResult(msgs []shelley.Message) ([]byte, syscall.Errno) {
