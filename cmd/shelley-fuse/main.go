@@ -12,6 +12,7 @@ import (
 	"github.com/hanwen/go-fuse/v2/fs"
 	shelleyfuse "shelley-fuse/fuse"
 	"shelley-fuse/shelley"
+	"shelley-fuse/state"
 )
 
 func main() {
@@ -31,8 +32,14 @@ func main() {
 	// Create Shelley client
 	client := shelley.NewClient(url)
 
+	// Create state store
+	store, err := state.NewStore("")
+	if err != nil {
+		log.Fatalf("Failed to initialize state: %v", err)
+	}
+
 	// Create FUSE filesystem
-	shelleyFS := shelleyfuse.NewFS(client)
+	shelleyFS := shelleyfuse.NewFS(client, store)
 
 	// Set up FUSE server options
 	opts := &fs.Options{}

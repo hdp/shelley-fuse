@@ -1,16 +1,23 @@
 # Shelley FUSE
 
-A FUSE filesystem that exposes the Shelley API as a filesystem, allowing standard shell tools to interact with Shelley conversations. It parses the initial HTML page to extract model information since there's no dedicated API endpoint for models.
+A FUSE filesystem that exposes the Shelley API as a filesystem, allowing standard shell tools to interact with Shelley conversations.
 
 ## Features
 
-- Multi-host support: Access different Shelley instances via `/host:port/` paths
-- Default host: Use `/default/` to access the host specified at mount time
-- List models: `cat /default/models` or `cat /localhost:9999/models`
-- Create new conversation: `cat /default/model/predictable/new/$PWD` (returns conversationID)
-- Get conversation: `cat /default/conversation/{conversationID}`
-- Send message to conversation: `cat >> /default/conversation/{conversationID}`
-- Simple conversation creation: `cat /default/new`
+The filesystem follows a Plan 9-inspired control file model. Conversations are managed through clone/ctl/new files rather than encoding parameters in paths.
+
+- List models: `cat /models`
+- Allocate a new conversation: `cat /new/clone` (returns a local ID)
+- Configure before first message: `echo "model=gpt-4 cwd=/home/user/project" > /conversation/{ID}/ctl`
+- Send first message (creates conversation on backend): `echo "Fix the bug" > /conversation/{ID}/new`
+- Send follow-up messages: `echo "Actually, also fix this" > /conversation/{ID}/new`
+- Read conversation status: `cat /conversation/{ID}/status.json`
+- Get full conversation as JSON: `cat /conversation/{ID}/all.json`
+- Get full conversation as Markdown: `cat /conversation/{ID}/all.md`
+- Get specific message by sequence number: `cat /conversation/{ID}/7.json`
+- Get last N messages: `cat /conversation/{ID}/last/5.json`
+- Get messages since Nth-to-last from a person: `cat /conversation/{ID}/since/me/2.json` (or `.md`)
+- Get Nth message from a person (from end): `cat /conversation/{ID}/from/shelley/1.json` (or `.md`)
 
 ## Usage
 
@@ -21,37 +28,69 @@ go build -o shelley-fuse ./cmd/shelley-fuse
 # Mount the filesystem
 ./shelley-fuse /mnt/shelley http://localhost:9999
 
-# List models
-ls /mnt/shelley/default/models
+# List available models
+cat /mnt/shelley/models
 
-# Create a new conversation with predictable model (for testing)
-echo "Hello, Shelley!" > /mnt/shelley/default/model/predictable/new/$PWD
+# Allocate a new conversation (returns a local ID like "a1b2c3d4")
+ID=$(cat /mnt/shelley/new/clone)
 
-# Create a new conversation with specific model and directory
-mkdir -p /mnt/shelley/default/model/predictable/new/
-printf "Hello from specific directory" > /mnt/shelley/default/model/predictable/new//home/exedev
+# Configure the conversation before sending the first message
+echo "model=predictable cwd=$PWD" > /mnt/shelley/conversation/$ID/ctl
 
-# Access a different Shelley instance
-ls /mnt/shelley/localhost:8000/models
+# Check configuration
+cat /mnt/shelley/conversation/$ID/ctl
 
-# Get conversation content
-cat /mnt/shelley/default/conversation/c123456
+# Send the first message (this creates the conversation on the Shelley backend)
+echo "Hello, Shelley!" > /mnt/shelley/conversation/$ID/new
 
-# Send a message to a conversation
-echo "Follow up message" >> /mnt/shelley/default/conversation/c123456
+# Check conversation status
+cat /mnt/shelley/conversation/$ID/status.json
+
+# Read the full conversation
+cat /mnt/shelley/conversation/$ID/all.json
+cat /mnt/shelley/conversation/$ID/all.md
+
+# Send a follow-up message
+echo "Follow up message" > /mnt/shelley/conversation/$ID/new
 
 # Unmount with Ctrl+C or kill the process
 ```
 
+## Filesystem Layout
+
+```
+/
+  models                                → read-only file (GET /, parse HTML for model list)
+  new/
+    clone                               → read to allocate a new local conversation ID
+  conversation/
+    {id}/                               → directory per conversation
+      ctl                               → read/write config (model=X cwd=Y); read-only after creation
+      new                               → write here to send a message; first write creates conversation
+      status.json                       → read-only status (local ID, shelley ID, message count, etc.)
+      all.json                          → full conversation as JSON
+      all.md                            → full conversation as Markdown
+      {N}.json                          → specific message by sequence number
+      {N}.md                            → specific message as Markdown
+      last/{N}.json                     → last N messages as JSON
+      last/{N}.md                       → last N messages as Markdown
+      since/{person}/{N}.json           → messages since Nth-to-last message from {person}
+      since/{person}/{N}.md             → same, as Markdown
+      from/{person}/{N}.json            → Nth message from {person} (counting from end)
+      from/{person}/{N}.md              → same, as Markdown
+```
+
 ## API Mapping
 
-| Filesystem Path | Shelley API Call | Description |
-|-----------------|------------------|-------------|
-| `/default/models` | GET / (parses HTML for model info) | List available models |
-| `/default/new` | POST /api/conversations/new | Create new conversation with defaults |
-| `/default/model/{model}/new/{cwd}` | POST /api/conversations/new | Create new conversation with specific model and cwd |
-| `/default/conversation/{id}` (read) | GET /api/conversation/{id} | Get conversation content |
-| `/default/conversation/{id}` (write) | POST /api/conversation/{id}/chat | Send message to conversation |
+| Filesystem Operation | Shelley API Call | Description |
+|---------------------|------------------|-------------|
+| `cat /models` | GET / (parses HTML) | List available models |
+| `cat /new/clone` | (local only) | Allocate a new local conversation ID |
+| `echo k=v > /conversation/{id}/ctl` | (local only) | Set model/cwd before first message |
+| `echo msg > /conversation/{id}/new` (first) | POST /api/conversations/new | Create conversation and send first message |
+| `echo msg > /conversation/{id}/new` (subsequent) | POST /api/conversation/{id}/chat | Send message to existing conversation |
+| `cat /conversation/{id}/all.json` | GET /api/conversation/{id} | Get full conversation |
+| `cat /conversation/{id}/status.json` | GET /api/conversation/{id} | Get conversation status |
 
 ## Testing
 
@@ -71,27 +110,7 @@ The integration tests use the real `/usr/local/bin/shelley` binary with the `pre
 
 ### In-Process FUSE Server Testing
 
-The project now includes enhanced testing capabilities with in-process FUSE server support:
-
-- **New `testutil` package**: Provides generic in-process FUSE server testing capabilities
-- **Enhanced `testhelper` package**: Uses the shared library for both external and in-process testing
-- **Better error collection**: In-process servers can capture and report errors more easily
-- **Flexible API**: Generic interface allows testing of any FUSE filesystem
-
-Example usage in tests:
-
-```go
-config := &testutil.InProcessFUSEConfig{
-    MountPoint: "/tmp/mount",
-    CreateFS: func() (fs.InodeEmbedder, error) {
-        client := shelley.NewClient(serverURL)
-        return fuse.NewFS(client), nil
-    },
-}
-
-server, err := testutil.StartInProcessFUSE(config)
-// ... use server, check for errors, etc.
-```
+The `testutil` package provides in-process FUSE server testing. Tests using this skip automatically if `fusermount` is not available.
 
 ## Systemd Service
 
@@ -123,16 +142,8 @@ sudo systemctl start shelley-fuse@username.service
 ## Limitations
 
 - Streaming responses are not yet implemented
-- Directory listing for conversations is not implemented
-- Error handling could be improved
 - Model listing requires parsing HTML (no dedicated API endpoint)
-
-## Future Work
-
-- Implement streaming reads for conversations
-- Add directory listing for conversations
-- Improve error handling and reporting
-- Add support for additional Shelley API features
+- Conversation state is stored in `~/.shelley-fuse/state.json`; losing this file loses local-to-shelley ID mappings
 ## Easy Testing with Justfile
 
 For easier testing of the FUSE filesystem, install [just](https://github.com/casey/just) and use the provided Justfile:
@@ -172,9 +183,12 @@ go build -o bin/start-fuse ./start-fuse
 ./bin/start-fuse -mount /tmp/shelley-test
 
 # Test the filesystem
-ls /tmp/shelley-test/default/
-cat /tmp/shelley-test/default/models
-echo 'Hello, Shelley!' > /tmp/shelley-test/default/model/predictable/new/test
+ls /tmp/shelley-test/
+cat /tmp/shelley-test/models
+ID=$(cat /tmp/shelley-test/new/clone)
+echo "model=predictable cwd=/tmp" > /tmp/shelley-test/conversation/$ID/ctl
+echo 'Hello, Shelley!' > /tmp/shelley-test/conversation/$ID/new
+cat /tmp/shelley-test/conversation/$ID/all.md
 
 # Cleanup
 ./bin/start-fuse -stop -mount /tmp/shelley-test
