@@ -14,7 +14,7 @@ Plan:
 - Update integration test `ReadModels` subtest: change from reading a file to `ls /models` and `cat /models/predictable/ready`
 - Update README.md and CLAUDE.md filesystem layout sections
 
-[ ] Allow `ls /conversation` to return the list of conversations from the status.json
+[X] Allow `ls /conversation` to return the list of conversations from the status.json
 
 Plan:
 - `ConversationListNode.Readdir` already returns local IDs from `state.List()` — this works for `ls /conversation`

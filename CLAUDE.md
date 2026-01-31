@@ -43,8 +43,8 @@ The filesystem follows a Plan 9-inspired control file model. There are no host d
   models                                → read-only file (GET /, parse HTML for model list)
   new/
     clone                               → read to allocate a new local conversation ID
-  conversation/
-    {id}/                               → directory per conversation (id from clone)
+  conversation/                           → lists local IDs + server conversations (merged via GET /api/conversations)
+    {id}/                               → directory per conversation (local ID from clone, or server conversation ID)
       ctl                               → read/write config (model=X cwd=Y); becomes read-only after creation
       new                               → write here to send a message; first write creates conversation on backend
       status.json                       → read-only JSON status (local ID, shelley ID, message count, etc.)
@@ -61,6 +61,8 @@ The filesystem follows a Plan 9-inspired control file model. There are no host d
 ```
 
 Key design: conversation creation is split into clone → configure via ctl → first write to new. The `state` package maps local IDs to Shelley backend conversation IDs, persisted to `~/.shelley-fuse/state.json`.
+
+The `/conversation` directory merges local state with server-side conversations. `ConversationListNode.Readdir` fetches from both `state.List()` and `client.ListConversations()`, deduplicating conversations that are already tracked locally. When a server-only conversation is accessed via `Lookup`, it's automatically "adopted" into local state via `state.Adopt()`, creating a short local ID mapping.
 
 ### go-fuse API Notes
 
