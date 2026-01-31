@@ -123,6 +123,51 @@ func (s *Store) List() []string {
 	return ids
 }
 
+// GetByShelleyID returns the local ID for a given Shelley conversation ID, or empty string if not found.
+func (s *Store) GetByShelleyID(shelleyID string) string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	for _, cs := range s.Conversations {
+		if cs.ShelleyConversationID == shelleyID {
+			return cs.LocalID
+		}
+	}
+	return ""
+}
+
+// Adopt creates a local conversation entry for an existing Shelley server conversation.
+// Returns the new local ID. If the Shelley ID is already tracked locally, returns the existing local ID.
+func (s *Store) Adopt(shelleyConversationID string) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Check if already tracked
+	for _, cs := range s.Conversations {
+		if cs.ShelleyConversationID == shelleyConversationID {
+			return cs.LocalID, nil
+		}
+	}
+
+	// Generate a new local ID
+	id, err := s.generateID()
+	if err != nil {
+		return "", err
+	}
+
+	s.Conversations[id] = &ConversationState{
+		LocalID:               id,
+		ShelleyConversationID: shelleyConversationID,
+		Created:               true, // Already exists on server
+	}
+
+	if err := s.saveLocked(); err != nil {
+		delete(s.Conversations, id)
+		return "", err
+	}
+	return id, nil
+}
+
 // Load reads state from disk. Returns os.ErrNotExist if file doesn't exist.
 func (s *Store) Load() error {
 	data, err := os.ReadFile(s.Path)

@@ -224,3 +224,177 @@ func TestNewStoreCorruptFile(t *testing.T) {
 		t.Error("expected error for corrupt state file")
 	}
 }
+
+func TestGetByShelleyID(t *testing.T) {
+	s, err := NewStore(tempStatePath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Empty store should return empty string
+	if got := s.GetByShelleyID("nonexistent"); got != "" {
+		t.Errorf("expected empty string for nonexistent ID, got %q", got)
+	}
+
+	// Create a conversation and mark it created
+	id, _ := s.Clone()
+	_ = s.MarkCreated(id, "shelley-abc-123")
+
+	// Should find the local ID by Shelley ID
+	if got := s.GetByShelleyID("shelley-abc-123"); got != id {
+		t.Errorf("expected %q, got %q", id, got)
+	}
+
+	// Non-existent Shelley ID should return empty
+	if got := s.GetByShelleyID("other-shelley-id"); got != "" {
+		t.Errorf("expected empty string, got %q", got)
+	}
+}
+
+func TestGetByShelleyIDMultipleConversations(t *testing.T) {
+	s, err := NewStore(tempStatePath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	id1, _ := s.Clone()
+	_ = s.MarkCreated(id1, "shelley-111")
+
+	id2, _ := s.Clone()
+	_ = s.MarkCreated(id2, "shelley-222")
+
+	id3, _ := s.Clone()
+	// id3 is not created, so no Shelley ID
+
+	if got := s.GetByShelleyID("shelley-111"); got != id1 {
+		t.Errorf("expected %q for shelley-111, got %q", id1, got)
+	}
+	if got := s.GetByShelleyID("shelley-222"); got != id2 {
+		t.Errorf("expected %q for shelley-222, got %q", id2, got)
+	}
+	// id3 has no Shelley ID, so searching for any random ID shouldn't return it
+	if got := s.GetByShelleyID(id3); got != "" {
+		t.Errorf("expected empty string, got %q", got)
+	}
+}
+
+func TestAdopt(t *testing.T) {
+	s, err := NewStore(tempStatePath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Adopt a new server conversation
+	localID, err := s.Adopt("server-conv-123")
+	if err != nil {
+		t.Fatalf("Adopt failed: %v", err)
+	}
+
+	// Verify the local ID is an 8-char hex
+	if len(localID) != 8 {
+		t.Errorf("expected 8-char hex ID, got %q", localID)
+	}
+
+	// Verify the state is correct
+	cs := s.Get(localID)
+	if cs == nil {
+		t.Fatal("expected conversation state, got nil")
+	}
+	if cs.ShelleyConversationID != "server-conv-123" {
+		t.Errorf("expected ShelleyConversationID=server-conv-123, got %s", cs.ShelleyConversationID)
+	}
+	if !cs.Created {
+		t.Error("expected Created=true for adopted conversation")
+	}
+	if cs.LocalID != localID {
+		t.Errorf("expected LocalID=%s, got %s", localID, cs.LocalID)
+	}
+}
+
+func TestAdoptIdempotent(t *testing.T) {
+	s, err := NewStore(tempStatePath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Adopt the same server conversation twice
+	localID1, err := s.Adopt("server-conv-456")
+	if err != nil {
+		t.Fatalf("first Adopt failed: %v", err)
+	}
+
+	localID2, err := s.Adopt("server-conv-456")
+	if err != nil {
+		t.Fatalf("second Adopt failed: %v", err)
+	}
+
+	// Should return the same local ID
+	if localID1 != localID2 {
+		t.Errorf("expected same local ID, got %q and %q", localID1, localID2)
+	}
+
+	// Should only have one conversation
+	ids := s.List()
+	if len(ids) != 1 {
+		t.Errorf("expected 1 conversation, got %d", len(ids))
+	}
+}
+
+func TestAdoptExistingLocalConversation(t *testing.T) {
+	s, err := NewStore(tempStatePath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a conversation the normal way (clone + mark created)
+	localID, _ := s.Clone()
+	_ = s.MarkCreated(localID, "server-conv-789")
+
+	// Adopt the same server conversation
+	adoptedID, err := s.Adopt("server-conv-789")
+	if err != nil {
+		t.Fatalf("Adopt failed: %v", err)
+	}
+
+	// Should return the existing local ID
+	if adoptedID != localID {
+		t.Errorf("expected existing local ID %q, got %q", localID, adoptedID)
+	}
+
+	// Should still only have one conversation
+	ids := s.List()
+	if len(ids) != 1 {
+		t.Errorf("expected 1 conversation, got %d", len(ids))
+	}
+}
+
+func TestAdoptPersistence(t *testing.T) {
+	path := tempStatePath(t)
+
+	s1, err := NewStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	localID, err := s1.Adopt("server-persist-test")
+	if err != nil {
+		t.Fatalf("Adopt failed: %v", err)
+	}
+
+	// Load into fresh store
+	s2, err := NewStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cs := s2.Get(localID)
+	if cs == nil {
+		t.Fatal("expected conversation state after reload, got nil")
+	}
+	if cs.ShelleyConversationID != "server-persist-test" {
+		t.Errorf("expected ShelleyConversationID=server-persist-test, got %s", cs.ShelleyConversationID)
+	}
+	if !cs.Created {
+		t.Error("expected Created=true after reload")
+	}
+}

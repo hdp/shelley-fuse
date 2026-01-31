@@ -424,3 +424,105 @@ func TestPlan9Flow(t *testing.T) {
 		}
 	})
 }
+
+// TestServerConversationListing tests that conversations from the server
+// appear in ls /conversation and can be accessed even if not tracked locally.
+func TestServerConversationListing(t *testing.T) {
+	skipIfNoFusermount(t)
+	skipIfNoShelley(t)
+
+	serverURL := startShelleyServer(t)
+
+	// Create a conversation directly via the API (not through FUSE)
+	// This simulates a conversation that exists on the server but isn't tracked locally
+	client := shelley.NewClient(serverURL)
+	serverConvID, err := client.StartConversation("Hello from API", "predictable", t.TempDir())
+	if err != nil {
+		t.Fatalf("Failed to create server conversation: %v", err)
+	}
+	t.Logf("Created server conversation: %s", serverConvID)
+
+	// Mount the filesystem with a fresh state store
+	mountPoint := mountTestFS(t, serverURL)
+
+	// 1. Verify the server conversation appears in ls /conversation
+	t.Run("ServerConversationInListing", func(t *testing.T) {
+		entries, err := ioutil.ReadDir(filepath.Join(mountPoint, "conversation"))
+		if err != nil {
+			t.Fatalf("Failed to read conversation dir: %v", err)
+		}
+
+		found := false
+		for _, e := range entries {
+			if e.Name() == serverConvID {
+				found = true
+				if !e.IsDir() {
+					t.Errorf("Server conversation %s should be a directory", serverConvID)
+				}
+				break
+			}
+		}
+		if !found {
+			t.Errorf("Server conversation %s not found in listing. Found: %v", serverConvID, entryNames(entries))
+		}
+	})
+
+	// 2. Verify we can access the server conversation by its ID
+	t.Run("AccessServerConversation", func(t *testing.T) {
+		// Stat the conversation directory
+		info, err := os.Stat(filepath.Join(mountPoint, "conversation", serverConvID))
+		if err != nil {
+			t.Fatalf("Failed to stat server conversation: %v", err)
+		}
+		if !info.IsDir() {
+			t.Error("expected directory")
+		}
+	})
+
+	// 3. Verify we can read all.json from the server conversation
+	t.Run("ReadServerConversationContent", func(t *testing.T) {
+		data, err := ioutil.ReadFile(filepath.Join(mountPoint, "conversation", serverConvID, "all.json"))
+		if err != nil {
+			t.Fatalf("Failed to read all.json: %v", err)
+		}
+
+		var msgs []shelley.Message
+		if err := json.Unmarshal(data, &msgs); err != nil {
+			t.Fatalf("Failed to parse all.json: %v", err)
+		}
+		if len(msgs) == 0 {
+			t.Error("Expected at least one message")
+		}
+		t.Logf("Server conversation has %d messages", len(msgs))
+	})
+
+	// 4. After accessing, the conversation should be adopted locally
+	// and should now appear with a local ID in the listing
+	t.Run("ConversationAdoptedAfterAccess", func(t *testing.T) {
+		entries, err := ioutil.ReadDir(filepath.Join(mountPoint, "conversation"))
+		if err != nil {
+			t.Fatalf("Failed to read conversation dir: %v", err)
+		}
+
+		// Should have at least one local ID (the adopted conversation)
+		foundLocalID := false
+		for _, e := range entries {
+			if len(e.Name()) == 8 {
+				foundLocalID = true
+				break
+			}
+		}
+		if !foundLocalID {
+			t.Error("Expected at least one local 8-char ID after adoption")
+		}
+	})
+}
+
+// entryNames extracts names from directory entries for logging
+func entryNames(entries []os.FileInfo) []string {
+	names := make([]string, len(entries))
+	for i, e := range entries {
+		names[i] = e.Name()
+	}
+	return names
+}
