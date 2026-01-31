@@ -175,7 +175,7 @@ func (c *Client) SendMessage(conversationID, message, model string) error {
 }
 
 // ListModels lists available models by parsing the HTML page to extract window.__SHELLEY_INIT__
-func (c *Client) ListModels() ([]byte, error) {
+func (c *Client) ListModels() ([]Model, error) {
 	req, err := http.NewRequest("GET", c.baseURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
@@ -220,7 +220,7 @@ func (c *Client) ListModels() ([]byte, error) {
 						result = append(result, model)
 					}
 				}
-				return json.Marshal(result)
+				return result, nil
 			}
 		}
 	}
@@ -231,7 +231,7 @@ func (c *Client) ListModels() ([]byte, error) {
 		{ID: "qwen3-coder-fireworks", Ready: true},
 	}
 	
-	return json.Marshal(models)
+	return models, nil
 }
 
 // ListConversations lists all conversations

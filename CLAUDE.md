@@ -40,7 +40,10 @@ The filesystem follows a Plan 9-inspired control file model. There are no host d
 
 ```
 /
-  models                                → read-only file (GET /, parse HTML for model list)
+  models/                               → directory of available models (GET /, parse HTML for model list)
+    {model-id}/                         → directory for each model
+      id                                → read-only file: model ID
+      ready                             → read-only file: "true" or "false"
   new/
     clone                               → read to allocate a new local conversation ID
   conversation/                           → lists local IDs + server conversations (merged via GET /api/conversations)

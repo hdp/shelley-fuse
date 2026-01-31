@@ -1,4 +1,4 @@
-[ ] Change /models to a directory exposing the model names as directories and json fields as files into them, e.g. `cat /models/claude-opus-4.5/ready` -> `"true"`
+[X] Change /models to a directory exposing the model names as directories and json fields as files into them, e.g. `cat /models/claude-opus-4.5/ready` -> `"true"`
 
 Plan:
 - Replace `ModelsNode` (a single read-only file) with `ModelsDirNode` (a directory) in `fuse/filesystem.go`

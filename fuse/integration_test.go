@@ -151,14 +151,75 @@ func TestPlan9Flow(t *testing.T) {
 		}
 	})
 
-	// 2. Read models file
-	t.Run("ReadModels", func(t *testing.T) {
-		data, err := ioutil.ReadFile(filepath.Join(mountPoint, "models"))
+	// 2. Read models directory - verify directory structure
+	t.Run("ReadModelsDir", func(t *testing.T) {
+		entries, err := ioutil.ReadDir(filepath.Join(mountPoint, "models"))
 		if err != nil {
-			t.Fatalf("Failed to read models: %v", err)
+			t.Fatalf("Failed to read models directory: %v", err)
 		}
-		if !strings.Contains(string(data), "predictable") {
-			t.Error("Expected 'predictable' in models output")
+		
+		// Should have at least one model
+		if len(entries) == 0 {
+			t.Fatal("Expected at least one model in /models directory")
+		}
+		
+		// Check that 'predictable' model exists
+		foundPredictable := false
+		for _, e := range entries {
+			if e.Name() == "predictable" {
+				foundPredictable = true
+				if !e.IsDir() {
+					t.Error("Expected 'predictable' to be a directory")
+				}
+				break
+			}
+		}
+		if !foundPredictable {
+			t.Error("Expected 'predictable' model in /models directory")
+		}
+	})
+
+	// 2b. Read model fields
+	t.Run("ReadModelFields", func(t *testing.T) {
+		// Read the id field
+		idData, err := ioutil.ReadFile(filepath.Join(mountPoint, "models", "predictable", "id"))
+		if err != nil {
+			t.Fatalf("Failed to read models/predictable/id: %v", err)
+		}
+		if strings.TrimSpace(string(idData)) != "predictable" {
+			t.Errorf("Expected id='predictable', got %q", strings.TrimSpace(string(idData)))
+		}
+		
+		// Read the ready field
+		readyData, err := ioutil.ReadFile(filepath.Join(mountPoint, "models", "predictable", "ready"))
+		if err != nil {
+			t.Fatalf("Failed to read models/predictable/ready: %v", err)
+		}
+		if strings.TrimSpace(string(readyData)) != "true" {
+			t.Errorf("Expected ready='true', got %q", strings.TrimSpace(string(readyData)))
+		}
+	})
+
+	// 2c. List model directory contents
+	t.Run("ListModelContents", func(t *testing.T) {
+		entries, err := ioutil.ReadDir(filepath.Join(mountPoint, "models", "predictable"))
+		if err != nil {
+			t.Fatalf("Failed to read models/predictable directory: %v", err)
+		}
+		
+		expectedFiles := map[string]bool{"id": false, "ready": false}
+		for _, e := range entries {
+			if _, ok := expectedFiles[e.Name()]; ok {
+				expectedFiles[e.Name()] = true
+				if e.IsDir() {
+					t.Errorf("Expected %q to be a file, not a directory", e.Name())
+				}
+			}
+		}
+		for name, found := range expectedFiles {
+			if !found {
+				t.Errorf("Expected file %q in models/predictable directory", name)
+			}
 		}
 	})
 

@@ -32,7 +32,7 @@ var _ = (fs.NodeReaddirer)((*FS)(nil))
 func (f *FS) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
 	switch name {
 	case "models":
-		return f.NewInode(ctx, &ModelsNode{client: f.client}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
+		return f.NewInode(ctx, &ModelsDirNode{client: f.client}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
 	case "new":
 		return f.NewInode(ctx, &NewDirNode{state: f.state}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
 	case "conversation":
@@ -43,36 +43,101 @@ func (f *FS) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.I
 
 func (f *FS) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
 	return fs.NewListDirStream([]fuse.DirEntry{
-		{Name: "models", Mode: fuse.S_IFREG},
+		{Name: "models", Mode: fuse.S_IFDIR},
 		{Name: "new", Mode: fuse.S_IFDIR},
 		{Name: "conversation", Mode: fuse.S_IFDIR},
 	}), 0
 }
 
-// --- ModelsNode: read-only file listing available models ---
+// --- ModelsDirNode: /models/ directory listing available models ---
 
-type ModelsNode struct {
+type ModelsDirNode struct {
 	fs.Inode
 	client *shelley.Client
 }
 
-var _ = (fs.NodeOpener)((*ModelsNode)(nil))
-var _ = (fs.NodeReader)((*ModelsNode)(nil))
-var _ = (fs.NodeGetattrer)((*ModelsNode)(nil))
+var _ = (fs.NodeLookuper)((*ModelsDirNode)(nil))
+var _ = (fs.NodeReaddirer)((*ModelsDirNode)(nil))
 
-func (m *ModelsNode) Open(ctx context.Context, flags uint32) (fs.FileHandle, uint32, syscall.Errno) {
-	return nil, fuse.FOPEN_DIRECT_IO, 0
-}
-
-func (m *ModelsNode) Read(ctx context.Context, f fs.FileHandle, dest []byte, off int64) (fuse.ReadResult, syscall.Errno) {
-	data, err := m.client.ListModels()
+func (m *ModelsDirNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
+	models, err := m.client.ListModels()
 	if err != nil {
 		return nil, syscall.EIO
 	}
+	
+	for _, model := range models {
+		if model.ID == name {
+			return m.NewInode(ctx, &ModelNode{model: model}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
+		}
+	}
+	return nil, syscall.ENOENT
+}
+
+func (m *ModelsDirNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
+	models, err := m.client.ListModels()
+	if err != nil {
+		return nil, syscall.EIO
+	}
+	
+	entries := make([]fuse.DirEntry, len(models))
+	for i, model := range models {
+		entries[i] = fuse.DirEntry{Name: model.ID, Mode: fuse.S_IFDIR}
+	}
+	return fs.NewListDirStream(entries), 0
+}
+
+// --- ModelNode: /models/{model-id}/ directory for a single model ---
+
+type ModelNode struct {
+	fs.Inode
+	model shelley.Model
+}
+
+var _ = (fs.NodeLookuper)((*ModelNode)(nil))
+var _ = (fs.NodeReaddirer)((*ModelNode)(nil))
+
+func (m *ModelNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
+	switch name {
+	case "id":
+		return m.NewInode(ctx, &ModelFieldNode{value: m.model.ID}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
+	case "ready":
+		value := "false"
+		if m.model.Ready {
+			value = "true"
+		}
+		return m.NewInode(ctx, &ModelFieldNode{value: value}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
+	}
+	return nil, syscall.ENOENT
+}
+
+func (m *ModelNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
+	return fs.NewListDirStream([]fuse.DirEntry{
+		{Name: "id", Mode: fuse.S_IFREG},
+		{Name: "ready", Mode: fuse.S_IFREG},
+	}), 0
+}
+
+// --- ModelFieldNode: read-only file for a model field (id or ready) ---
+
+type ModelFieldNode struct {
+	fs.Inode
+	value string
+}
+
+var _ = (fs.NodeOpener)((*ModelFieldNode)(nil))
+var _ = (fs.NodeReader)((*ModelFieldNode)(nil))
+var _ = (fs.NodeGetattrer)((*ModelFieldNode)(nil))
+
+func (m *ModelFieldNode) Open(ctx context.Context, flags uint32) (fs.FileHandle, uint32, syscall.Errno) {
+	return nil, fuse.FOPEN_DIRECT_IO, 0
+}
+
+func (m *ModelFieldNode) Read(ctx context.Context, f fs.FileHandle, dest []byte, off int64) (fuse.ReadResult, syscall.Errno) {
+	data := []byte(m.value + "\n")
 	return fuse.ReadResultData(readAt(data, dest, off)), 0
 }
 
-func (m *ModelsNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
+func (m *ModelFieldNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
 	out.Mode = fuse.S_IFREG | 0444
 	return 0
 }

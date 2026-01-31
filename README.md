@@ -6,7 +6,8 @@ A FUSE filesystem that exposes the Shelley API as a filesystem, allowing standar
 
 The filesystem follows a Plan 9-inspired control file model. Conversations are managed through clone/ctl/new files rather than encoding parameters in paths.
 
-- List models: `cat /models`
+- List models: `ls /models`
+- Check model availability: `cat /models/claude-opus-4/ready`
 - Allocate a new conversation: `cat /new/clone` (returns a local ID)
 - Configure before first message: `echo "model=gpt-4 cwd=/home/user/project" > /conversation/{ID}/ctl`
 - Send first message (creates conversation on backend): `echo "Fix the bug" > /conversation/{ID}/new`
@@ -30,7 +31,10 @@ go build -o shelley-fuse ./cmd/shelley-fuse
 ./shelley-fuse /mnt/shelley http://localhost:9999
 
 # List available models
-cat /mnt/shelley/models
+ls /mnt/shelley/models
+
+# Check if a model is ready
+cat /mnt/shelley/models/predictable/ready
 
 # Allocate a new conversation (returns a local ID like "a1b2c3d4")
 ID=$(cat /mnt/shelley/new/clone)
@@ -61,7 +65,10 @@ echo "Follow up message" > /mnt/shelley/conversation/$ID/new
 
 ```
 /
-  models                                → read-only file (GET /, parse HTML for model list)
+  models/                               → directory of available models (GET /, parse HTML for model list)
+    {model-id}/                         → directory for each model
+      id                                → read-only file: model ID
+      ready                             → read-only file: "true" or "false"
   new/
     clone                               → read to allocate a new local conversation ID
   conversation/                           → lists local IDs + server conversations (merged)
@@ -85,7 +92,8 @@ echo "Follow up message" > /mnt/shelley/conversation/$ID/new
 
 | Filesystem Operation | Shelley API Call | Description |
 |---------------------|------------------|-------------|
-| `cat /models` | GET / (parses HTML) | List available models |
+| `ls /models` | GET / (parses HTML) | List available models |
+| `cat /models/{id}/ready` | GET / (parses HTML) | Check if model is ready |
 | `cat /new/clone` | (local only) | Allocate a new local conversation ID |
 | `echo k=v > /conversation/{id}/ctl` | (local only) | Set model/cwd before first message |
 | `echo msg > /conversation/{id}/new` (first) | POST /api/conversations/new | Create conversation and send first message |
