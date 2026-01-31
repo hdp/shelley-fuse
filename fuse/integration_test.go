@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -583,7 +584,7 @@ func TestPlan9Flow(t *testing.T) {
 }
 
 // TestServerConversationListing tests that conversations from the server
-// appear in ls /conversation and can be accessed even if not tracked locally.
+// are automatically adopted with local IDs when listing the conversation directory.
 func TestServerConversationListing(t *testing.T) {
 	skipIfNoFusermount(t)
 	skipIfNoShelley(t)
@@ -603,45 +604,56 @@ func TestServerConversationListing(t *testing.T) {
 	// Mount the filesystem with a fresh state store
 	mountPoint := mountTestFS(t, serverURL)
 
-	// 1. Verify the server conversation appears in ls /conversation
-	t.Run("ServerConversationInListing", func(t *testing.T) {
+	var adoptedLocalID string
+
+	// 1. Verify server conversations are immediately adopted with local IDs
+	// (no server IDs should appear in the listing)
+	t.Run("ServerConversationAdoptedImmediately", func(t *testing.T) {
 		entries, err := ioutil.ReadDir(filepath.Join(mountPoint, "conversation"))
 		if err != nil {
 			t.Fatalf("Failed to read conversation dir: %v", err)
 		}
 
-		found := false
-		for _, e := range entries {
-			if e.Name() == serverConvID {
-				found = true
-				if !e.IsDir() {
-					t.Errorf("Server conversation %s should be a directory", serverConvID)
-				}
-				break
-			}
+		// Should have exactly 1 entry (the adopted server conversation)
+		if len(entries) != 1 {
+			t.Fatalf("Expected 1 entry (adopted server conversation), got %d: %v", len(entries), entryNames(entries))
 		}
-		if !found {
-			t.Errorf("Server conversation %s not found in listing. Found: %v", serverConvID, entryNames(entries))
+
+		// The entry should be a local ID (8-char hex), not the server ID
+		adoptedLocalID = entries[0].Name()
+		if len(adoptedLocalID) != 8 {
+			t.Errorf("Expected 8-char local ID, got %q", adoptedLocalID)
 		}
+		if adoptedLocalID == serverConvID {
+			t.Errorf("Server ID should not appear directly; expected local ID, got %q", adoptedLocalID)
+		}
+		if !entries[0].IsDir() {
+			t.Errorf("Conversation %s should be a directory", adoptedLocalID)
+		}
+		t.Logf("Server conversation adopted as local ID: %s", adoptedLocalID)
 	})
 
-	// 2. Verify we can access the server conversation by its ID
-	t.Run("AccessServerConversation", func(t *testing.T) {
-		// Stat the conversation directory
+	// 2. Verify we can still access via server ID (for backwards compatibility)
+	// This should work because Lookup still supports server IDs
+	t.Run("AccessViaServerID", func(t *testing.T) {
 		info, err := os.Stat(filepath.Join(mountPoint, "conversation", serverConvID))
 		if err != nil {
-			t.Fatalf("Failed to stat server conversation: %v", err)
+			t.Fatalf("Failed to stat server conversation by server ID: %v", err)
 		}
 		if !info.IsDir() {
 			t.Error("expected directory")
 		}
 	})
 
-	// 3. Verify we can read all.json from the server conversation
-	t.Run("ReadServerConversationContent", func(t *testing.T) {
-		data, err := ioutil.ReadFile(filepath.Join(mountPoint, "conversation", serverConvID, "all.json"))
+	// 3. Verify we can access via local ID and read content
+	t.Run("AccessViaLocalID", func(t *testing.T) {
+		if adoptedLocalID == "" {
+			t.Skip("No adopted local ID from previous test")
+		}
+
+		data, err := ioutil.ReadFile(filepath.Join(mountPoint, "conversation", adoptedLocalID, "all.json"))
 		if err != nil {
-			t.Fatalf("Failed to read all.json: %v", err)
+			t.Fatalf("Failed to read all.json via local ID: %v", err)
 		}
 
 		var msgs []shelley.Message
@@ -654,24 +666,48 @@ func TestServerConversationListing(t *testing.T) {
 		t.Logf("Server conversation has %d messages", len(msgs))
 	})
 
-	// 4. After accessing, the conversation should be adopted locally
-	// and should now appear with a local ID in the listing
-	t.Run("ConversationAdoptedAfterAccess", func(t *testing.T) {
-		entries, err := ioutil.ReadDir(filepath.Join(mountPoint, "conversation"))
-		if err != nil {
-			t.Fatalf("Failed to read conversation dir: %v", err)
+	// 4. Verify the id file returns the server conversation ID
+	t.Run("VerifyIDFile", func(t *testing.T) {
+		if adoptedLocalID == "" {
+			t.Skip("No adopted local ID from previous test")
 		}
 
-		// Should have at least one local ID (the adopted conversation)
-		foundLocalID := false
-		for _, e := range entries {
-			if len(e.Name()) == 8 {
-				foundLocalID = true
+		data, err := ioutil.ReadFile(filepath.Join(mountPoint, "conversation", adoptedLocalID, "id"))
+		if err != nil {
+			t.Fatalf("Failed to read id file: %v", err)
+		}
+
+		idContent := strings.TrimSpace(string(data))
+		if idContent != serverConvID {
+			t.Errorf("Expected id file to contain %q, got %q", serverConvID, idContent)
+		}
+	})
+
+	// 5. Verify listing is stable (no duplicates on re-read)
+	t.Run("StableListing", func(t *testing.T) {
+		entries1, err := ioutil.ReadDir(filepath.Join(mountPoint, "conversation"))
+		if err != nil {
+			t.Fatalf("Failed to read conversation dir (1st): %v", err)
+		}
+
+		entries2, err := ioutil.ReadDir(filepath.Join(mountPoint, "conversation"))
+		if err != nil {
+			t.Fatalf("Failed to read conversation dir (2nd): %v", err)
+		}
+
+		if len(entries1) != len(entries2) {
+			t.Errorf("Listing should be stable: got %d then %d entries", len(entries1), len(entries2))
+		}
+
+		names1 := entryNames(entries1)
+		names2 := entryNames(entries2)
+		sort.Strings(names1)
+		sort.Strings(names2)
+		for i := range names1 {
+			if names1[i] != names2[i] {
+				t.Errorf("Listing mismatch: %v vs %v", names1, names2)
 				break
 			}
-		}
-		if !foundLocalID {
-			t.Error("Expected at least one local 8-char ID after adoption")
 		}
 	})
 }

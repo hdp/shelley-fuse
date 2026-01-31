@@ -205,7 +205,7 @@ var _ = (fs.NodeLookuper)((*ConversationListNode)(nil))
 var _ = (fs.NodeReaddirer)((*ConversationListNode)(nil))
 
 func (c *ConversationListNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
-	// First check if it's a known local ID
+	// First check if it's a known local ID (the common case after Readdir adoption)
 	cs := c.state.Get(name)
 	if cs != nil {
 		return c.NewInode(ctx, &ConversationNode{
@@ -215,8 +215,10 @@ func (c *ConversationListNode) Lookup(ctx context.Context, name string, out *fus
 		}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
 	}
 
-	// Check if it's a Shelley conversation ID from the server
-	// that we haven't tracked locally yet
+	// For backwards compatibility, also support lookup by Shelley server ID.
+	// This handles cases where someone has a server ID from another source
+	// (e.g., web UI, API, or old scripts) and wants to access it directly.
+	// The conversation will be adopted and assigned a local ID.
 	serverConvs, err := c.fetchServerConversations()
 	if err == nil {
 		for _, conv := range serverConvs {
@@ -243,36 +245,34 @@ func (c *ConversationListNode) Lookup(ctx context.Context, name string, out *fus
 }
 
 func (c *ConversationListNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
-	// Start with local IDs
-	localIDs := c.state.List()
-	seen := make(map[string]bool)
-	for _, id := range localIDs {
-		seen[id] = true
-	}
-
-	// Build entries from local IDs
-	entries := make([]fuse.DirEntry, 0, len(localIDs))
-	for _, id := range localIDs {
-		entries = append(entries, fuse.DirEntry{Name: id, Mode: fuse.S_IFDIR})
-	}
-
-	// Add server conversations that aren't tracked locally
+	// Adopt any server conversations that aren't tracked locally.
+	// This ensures all conversations always appear with local IDs.
 	serverConvs, err := c.fetchServerConversations()
 	if err == nil {
 		for _, conv := range serverConvs {
 			// Check if this server conversation is already tracked locally
 			localID := c.state.GetByShelleyID(conv.ConversationID)
 			if localID == "" {
-				// Not tracked locally, show by server ID
-				if !seen[conv.ConversationID] {
-					entries = append(entries, fuse.DirEntry{Name: conv.ConversationID, Mode: fuse.S_IFDIR})
-					seen[conv.ConversationID] = true
+				// Not tracked locally - adopt it now
+				slug := ""
+				if conv.Slug != nil {
+					slug = *conv.Slug
 				}
+				// Adopt errors are non-fatal; worst case the conversation
+				// won't appear in this listing but will be adopted on next Lookup
+				_, _ = c.state.AdoptWithSlug(conv.ConversationID, slug)
 			}
 		}
 	}
 	// Note: if fetchServerConversations fails, we still return local entries
 	// This is intentional - local state should always be accessible
+
+	// Return all local IDs (which now includes any just-adopted server conversations)
+	localIDs := c.state.List()
+	entries := make([]fuse.DirEntry, len(localIDs))
+	for i, id := range localIDs {
+		entries[i] = fuse.DirEntry{Name: id, Mode: fuse.S_IFDIR}
+	}
 
 	return fs.NewListDirStream(entries), 0
 }

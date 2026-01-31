@@ -132,12 +132,12 @@ just dev mount=/tmp/my-mount url=http://localhost:9999
 
 ## Server Conversation Discovery
 
-The `/conversation` directory automatically merges local conversations with those on the Shelley server:
+The `/conversation` directory automatically discovers and adopts conversations from the Shelley server:
 
-- **Local conversations** appear with their 8-character hex IDs (e.g., `a1b2c3d4`)
-- **Server-only conversations** appear by their full Shelley conversation ID
-- **Already-tracked conversations** (local conversations linked to server conversations) appear only by their local ID to avoid duplicates
+- **All conversations** appear with 8-character hex local IDs (e.g., `a1b2c3d4`)
+- **Server conversations** are automatically adopted when you run `ls /conversation`, creating local ID mappings
+- **No server IDs in listings** — users always see consistent local IDs
 
-When you access a server-only conversation (via `ls` or `cat`), it's automatically "adopted" into local state, creating a short local ID mapping. This allows seamless interaction with conversations created outside of FUSE.
+This means conversations created outside of FUSE (e.g., via the web UI or API) are seamlessly integrated into the filesystem with local IDs. You can also access a conversation by its Shelley server ID directly (e.g., `cat /conversation/{server-id}/all.json`), which will adopt it if not already tracked.
 
-If the server is unreachable, `ls /conversation` still shows local conversations—server errors are handled gracefully.
+If the server is unreachable, `ls /conversation` still shows previously-adopted local conversations—server errors are handled gracefully.

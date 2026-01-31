@@ -143,8 +143,9 @@ func TestConversationListNode_ReaddirLocalOnly(t *testing.T) {
 	}
 }
 
-func TestConversationListNode_ReaddirServerOnly(t *testing.T) {
-	// Server returns conversations, no local state
+func TestConversationListNode_ReaddirServerConversationsAdopted(t *testing.T) {
+	// Server returns conversations, no prior local state.
+	// Readdir should adopt them all immediately, returning local IDs.
 	serverConvs := []shelley.Conversation{
 		{ConversationID: "server-conv-aaa"},
 		{ConversationID: "server-conv-bbb"},
@@ -154,6 +155,11 @@ func TestConversationListNode_ReaddirServerOnly(t *testing.T) {
 
 	client := shelley.NewClient(server.URL)
 	store := testStore(t)
+
+	// Before Readdir, store should be empty
+	if len(store.List()) != 0 {
+		t.Fatal("expected empty store before Readdir")
+	}
 
 	node := &ConversationListNode{client: client, state: store}
 	stream, errno := node.Readdir(context.Background())
@@ -167,25 +173,53 @@ func TestConversationListNode_ReaddirServerOnly(t *testing.T) {
 		names = append(names, entry.Name)
 	}
 
-	sort.Strings(names)
-	expected := []string{"server-conv-aaa", "server-conv-bbb"}
-	sort.Strings(expected)
-
-	if len(names) != len(expected) {
-		t.Fatalf("expected %d entries, got %d: %v", len(expected), len(names), names)
+	// Should have 2 entries (adopted server conversations)
+	if len(names) != 2 {
+		t.Fatalf("expected 2 entries, got %d: %v", len(names), names)
 	}
-	for i, name := range names {
-		if name != expected[i] {
-			t.Errorf("entry %d: expected %q, got %q", i, expected[i], name)
+
+	// All entries should be local IDs (8-char hex), not server IDs
+	for _, name := range names {
+		if len(name) != 8 {
+			t.Errorf("expected 8-char local ID, got %q", name)
 		}
+		if name == "server-conv-aaa" || name == "server-conv-bbb" {
+			t.Errorf("server ID should not appear in listing: %q", name)
+		}
+	}
+
+	// Verify the conversations were adopted into local state
+	localIDs := store.List()
+	if len(localIDs) != 2 {
+		t.Fatalf("expected 2 conversations in store after Readdir, got %d", len(localIDs))
+	}
+
+	// Verify each adopted conversation has the correct Shelley ID
+	shelleyIDs := make(map[string]bool)
+	for _, id := range localIDs {
+		cs := store.Get(id)
+		if cs == nil {
+			t.Fatalf("expected conversation state for %s", id)
+		}
+		if !cs.Created {
+			t.Errorf("expected Created=true for adopted conversation %s", id)
+		}
+		shelleyIDs[cs.ShelleyConversationID] = true
+	}
+	if !shelleyIDs["server-conv-aaa"] {
+		t.Error("server-conv-aaa was not adopted")
+	}
+	if !shelleyIDs["server-conv-bbb"] {
+		t.Error("server-conv-bbb was not adopted")
 	}
 }
 
 func TestConversationListNode_ReaddirMergedLocalAndServer(t *testing.T) {
-	// Server returns some conversations, some overlap with local
+	// Server returns some conversations, some overlap with local.
+	// All should appear with local IDs, server conversations should be adopted.
 	serverConvs := []shelley.Conversation{
 		{ConversationID: "server-conv-111"},
-		{ConversationID: "server-conv-222"}, // This one is tracked locally
+		{ConversationID: "server-conv-222"}, // This one is already tracked locally
 		{ConversationID: "server-conv-333"},
 	}
 	server := mockConversationsServer(t, serverConvs)
@@ -199,6 +233,11 @@ func TestConversationListNode_ReaddirMergedLocalAndServer(t *testing.T) {
 	localTracked, _ := store.Clone()
 	_ = store.MarkCreated(localTracked, "server-conv-222", "") // This tracks server-conv-222
 
+	// Before Readdir: 2 local conversations
+	if len(store.List()) != 2 {
+		t.Fatalf("expected 2 conversations before Readdir, got %d", len(store.List()))
+	}
+
 	node := &ConversationListNode{client: client, state: store}
 	stream, errno := node.Readdir(context.Background())
 	if errno != 0 {
@@ -211,24 +250,63 @@ func TestConversationListNode_ReaddirMergedLocalAndServer(t *testing.T) {
 		names = append(names, entry.Name)
 	}
 
-	// Should have:
-	// - localOnly (local ID)
-	// - localTracked (local ID, tracks server-conv-222)
-	// - server-conv-111 (server only)
-	// - server-conv-333 (server only)
-	// server-conv-222 should NOT appear separately because it's tracked by localTracked
+	// Should have 4 entries:
+	// - localOnly (existing local ID)
+	// - localTracked (existing local ID, tracks server-conv-222)
+	// - new local ID for server-conv-111 (adopted)
+	// - new local ID for server-conv-333 (adopted)
+	// server-conv-222 should NOT create a new entry because it's already tracked
 
-	sort.Strings(names)
-	expected := []string{localOnly, localTracked, "server-conv-111", "server-conv-333"}
-	sort.Strings(expected)
-
-	if len(names) != len(expected) {
-		t.Fatalf("expected %d entries, got %d: %v", len(expected), len(names), names)
+	if len(names) != 4 {
+		t.Fatalf("expected 4 entries, got %d: %v", len(names), names)
 	}
-	for i, name := range names {
-		if name != expected[i] {
-			t.Errorf("entry %d: expected %q, got %q", i, expected[i], name)
+
+	// All entries should be local IDs (8-char hex), not server IDs
+	for _, name := range names {
+		if len(name) != 8 {
+			t.Errorf("expected 8-char local ID, got %q", name)
 		}
+		if strings.HasPrefix(name, "server-conv-") {
+			t.Errorf("server ID should not appear in listing: %q", name)
+		}
+	}
+
+	// Verify original local IDs are still present
+	sort.Strings(names)
+	foundLocalOnly := false
+	foundLocalTracked := false
+	for _, name := range names {
+		if name == localOnly {
+			foundLocalOnly = true
+		}
+		if name == localTracked {
+			foundLocalTracked = true
+		}
+	}
+	if !foundLocalOnly {
+		t.Errorf("localOnly %s not found in listing", localOnly)
+	}
+	if !foundLocalTracked {
+		t.Errorf("localTracked %s not found in listing", localTracked)
+	}
+
+	// After Readdir: should have 4 conversations (2 original + 2 adopted)
+	localIDs := store.List()
+	if len(localIDs) != 4 {
+		t.Fatalf("expected 4 conversations in store after Readdir, got %d", len(localIDs))
+	}
+
+	// Verify all server conversations are now tracked
+	for _, shelleyID := range []string{"server-conv-111", "server-conv-222", "server-conv-333"} {
+		localID := store.GetByShelleyID(shelleyID)
+		if localID == "" {
+			t.Errorf("server conversation %s should be tracked locally", shelleyID)
+		}
+	}
+
+	// Verify server-conv-222 is still tracked by localTracked (not duplicated)
+	if store.GetByShelleyID("server-conv-222") != localTracked {
+		t.Errorf("server-conv-222 should still be tracked by %s", localTracked)
 	}
 }
 
@@ -512,16 +590,38 @@ func TestConversationListingMounted(t *testing.T) {
 		}
 	}
 
-	sort.Strings(names)
-	expected := []string{localID, "mounted-server-conv-1", "mounted-server-conv-2"}
-	sort.Strings(expected)
-
-	if len(names) != len(expected) {
-		t.Fatalf("expected %d entries, got %d: %v", len(expected), len(names), names)
+	// Should have 3 entries: 1 original local + 2 adopted server conversations
+	if len(names) != 3 {
+		t.Fatalf("expected 3 entries, got %d: %v", len(names), names)
 	}
-	for i, name := range names {
-		if name != expected[i] {
-			t.Errorf("entry %d: expected %q, got %q", i, expected[i], name)
+
+	// All entries should be local IDs (8-char hex), not server IDs
+	for _, name := range names {
+		if len(name) != 8 {
+			t.Errorf("expected 8-char local ID, got %q", name)
+		}
+		if strings.HasPrefix(name, "mounted-server-conv-") {
+			t.Errorf("server ID should not appear in listing: %q", name)
+		}
+	}
+
+	// Verify original local ID is present
+	foundLocal := false
+	for _, name := range names {
+		if name == localID {
+			foundLocal = true
+			break
+		}
+	}
+	if !foundLocal {
+		t.Errorf("original local ID %s not found in listing", localID)
+	}
+
+	// Verify server conversations were adopted
+	for _, shelleyID := range []string{"mounted-server-conv-1", "mounted-server-conv-2"} {
+		localID := store.GetByShelleyID(shelleyID)
+		if localID == "" {
+			t.Errorf("server conversation %s should be tracked locally", shelleyID)
 		}
 	}
 }
