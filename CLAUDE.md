@@ -9,32 +9,17 @@ Shelley FUSE is a Go FUSE filesystem that exposes the Shelley API (an AI convers
 ## Build & Test Commands
 
 ```bash
-# Build everything (main binary + tools)
+# Build the FUSE binary
 just build
 
-# Build only the FUSE binary
-go build -o shelley-fuse ./cmd/shelley-fuse
+# Run all tests
+just test
 
-# Build only test tools
-just build-tools
+# Run integration tests (requires /usr/local/bin/shelley and fusermount)
+just test-integration
 
-# Run unit tests
-go test ./...
-
-# Run a single test
-go test -v ./fuse -run TestInProcessFUSE
-
-# Run integration tests (requires /usr/local/bin/shelley binary)
-go test -v ./shelley -run TestIntegration
-
-# Start dev environment for manual testing
-just test-shell
-
-# Quick demo
-just demo
-
-# Stop all test services
-just stop
+# Start for manual testing (Ctrl+C to unmount)
+just dev
 
 # Clean artifacts
 just clean
@@ -88,22 +73,14 @@ The codebase uses `go-fuse/v2`'s dynamic filesystem pattern (not static/OnAdd). 
 - Entry/attr timeouts control kernel caching; short or zero timeouts needed for dynamic content
 - `Readdir` results don't need to match `Lookup` — a node can be discoverable via Lookup even if not listed in Readdir
 
-### Testing Infrastructure
+### Testing
 
-Three layers of test support exist:
+Integration tests (`fuse/integration_test.go`) start a real Shelley server on a random free port, mount a FUSE filesystem in-process, and exercise the full Plan 9 workflow. They skip automatically if `fusermount` or `/usr/local/bin/shelley` is not available.
 
-1. **`testutil/`** - Generic in-process FUSE server testing library. Preferred approach for new tests. Uses `InProcessFUSEConfig` with a `CreateFS` factory function.
-2. **`testhelper/`** - External process FUSE testing (legacy). Spawns the FUSE binary as a subprocess with PID file management.
-3. **`tools/`** - Standalone binaries (`start-test-server`, `start-fuse`) for manual testing. Has its own `go.mod`.
-
-In-process tests skip automatically if `fusermount` is not available.
+Tests clear `FIREWORKS_API_KEY`, `ANTHROPIC_API_KEY`, and `OPENAI_API_KEY` environment variables to prevent accidental use of real API keys. Integration tests use the `predictable` model for deterministic responses.
 
 ### Key Dependencies
 
 - `github.com/hanwen/go-fuse/v2` - FUSE library (nodefs API)
 - Go 1.22.2+
 - `fusermount` binary required at runtime
-
-### API Key Handling
-
-Tests explicitly clear `FIREWORKS_API_KEY`, `ANTHROPIC_API_KEY`, and `OPENAI_API_KEY` environment variables to prevent accidental use of real API keys during testing. Integration tests use the `predictable` model for deterministic responses.

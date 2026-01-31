@@ -94,49 +94,24 @@ echo "Follow up message" > /mnt/shelley/conversation/$ID/new
 
 ## Testing
 
-Run unit tests with:
-
 ```bash
-go test ./...
+# Run all tests
+just test
+
+# Run integration tests (requires /usr/local/bin/shelley and fusermount)
+just test-integration
 ```
 
-Run integration tests with a real Shelley server:
+Integration tests start a real Shelley server (`-predictable-only`) on a random free port, mount a FUSE filesystem, and exercise the full clone → ctl → new → read cycle. They skip automatically if `fusermount` or `/usr/local/bin/shelley` is not available.
+
+## Development
 
 ```bash
-go test -v ./shelley -run TestIntegration
-```
+# Build and mount for manual testing (Ctrl+C to unmount)
+just dev
 
-The integration tests use the real `/usr/local/bin/shelley` binary with the `predictable` model for testing.
-
-### In-Process FUSE Server Testing
-
-The `testutil` package provides in-process FUSE server testing. Tests using this skip automatically if `fusermount` is not available.
-
-## Systemd Service
-
-Create a systemd service file at `/etc/systemd/system/shelley-fuse@.service`:
-
-```ini
-[Unit]
-Description=Shelley FUSE filesystem for %I
-After=network.target
-
-[Service]
-Type=forking
-User=%i
-ExecStart=/usr/local/bin/shelley-fuse /home/%i/shelley http://localhost:9999
-ExecStop=/bin/fusermount -u /home/%i/shelley
-Restart=on-failure
-
-[Install]
-WantedBy=multi-user.target
-```
-
-Then enable and start the service:
-
-```bash
-sudo systemctl enable shelley-fuse@username.service
-sudo systemctl start shelley-fuse@username.service
+# Or with custom mount point and server URL
+just dev mount=/tmp/my-mount url=http://localhost:9999
 ```
 
 ## Limitations
@@ -144,53 +119,3 @@ sudo systemctl start shelley-fuse@username.service
 - Streaming responses are not yet implemented
 - Model listing requires parsing HTML (no dedicated API endpoint)
 - Conversation state is stored in `~/.shelley-fuse/state.json`; losing this file loses local-to-shelley ID mappings
-## Easy Testing with Justfile
-
-For easier testing of the FUSE filesystem, install [just](https://github.com/casey/just) and use the provided Justfile:
-
-```bash
-# Quick demo (starts server and FUSE)
-just demo
-
-# Start test server and FUSE for manual testing
-just test-shell
-
-# Or step by step
-just build-tools        # Build the test tools
-just start-server       # Start test server
-just fuse              # Mount FUSE (auto-detects server)
-```
-
-**Available Justfile commands:**
-- `just build` - Build all binaries
-- `just build-tools` - Build just the test tools
-- `just start-server` - Start test server
-- `just fuse` - Mount FUSE filesystem
-- `just demo` - Quick demo with defaults
-- `just test-shell` - Start environment for testing
-- `just status` - Show environment status
-- `just stop` - Stop all test services
-- `just clean` - Clean up artifacts
-
-Manual testing without just:
-```bash
-# Build the tools
-cd tools
-go build -o bin/start-test-server ./start-test-server
-go build -o bin/start-fuse ./start-fuse
-
-# Start test server and mount FUSE in one step
-./bin/start-fuse -mount /tmp/shelley-test
-
-# Test the filesystem
-ls /tmp/shelley-test/
-cat /tmp/shelley-test/models
-ID=$(cat /tmp/shelley-test/new/clone)
-echo "model=predictable cwd=/tmp" > /tmp/shelley-test/conversation/$ID/ctl
-echo 'Hello, Shelley!' > /tmp/shelley-test/conversation/$ID/new
-cat /tmp/shelley-test/conversation/$ID/all.md
-
-# Cleanup
-./bin/start-fuse -stop -mount /tmp/shelley-test
-./bin/start-test-server -stop -port 11002
-```

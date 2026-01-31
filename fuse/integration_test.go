@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
+	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,7 +16,6 @@ import (
 	"github.com/hanwen/go-fuse/v2/fs"
 	"shelley-fuse/shelley"
 	"shelley-fuse/state"
-	"shelley-fuse/testhelper"
 )
 
 func skipIfNoFusermount(t *testing.T) {
@@ -31,8 +32,62 @@ func skipIfNoShelley(t *testing.T) {
 	}
 }
 
-// mountTestFS mounts a shelley-fuse filesystem for testing, returning the mount point and cleanup function.
-func mountTestFS(t *testing.T, serverURL string) (string, *state.Store) {
+// startShelleyServer starts a predictable-only Shelley server on a random free port.
+// Returns the server URL and a cleanup function.
+func startShelleyServer(t *testing.T) string {
+	t.Helper()
+
+	// Find a free port by binding and releasing
+	l, err := net.Listen("tcp", "localhost:0")
+	if err != nil {
+		t.Fatalf("Failed to find free port: %v", err)
+	}
+	port := l.Addr().(*net.TCPAddr).Port
+	l.Close()
+
+	dbDir := t.TempDir()
+	dbPath := filepath.Join(dbDir, "test.db")
+
+	cmd := exec.Command("/usr/local/bin/shelley",
+		"-db", dbPath,
+		"-predictable-only",
+		"serve",
+		"-port", fmt.Sprintf("%d", port),
+		"-require-header", "X-Exedev-Userid")
+	cmd.Env = append(os.Environ(),
+		"FIREWORKS_API_KEY=",
+		"ANTHROPIC_API_KEY=",
+		"OPENAI_API_KEY=",
+	)
+
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("Failed to start shelley server: %v", err)
+	}
+	t.Cleanup(func() {
+		cmd.Process.Kill()
+		cmd.Wait()
+	})
+
+	// Wait for server to be ready
+	serverURL := fmt.Sprintf("http://localhost:%d", port)
+	deadline := time.Now().Add(10 * time.Second)
+	client := &http.Client{Timeout: time.Second}
+	for time.Now().Before(deadline) {
+		resp, err := client.Get(serverURL)
+		if err == nil {
+			resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				return serverURL
+			}
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Fatalf("Shelley server failed to start on port %d", port)
+	return ""
+}
+
+// mountTestFS mounts a shelley-fuse filesystem for testing.
+func mountTestFS(t *testing.T, serverURL string) string {
 	t.Helper()
 
 	tmpDir := t.TempDir()
@@ -61,32 +116,22 @@ func mountTestFS(t *testing.T, serverURL string) (string, *state.Store) {
 	if err != nil {
 		t.Fatalf("Mount failed: %v", err)
 	}
-
 	t.Cleanup(func() {
 		fssrv.Unmount()
 	})
 
-	return mountPoint, store
+	return mountPoint
 }
 
 // TestPlan9Flow is the main end-to-end test exercising the Plan 9-style API.
+// It starts a real Shelley server, mounts a FUSE filesystem, and exercises
+// the full clone → ctl → new → read cycle across all query paths.
 func TestPlan9Flow(t *testing.T) {
 	skipIfNoFusermount(t)
 	skipIfNoShelley(t)
 
-	// Start a test Shelley server
-	port, err := testhelper.FindFreePort(11010)
-	if err != nil {
-		t.Fatalf("Failed to find free port: %v", err)
-	}
-	server, err := testhelper.StartTestServer(port, "")
-	if err != nil {
-		t.Fatalf("Failed to start test server: %v", err)
-	}
-	t.Cleanup(func() { server.Stop() })
-
-	serverURL := "http://localhost:" + itoa(port)
-	mountPoint, _ := mountTestFS(t, serverURL)
+	serverURL := startShelleyServer(t)
+	mountPoint := mountTestFS(t, serverURL)
 
 	// 1. Verify root directory listing
 	t.Run("RootDirectory", func(t *testing.T) {
@@ -257,7 +302,6 @@ func TestPlan9Flow(t *testing.T) {
 		if len(msgs) != 1 {
 			t.Errorf("Expected 1 message, got %d", len(msgs))
 		}
-		t.Logf("1.json: %s", string(data))
 	})
 
 	// 14. Read specific message by sequence number (Markdown)
@@ -266,11 +310,9 @@ func TestPlan9Flow(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to read 1.md: %v", err)
 		}
-		content := string(data)
-		if !strings.Contains(content, "##") {
+		if !strings.Contains(string(data), "##") {
 			t.Error("Expected markdown header in 1.md")
 		}
-		t.Logf("1.md:\n%s", content)
 	})
 
 	// 15. Read last/N.json
@@ -286,7 +328,6 @@ func TestPlan9Flow(t *testing.T) {
 		if len(msgs) != 2 {
 			t.Errorf("Expected 2 messages from last/2.json, got %d", len(msgs))
 		}
-		t.Logf("last/2.json: %d messages", len(msgs))
 	})
 
 	// 16. Read last/N.md
@@ -295,11 +336,9 @@ func TestPlan9Flow(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to read last/2.md: %v", err)
 		}
-		content := string(data)
-		if !strings.Contains(content, "##") {
+		if !strings.Contains(string(data), "##") {
 			t.Error("Expected markdown headers in last/2.md")
 		}
-		t.Logf("last/2.md:\n%s", content)
 	})
 
 	// 17. Read since/user/1.json (messages since last user message)
@@ -315,7 +354,6 @@ func TestPlan9Flow(t *testing.T) {
 		if len(msgs) == 0 {
 			t.Error("Expected at least one message from since/user/1.json")
 		}
-		t.Logf("since/user/1.json: %d messages", len(msgs))
 	})
 
 	// 18. Read since/user/1.md
@@ -324,14 +362,12 @@ func TestPlan9Flow(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to read since/user/1.md: %v", err)
 		}
-		content := string(data)
-		if !strings.Contains(content, "##") {
+		if !strings.Contains(string(data), "##") {
 			t.Error("Expected markdown headers in since/user/1.md")
 		}
-		t.Logf("since/user/1.md:\n%s", content)
 	})
 
-	// 19. Read from/agent/1.json (most recent shelley message)
+	// 19. Read from/agent/1.json (most recent agent message)
 	t.Run("ReadFromJSON", func(t *testing.T) {
 		data, err := ioutil.ReadFile(filepath.Join(mountPoint, "conversation", convID, "from", "agent", "1.json"))
 		if err != nil {
@@ -344,7 +380,6 @@ func TestPlan9Flow(t *testing.T) {
 		if len(msgs) != 1 {
 			t.Errorf("Expected 1 message, got %d", len(msgs))
 		}
-		t.Logf("from/agent/1.json: %s", string(data))
 	})
 
 	// 20. Read from/agent/1.md
@@ -353,11 +388,9 @@ func TestPlan9Flow(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to read from/agent/1.md: %v", err)
 		}
-		content := string(data)
-		if !strings.Contains(content, "##") {
+		if !strings.Contains(string(data), "##") {
 			t.Error("Expected markdown header in from/agent/1.md")
 		}
-		t.Logf("from/agent/1.md:\n%s", content)
 	})
 
 	// 21. Verify conversation appears in conversation directory listing
@@ -380,7 +413,7 @@ func TestPlan9Flow(t *testing.T) {
 		}
 	})
 
-	// 13. Clone returns different ID each time
+	// 22. Clone returns different ID each time
 	t.Run("CloneUnique", func(t *testing.T) {
 		data1, _ := ioutil.ReadFile(filepath.Join(mountPoint, "new", "clone"))
 		data2, _ := ioutil.ReadFile(filepath.Join(mountPoint, "new", "clone"))
@@ -390,8 +423,4 @@ func TestPlan9Flow(t *testing.T) {
 			t.Errorf("Expected different IDs from clone, got %q both times", id1)
 		}
 	})
-}
-
-func itoa(i int) string {
-	return fmt.Sprintf("%d", i)
 }
