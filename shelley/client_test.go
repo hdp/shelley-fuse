@@ -17,8 +17,9 @@ func TestStartConversation(t *testing.T) {
 		capturedRequest = r
 		capturedBody, _ = io.ReadAll(r.Body)
 		
-		// Return a mock response
-		response := map[string]string{"conversation_id": "test-conversation-id"}
+		// Return a mock response with both conversation_id and slug
+		slug := "test-slug"
+		response := map[string]interface{}{"conversation_id": "test-conversation-id", "slug": slug}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(response)
 	}))
@@ -28,13 +29,16 @@ func TestStartConversation(t *testing.T) {
 	client := NewClient(server.URL)
 	
 	// Test starting a conversation
-	conversationID, err := client.StartConversation("Hello, world!", "test-model", "/test/cwd")
+	result, err := client.StartConversation("Hello, world!", "test-model", "/test/cwd")
 	if err != nil {
 		t.Fatalf("StartConversation failed: %v", err)
 	}
 	
-	if conversationID != "test-conversation-id" {
-		t.Errorf("Expected conversation ID 'test-conversation-id', got '%s'", conversationID)
+	if result.ConversationID != "test-conversation-id" {
+		t.Errorf("Expected conversation ID 'test-conversation-id', got '%s'", result.ConversationID)
+	}
+	if result.Slug != "test-slug" {
+		t.Errorf("Expected slug 'test-slug', got '%s'", result.Slug)
 	}
 	
 	// Verify the request

@@ -52,23 +52,23 @@ func TestIntegrationWithRealServer(t *testing.T) {
 	client := NewClient("http://localhost:10999")
 	
 	// Test starting a conversation
-	conversationID, err := client.StartConversation("Hello, predictable model!", "predictable", tmpDir)
+	result, err := client.StartConversation("Hello, predictable model!", "predictable", tmpDir)
 	if err != nil {
 		t.Fatalf("Failed to start conversation: %v", err)
 	}
 	
-	if conversationID == "" {
+	if result.ConversationID == "" {
 		t.Error("Expected non-empty conversation ID")
 	}
 	
 	// Test sending a message
-	err = client.SendMessage(conversationID, "How are you?", "predictable")
+	err = client.SendMessage(result.ConversationID, "How are you?", "predictable")
 	if err != nil {
 		t.Fatalf("Failed to send message: %v", err)
 	}
 	
 	// Test getting conversation
-	data, err := client.GetConversation(conversationID)
+	data, err := client.GetConversation(result.ConversationID)
 	if err != nil {
 		t.Fatalf("Failed to get conversation: %v", err)
 	}

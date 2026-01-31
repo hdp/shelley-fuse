@@ -62,8 +62,14 @@ type Model struct {
 	Ready bool   `json:"ready"`
 }
 
+// StartConversationResult holds the response from starting a new conversation
+type StartConversationResult struct {
+	ConversationID string
+	Slug           string
+}
+
 // StartConversation starts a new conversation
-func (c *Client) StartConversation(message, model, cwd string) (string, error) {
+func (c *Client) StartConversation(message, model, cwd string) (StartConversationResult, error) {
 	reqBody := ChatRequest{
 		Message: message,
 	}
@@ -78,12 +84,12 @@ func (c *Client) StartConversation(message, model, cwd string) (string, error) {
 	
 	body, err := json.Marshal(reqBody)
 	if err != nil {
-		return "", fmt.Errorf("failed to marshal request: %w", err)
+		return StartConversationResult{}, fmt.Errorf("failed to marshal request: %w", err)
 	}
 	
 	req, err := http.NewRequest("POST", c.baseURL+"/api/conversations/new", bytes.NewBuffer(body))
 	if err != nil {
-		return "", fmt.Errorf("failed to create request: %w", err)
+		return StartConversationResult{}, fmt.Errorf("failed to create request: %w", err)
 	}
 	
 	req.Header.Set("Content-Type", "application/json")
@@ -92,24 +98,29 @@ func (c *Client) StartConversation(message, model, cwd string) (string, error) {
 	
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("failed to send request: %w", err)
+		return StartConversationResult{}, fmt.Errorf("failed to send request: %w", err)
 	}
 	defer resp.Body.Close()
 	
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
 		body, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(body))
+		return StartConversationResult{}, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(body))
 	}
 	
 	var result struct {
-		ConversationID string `json:"conversation_id"`
+		ConversationID string  `json:"conversation_id"`
+		Slug           *string `json:"slug"`
 	}
 	
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return "", fmt.Errorf("failed to decode response: %w", err)
+		return StartConversationResult{}, fmt.Errorf("failed to decode response: %w", err)
 	}
 	
-	return result.ConversationID, nil
+	res := StartConversationResult{ConversationID: result.ConversationID}
+	if result.Slug != nil {
+		res.Slug = *result.Slug
+	}
+	return res, nil
 }
 
 // GetConversation retrieves a conversation

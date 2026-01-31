@@ -15,6 +15,7 @@ import (
 type ConversationState struct {
 	LocalID               string `json:"local_id"`
 	ShelleyConversationID string `json:"shelley_conversation_id,omitempty"`
+	Slug                  string `json:"slug,omitempty"`
 	Model                 string `json:"model,omitempty"`
 	Cwd                   string `json:"cwd,omitempty"`
 	Created               bool   `json:"created"`
@@ -96,8 +97,8 @@ func (s *Store) SetCtl(id, key, value string) error {
 	return s.saveLocked()
 }
 
-// MarkCreated marks a conversation as created with its Shelley backend ID.
-func (s *Store) MarkCreated(id, shelleyConversationID string) error {
+// MarkCreated marks a conversation as created with its Shelley backend ID and slug.
+func (s *Store) MarkCreated(id, shelleyConversationID, slug string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -107,6 +108,7 @@ func (s *Store) MarkCreated(id, shelleyConversationID string) error {
 	}
 	cs.Created = true
 	cs.ShelleyConversationID = shelleyConversationID
+	cs.Slug = slug
 	return s.saveLocked()
 }
 
@@ -139,12 +141,24 @@ func (s *Store) GetByShelleyID(shelleyID string) string {
 // Adopt creates a local conversation entry for an existing Shelley server conversation.
 // Returns the new local ID. If the Shelley ID is already tracked locally, returns the existing local ID.
 func (s *Store) Adopt(shelleyConversationID string) (string, error) {
+	return s.AdoptWithSlug(shelleyConversationID, "")
+}
+
+// AdoptWithSlug creates a local conversation entry for an existing Shelley server conversation,
+// including the slug. Returns the new local ID. If the Shelley ID is already tracked locally,
+// returns the existing local ID and updates the slug if it was previously empty.
+func (s *Store) AdoptWithSlug(shelleyConversationID, slug string) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	// Check if already tracked
 	for _, cs := range s.Conversations {
 		if cs.ShelleyConversationID == shelleyConversationID {
+			// Update slug if it was previously empty and we have a new one
+			if cs.Slug == "" && slug != "" {
+				cs.Slug = slug
+				_ = s.saveLocked() // Best effort save
+			}
 			return cs.LocalID, nil
 		}
 	}
@@ -158,6 +172,7 @@ func (s *Store) Adopt(shelleyConversationID string) (string, error) {
 	s.Conversations[id] = &ConversationState{
 		LocalID:               id,
 		ShelleyConversationID: shelleyConversationID,
+		Slug:                  slug,
 		Created:               true, // Already exists on server
 	}
 

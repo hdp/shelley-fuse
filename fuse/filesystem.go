@@ -222,7 +222,11 @@ func (c *ConversationListNode) Lookup(ctx context.Context, name string, out *fus
 		for _, conv := range serverConvs {
 			if conv.ConversationID == name {
 				// Adopt this server conversation locally
-				localID, err := c.state.Adopt(name)
+				slug := ""
+				if conv.Slug != nil {
+					slug = *conv.Slug
+				}
+				localID, err := c.state.AdoptWithSlug(name, slug)
 				if err != nil {
 					return nil, syscall.EIO
 				}
@@ -307,6 +311,10 @@ func (c *ConversationNode) Lookup(ctx context.Context, name string, out *fuse.En
 		return c.NewInode(ctx, &ConvNewNode{localID: c.localID, client: c.client, state: c.state}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
 	case "status.json":
 		return c.NewInode(ctx, &StatusNode{localID: c.localID, client: c.client, state: c.state}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
+	case "id":
+		return c.NewInode(ctx, &ConvMetaFieldNode{localID: c.localID, state: c.state, field: "id"}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
+	case "slug":
+		return c.NewInode(ctx, &ConvMetaFieldNode{localID: c.localID, state: c.state, field: "slug"}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
 	case "last":
 		return c.NewInode(ctx, &QueryDirNode{localID: c.localID, client: c.client, state: c.state, kind: queryLast}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
 	case "since":
@@ -345,6 +353,8 @@ func (c *ConversationNode) Readdir(ctx context.Context) (fs.DirStream, syscall.E
 		{Name: "ctl", Mode: fuse.S_IFREG},
 		{Name: "new", Mode: fuse.S_IFREG},
 		{Name: "status.json", Mode: fuse.S_IFREG},
+		{Name: "id", Mode: fuse.S_IFREG},
+		{Name: "slug", Mode: fuse.S_IFREG},
 		{Name: "all.json", Mode: fuse.S_IFREG},
 		{Name: "all.md", Mode: fuse.S_IFREG},
 		{Name: "last", Mode: fuse.S_IFDIR},
@@ -467,11 +477,11 @@ func (n *ConvNewNode) Write(ctx context.Context, f fs.FileHandle, data []byte, o
 
 	if !cs.Created {
 		// First write: create the conversation on the Shelley backend
-		shelleyID, err := n.client.StartConversation(message, cs.Model, cs.Cwd)
+		result, err := n.client.StartConversation(message, cs.Model, cs.Cwd)
 		if err != nil {
 			return 0, syscall.EIO
 		}
-		if err := n.state.MarkCreated(n.localID, shelleyID); err != nil {
+		if err := n.state.MarkCreated(n.localID, result.ConversationID, result.Slug); err != nil {
 			return 0, syscall.EIO
 		}
 	} else {
@@ -545,6 +555,52 @@ func (s *StatusNode) Read(ctx context.Context, f fs.FileHandle, dest []byte, off
 }
 
 func (s *StatusNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
+	out.Mode = fuse.S_IFREG | 0444
+	return 0
+}
+
+// --- ConvMetaFieldNode: read-only file for conversation metadata (id or slug) ---
+
+type ConvMetaFieldNode struct {
+	fs.Inode
+	localID string
+	state   *state.Store
+	field   string // "id" or "slug"
+}
+
+var _ = (fs.NodeOpener)((*ConvMetaFieldNode)(nil))
+var _ = (fs.NodeReader)((*ConvMetaFieldNode)(nil))
+var _ = (fs.NodeGetattrer)((*ConvMetaFieldNode)(nil))
+
+func (m *ConvMetaFieldNode) Open(ctx context.Context, flags uint32) (fs.FileHandle, uint32, syscall.Errno) {
+	return nil, fuse.FOPEN_DIRECT_IO, 0
+}
+
+func (m *ConvMetaFieldNode) Read(ctx context.Context, f fs.FileHandle, dest []byte, off int64) (fuse.ReadResult, syscall.Errno) {
+	cs := m.state.Get(m.localID)
+	if cs == nil {
+		return nil, syscall.ENOENT
+	}
+	if !cs.Created {
+		// Conversation not yet created on the backend — no id or slug available
+		return nil, syscall.ENOENT
+	}
+
+	var value string
+	switch m.field {
+	case "id":
+		value = cs.ShelleyConversationID
+	case "slug":
+		value = cs.Slug
+	default:
+		return nil, syscall.ENOENT
+	}
+
+	data := []byte(value + "\n")
+	return fuse.ReadResultData(readAt(data, dest, off)), 0
+}
+
+func (m *ConvMetaFieldNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
 	out.Mode = fuse.S_IFREG | 0444
 	return 0
 }

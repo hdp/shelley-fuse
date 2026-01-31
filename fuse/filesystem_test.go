@@ -197,7 +197,7 @@ func TestConversationListNode_ReaddirMergedLocalAndServer(t *testing.T) {
 	// Create local conversations - one unrelated, one tracking a server conversation
 	localOnly, _ := store.Clone()
 	localTracked, _ := store.Clone()
-	_ = store.MarkCreated(localTracked, "server-conv-222") // This tracks server-conv-222
+	_ = store.MarkCreated(localTracked, "server-conv-222", "") // This tracks server-conv-222
 
 	node := &ConversationListNode{client: client, state: store}
 	stream, errno := node.Readdir(context.Background())
@@ -439,7 +439,7 @@ func TestConversationListNode_LookupLocalTakesPrecedence(t *testing.T) {
 
 	// Track the conversation locally first
 	localID, _ := store.Clone()
-	_ = store.MarkCreated(localID, "server-conv-precedence")
+	_ = store.MarkCreated(localID, "server-conv-precedence", "")
 
 	mountPoint, cleanup := mountTestFSWithServer(t, server, store)
 	defer cleanup()

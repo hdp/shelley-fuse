@@ -303,6 +303,53 @@ func TestPlan9Flow(t *testing.T) {
 		}
 	})
 
+	// 8b. Read the id file (should return Shelley conversation ID)
+	var shelleyConvID string
+	t.Run("ReadConversationID", func(t *testing.T) {
+		data, err := ioutil.ReadFile(filepath.Join(mountPoint, "conversation", convID, "id"))
+		if err != nil {
+			t.Fatalf("Failed to read id: %v", err)
+		}
+		shelleyConvID = strings.TrimSpace(string(data))
+		if shelleyConvID == "" {
+			t.Error("Expected non-empty Shelley conversation ID")
+		}
+		t.Logf("Shelley conversation ID: %s", shelleyConvID)
+	})
+
+	// 8c. Read the slug file (may be empty for predictable model, but should not error)
+	t.Run("ReadConversationSlug", func(t *testing.T) {
+		data, err := ioutil.ReadFile(filepath.Join(mountPoint, "conversation", convID, "slug"))
+		if err != nil {
+			t.Fatalf("Failed to read slug: %v", err)
+		}
+		slug := strings.TrimSpace(string(data))
+		// Slug may be empty for predictable model, that's ok
+		t.Logf("Conversation slug: %q", slug)
+	})
+
+	// 8d. Verify id file returns ENOENT for uncreated conversation
+	t.Run("IDNotAvailableBeforeCreate", func(t *testing.T) {
+		// Clone a new conversation but don't create it
+		data, err := ioutil.ReadFile(filepath.Join(mountPoint, "new", "clone"))
+		if err != nil {
+			t.Fatalf("Failed to clone: %v", err)
+		}
+		uncreatedID := strings.TrimSpace(string(data))
+
+		// Reading id should fail with ENOENT
+		_, err = ioutil.ReadFile(filepath.Join(mountPoint, "conversation", uncreatedID, "id"))
+		if err == nil {
+			t.Error("Expected error reading id for uncreated conversation")
+		}
+
+		// Reading slug should also fail with ENOENT
+		_, err = ioutil.ReadFile(filepath.Join(mountPoint, "conversation", uncreatedID, "slug"))
+		if err == nil {
+			t.Error("Expected error reading slug for uncreated conversation")
+		}
+	})
+
 	// 9. Verify ctl is read-only after creation
 	t.Run("CtlReadOnlyAfterCreate", func(t *testing.T) {
 		ctlPath := filepath.Join(mountPoint, "conversation", convID, "ctl")
@@ -484,6 +531,55 @@ func TestPlan9Flow(t *testing.T) {
 			t.Errorf("Expected different IDs from clone, got %q both times", id1)
 		}
 	})
+
+	// 23. Verify conversation directory contains id and slug files
+	t.Run("ConversationDirContentsIncludeIDAndSlug", func(t *testing.T) {
+		entries, err := ioutil.ReadDir(filepath.Join(mountPoint, "conversation", convID))
+		if err != nil {
+			t.Fatalf("Failed to read conversation directory: %v", err)
+		}
+
+		expectedFiles := map[string]bool{
+			"ctl":         false,
+			"new":         false,
+			"status.json": false,
+			"id":          false,
+			"slug":        false,
+			"all.json":    false,
+			"all.md":      false,
+		}
+		expectedDirs := map[string]bool{
+			"last":  false,
+			"since": false,
+			"from":  false,
+		}
+
+		for _, e := range entries {
+			if _, ok := expectedFiles[e.Name()]; ok {
+				expectedFiles[e.Name()] = true
+				if e.IsDir() {
+					t.Errorf("Expected %q to be a file, not a directory", e.Name())
+				}
+			}
+			if _, ok := expectedDirs[e.Name()]; ok {
+				expectedDirs[e.Name()] = true
+				if !e.IsDir() {
+					t.Errorf("Expected %q to be a directory", e.Name())
+				}
+			}
+		}
+
+		for name, found := range expectedFiles {
+			if !found {
+				t.Errorf("Expected file %q in conversation directory", name)
+			}
+		}
+		for name, found := range expectedDirs {
+			if !found {
+				t.Errorf("Expected directory %q in conversation directory", name)
+			}
+		}
+	})
 }
 
 // TestServerConversationListing tests that conversations from the server
@@ -497,10 +593,11 @@ func TestServerConversationListing(t *testing.T) {
 	// Create a conversation directly via the API (not through FUSE)
 	// This simulates a conversation that exists on the server but isn't tracked locally
 	client := shelley.NewClient(serverURL)
-	serverConvID, err := client.StartConversation("Hello from API", "predictable", t.TempDir())
+	result, err := client.StartConversation("Hello from API", "predictable", t.TempDir())
 	if err != nil {
 		t.Fatalf("Failed to create server conversation: %v", err)
 	}
+	serverConvID := result.ConversationID
 	t.Logf("Created server conversation: %s", serverConvID)
 
 	// Mount the filesystem with a fresh state store

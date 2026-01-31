@@ -100,7 +100,7 @@ func TestSetCtlReadOnlyAfterCreated(t *testing.T) {
 
 	id, _ := s.Clone()
 	_ = s.SetCtl(id, "model", "predictable")
-	_ = s.MarkCreated(id, "shelley-123")
+	_ = s.MarkCreated(id, "shelley-123", "")
 
 	if err := s.SetCtl(id, "model", "other"); err == nil {
 		t.Error("expected error when setting ctl on created conversation")
@@ -125,7 +125,7 @@ func TestMarkCreated(t *testing.T) {
 	}
 
 	id, _ := s.Clone()
-	if err := s.MarkCreated(id, "shelley-abc"); err != nil {
+	if err := s.MarkCreated(id, "shelley-abc", "test-slug"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -135,6 +135,9 @@ func TestMarkCreated(t *testing.T) {
 	}
 	if cs.ShelleyConversationID != "shelley-abc" {
 		t.Errorf("expected ShelleyConversationID=shelley-abc, got %s", cs.ShelleyConversationID)
+	}
+	if cs.Slug != "test-slug" {
+		t.Errorf("expected Slug=test-slug, got %s", cs.Slug)
 	}
 }
 
@@ -177,7 +180,7 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	id, _ := s1.Clone()
 	_ = s1.SetCtl(id, "model", "predictable")
 	_ = s1.SetCtl(id, "cwd", "/home/user")
-	_ = s1.MarkCreated(id, "shelley-xyz")
+	_ = s1.MarkCreated(id, "shelley-xyz", "xyz-slug")
 
 	// Load into fresh store
 	s2, err := NewStore(path)
@@ -200,6 +203,9 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	}
 	if cs.ShelleyConversationID != "shelley-xyz" {
 		t.Errorf("expected ShelleyConversationID=shelley-xyz, got %s", cs.ShelleyConversationID)
+	}
+	if cs.Slug != "xyz-slug" {
+		t.Errorf("expected Slug=xyz-slug, got %s", cs.Slug)
 	}
 }
 
@@ -238,7 +244,7 @@ func TestGetByShelleyID(t *testing.T) {
 
 	// Create a conversation and mark it created
 	id, _ := s.Clone()
-	_ = s.MarkCreated(id, "shelley-abc-123")
+	_ = s.MarkCreated(id, "shelley-abc-123", "")
 
 	// Should find the local ID by Shelley ID
 	if got := s.GetByShelleyID("shelley-abc-123"); got != id {
@@ -258,10 +264,10 @@ func TestGetByShelleyIDMultipleConversations(t *testing.T) {
 	}
 
 	id1, _ := s.Clone()
-	_ = s.MarkCreated(id1, "shelley-111")
+	_ = s.MarkCreated(id1, "shelley-111", "")
 
 	id2, _ := s.Clone()
-	_ = s.MarkCreated(id2, "shelley-222")
+	_ = s.MarkCreated(id2, "shelley-222", "")
 
 	id3, _ := s.Clone()
 	// id3 is not created, so no Shelley ID
@@ -348,7 +354,7 @@ func TestAdoptExistingLocalConversation(t *testing.T) {
 
 	// Create a conversation the normal way (clone + mark created)
 	localID, _ := s.Clone()
-	_ = s.MarkCreated(localID, "server-conv-789")
+	_ = s.MarkCreated(localID, "server-conv-789", "")
 
 	// Adopt the same server conversation
 	adoptedID, err := s.Adopt("server-conv-789")
@@ -396,5 +402,68 @@ func TestAdoptPersistence(t *testing.T) {
 	}
 	if !cs.Created {
 		t.Error("expected Created=true after reload")
+	}
+}
+
+func TestAdoptWithSlug(t *testing.T) {
+	s, err := NewStore(tempStatePath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Adopt a new server conversation with a slug
+	localID, err := s.AdoptWithSlug("server-conv-with-slug", "my-slug")
+	if err != nil {
+		t.Fatalf("AdoptWithSlug failed: %v", err)
+	}
+
+	// Verify the state is correct
+	cs := s.Get(localID)
+	if cs == nil {
+		t.Fatal("expected conversation state, got nil")
+	}
+	if cs.ShelleyConversationID != "server-conv-with-slug" {
+		t.Errorf("expected ShelleyConversationID=server-conv-with-slug, got %s", cs.ShelleyConversationID)
+	}
+	if cs.Slug != "my-slug" {
+		t.Errorf("expected Slug=my-slug, got %s", cs.Slug)
+	}
+	if !cs.Created {
+		t.Error("expected Created=true for adopted conversation")
+	}
+}
+
+func TestAdoptWithSlugUpdatesEmptySlug(t *testing.T) {
+	s, err := NewStore(tempStatePath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// First adopt without slug
+	localID1, err := s.AdoptWithSlug("server-conv-update-slug", "")
+	if err != nil {
+		t.Fatalf("first AdoptWithSlug failed: %v", err)
+	}
+
+	cs := s.Get(localID1)
+	if cs.Slug != "" {
+		t.Errorf("expected empty slug initially, got %s", cs.Slug)
+	}
+
+	// Adopt again with a slug - should update the slug
+	localID2, err := s.AdoptWithSlug("server-conv-update-slug", "updated-slug")
+	if err != nil {
+		t.Fatalf("second AdoptWithSlug failed: %v", err)
+	}
+
+	// Should return same local ID
+	if localID1 != localID2 {
+		t.Errorf("expected same local ID, got %q and %q", localID1, localID2)
+	}
+
+	// Slug should now be updated
+	cs = s.Get(localID1)
+	if cs.Slug != "updated-slug" {
+		t.Errorf("expected Slug=updated-slug, got %s", cs.Slug)
 	}
 }
