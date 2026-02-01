@@ -177,7 +177,7 @@ func (c *Client) SendMessage(conversationID, message, model string) error {
 	}
 	defer resp.Body.Close()
 	
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted && resp.StatusCode != http.StatusCreated {
 		body, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(body))
 	}

@@ -176,6 +176,22 @@ func TestSendMessage(t *testing.T) {
 	}
 }
 
+func TestSendMessageStatusCreated(t *testing.T) {
+	// Test that SendMessage also accepts HTTP 201 Created (like StartConversation)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+		w.Write([]byte(`{"status": "created"}`))
+	}))
+	defer server.Close()
+	
+	client := NewClient(server.URL)
+	
+	err := client.SendMessage("test-conversation-id", "Hello, assistant!", "predictable")
+	if err != nil {
+		t.Fatalf("SendMessage with StatusCreated failed: %v", err)
+	}
+}
+
 func TestListConversations(t *testing.T) {
 	// Create a test server that returns mock conversations
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

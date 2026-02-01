@@ -3,6 +3,7 @@ package fuse
 import (
 	"context"
 	"encoding/json"
+	"log"
 	"strconv"
 	"strings"
 	"sync"
@@ -498,6 +499,8 @@ func (c *ConversationNode) Lookup(ctx context.Context, name string, out *fuse.En
 		return c.NewInode(ctx, &ConvNewNode{localID: c.localID, client: c.client, state: c.state, startTime: c.startTime}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
 	case "status.json":
 		return c.NewInode(ctx, &StatusNode{localID: c.localID, client: c.client, state: c.state, startTime: c.startTime}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
+	case "status":
+		return c.NewInode(ctx, &ConvStatusDirNode{localID: c.localID, client: c.client, state: c.state, startTime: c.startTime}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
 	case "id":
 		return c.NewInode(ctx, &ConvMetaFieldNode{localID: c.localID, state: c.state, field: "id", startTime: c.startTime}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
 	case "slug":
@@ -540,6 +543,7 @@ func (c *ConversationNode) Readdir(ctx context.Context) (fs.DirStream, syscall.E
 		{Name: "ctl", Mode: fuse.S_IFREG},
 		{Name: "new", Mode: fuse.S_IFREG},
 		{Name: "status.json", Mode: fuse.S_IFREG},
+		{Name: "status", Mode: fuse.S_IFDIR},
 		{Name: "id", Mode: fuse.S_IFREG},
 		{Name: "slug", Mode: fuse.S_IFREG},
 		{Name: "all.json", Mode: fuse.S_IFREG},
@@ -680,6 +684,7 @@ func (n *ConvNewNode) Write(ctx context.Context, f fs.FileHandle, data []byte, o
 		// First write: create the conversation on the Shelley backend
 		result, err := n.client.StartConversation(message, cs.Model, cs.Cwd)
 		if err != nil {
+			log.Printf("StartConversation failed for %s: %v", n.localID, err)
 			return 0, syscall.EIO
 		}
 		if err := n.state.MarkCreated(n.localID, result.ConversationID, result.Slug); err != nil {
@@ -688,6 +693,7 @@ func (n *ConvNewNode) Write(ctx context.Context, f fs.FileHandle, data []byte, o
 	} else {
 		// Subsequent writes: send message to existing conversation
 		if err := n.client.SendMessage(cs.ShelleyConversationID, message, ""); err != nil {
+			log.Printf("SendMessage failed for conversation %s: %v", cs.ShelleyConversationID, err)
 			return 0, syscall.EIO
 		}
 	}
@@ -771,6 +777,147 @@ func (s *StatusNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.Att
 		setTimestamps(&out.Attr, cs.CreatedAt)
 	} else {
 		setTimestamps(&out.Attr, s.startTime)
+	}
+	return 0
+}
+
+// --- ConvStatusDirNode: /conversation/{id}/status/ directory ---
+
+type ConvStatusDirNode struct {
+	fs.Inode
+	localID   string
+	client    *shelley.Client
+	state     *state.Store
+	startTime time.Time
+}
+
+var _ = (fs.NodeLookuper)((*ConvStatusDirNode)(nil))
+var _ = (fs.NodeReaddirer)((*ConvStatusDirNode)(nil))
+var _ = (fs.NodeGetattrer)((*ConvStatusDirNode)(nil))
+
+// statusFields defines the files exposed in the status/ directory.
+// Each field name maps to a function that extracts the value from ConversationState.
+var statusFields = []string{
+	"local_id",
+	"shelley_id",
+	"slug",
+	"model",
+	"cwd",
+	"created",
+	"created_at",
+	"message_count",
+}
+
+func (s *ConvStatusDirNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
+	// Check if it's a valid status field
+	for _, field := range statusFields {
+		if field == name {
+			return s.NewInode(ctx, &ConvStatusFieldNode{
+				localID:   s.localID,
+				client:    s.client,
+				state:     s.state,
+				field:     name,
+				startTime: s.startTime,
+			}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
+		}
+	}
+	return nil, syscall.ENOENT
+}
+
+func (s *ConvStatusDirNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
+	entries := make([]fuse.DirEntry, len(statusFields))
+	for i, field := range statusFields {
+		entries[i] = fuse.DirEntry{Name: field, Mode: fuse.S_IFREG}
+	}
+	return fs.NewListDirStream(entries), 0
+}
+
+func (s *ConvStatusDirNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
+	out.Mode = fuse.S_IFDIR | 0755
+	cs := s.state.Get(s.localID)
+	if cs != nil && !cs.CreatedAt.IsZero() {
+		setTimestamps(&out.Attr, cs.CreatedAt)
+	} else {
+		setTimestamps(&out.Attr, s.startTime)
+	}
+	return 0
+}
+
+// --- ConvStatusFieldNode: individual file in status/ directory ---
+
+type ConvStatusFieldNode struct {
+	fs.Inode
+	localID   string
+	client    *shelley.Client
+	state     *state.Store
+	field     string
+	startTime time.Time
+}
+
+var _ = (fs.NodeOpener)((*ConvStatusFieldNode)(nil))
+var _ = (fs.NodeReader)((*ConvStatusFieldNode)(nil))
+var _ = (fs.NodeGetattrer)((*ConvStatusFieldNode)(nil))
+
+func (f *ConvStatusFieldNode) Open(ctx context.Context, flags uint32) (fs.FileHandle, uint32, syscall.Errno) {
+	return nil, fuse.FOPEN_DIRECT_IO, 0
+}
+
+func (f *ConvStatusFieldNode) Read(ctx context.Context, fh fs.FileHandle, dest []byte, off int64) (fuse.ReadResult, syscall.Errno) {
+	cs := f.state.Get(f.localID)
+	if cs == nil {
+		return nil, syscall.ENOENT
+	}
+
+	var value string
+	switch f.field {
+	case "local_id":
+		value = cs.LocalID
+	case "shelley_id":
+		value = cs.ShelleyConversationID
+	case "slug":
+		value = cs.Slug
+	case "model":
+		value = cs.Model
+	case "cwd":
+		value = cs.Cwd
+	case "created":
+		if cs.Created {
+			value = "true"
+		} else {
+			value = "false"
+		}
+	case "created_at":
+		if !cs.CreatedAt.IsZero() {
+			value = cs.CreatedAt.Format(time.RFC3339)
+		}
+	case "message_count":
+		if cs.Created && cs.ShelleyConversationID != "" {
+			convData, err := f.client.GetConversation(cs.ShelleyConversationID)
+			if err == nil {
+				msgs, err := shelley.ParseMessages(convData)
+				if err == nil {
+					value = strconv.Itoa(len(msgs))
+				}
+			}
+		}
+		if value == "" {
+			value = "0"
+		}
+	default:
+		return nil, syscall.ENOENT
+	}
+
+	data := []byte(value + "\n")
+	return fuse.ReadResultData(readAt(data, dest, off)), 0
+}
+
+func (f *ConvStatusFieldNode) Getattr(ctx context.Context, fh fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
+	out.Mode = fuse.S_IFREG | 0444
+	cs := f.state.Get(f.localID)
+	if cs != nil && !cs.CreatedAt.IsZero() {
+		setTimestamps(&out.Attr, cs.CreatedAt)
+	} else {
+		setTimestamps(&out.Attr, f.startTime)
 	}
 	return 0
 }
