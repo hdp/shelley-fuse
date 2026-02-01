@@ -284,8 +284,14 @@ func (c *ConversationListNode) Readdir(ctx context.Context) (fs.DirStream, sysca
 	// Adopt any server conversations that aren't tracked locally, and update
 	// slugs for already-tracked conversations (slugs may be added later).
 	serverConvs, err := c.fetchServerConversations()
-	if err == nil {
+
+	// Build a set of valid server conversation IDs for filtering stale entries
+	validServerIDs := make(map[string]bool)
+	serverFetchSucceeded := err == nil
+
+	if serverFetchSucceeded {
 		for _, conv := range serverConvs {
+			validServerIDs[conv.ConversationID] = true
 			slug := ""
 			if conv.Slug != nil {
 				slug = *conv.Slug
@@ -303,19 +309,36 @@ func (c *ConversationListNode) Readdir(ctx context.Context) (fs.DirStream, sysca
 
 	// Build entries: directories for local IDs, symlinks for server IDs and slugs
 	mappings := c.state.ListMappings()
-	
+
+	// Filter out stale mappings: those with a Shelley ID that no longer exists on server
+	// Only filter if we successfully fetched from server; otherwise show all local entries
+	var filteredMappings []state.ConversationState
+	for _, cs := range mappings {
+		if cs.ShelleyConversationID == "" {
+			// Local-only conversation, always include
+			filteredMappings = append(filteredMappings, cs)
+		} else if !serverFetchSucceeded {
+			// Server fetch failed, include all to avoid data loss
+			filteredMappings = append(filteredMappings, cs)
+		} else if validServerIDs[cs.ShelleyConversationID] {
+			// Has server ID and it still exists on server
+			filteredMappings = append(filteredMappings, cs)
+		}
+		// Otherwise: has a Shelley ID that's not on server anymore - skip (stale)
+	}
+
 	// Track names we've used to avoid duplicates
 	usedNames := make(map[string]bool)
 	var entries []fuse.DirEntry
 
 	// First add all local IDs as directories (they take priority)
-	for _, cs := range mappings {
+	for _, cs := range filteredMappings {
 		entries = append(entries, fuse.DirEntry{Name: cs.LocalID, Mode: fuse.S_IFDIR})
 		usedNames[cs.LocalID] = true
 	}
 
 	// Then add symlinks for server IDs and slugs (if they don't conflict)
-	for _, cs := range mappings {
+	for _, cs := range filteredMappings {
 		// Add symlink for server ID if it exists and doesn't conflict
 		if cs.ShelleyConversationID != "" && !usedNames[cs.ShelleyConversationID] {
 			entries = append(entries, fuse.DirEntry{Name: cs.ShelleyConversationID, Mode: syscall.S_IFLNK})

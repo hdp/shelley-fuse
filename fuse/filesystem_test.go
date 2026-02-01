@@ -376,6 +376,131 @@ func TestConversationListNode_ReaddirServerError(t *testing.T) {
 	}
 }
 
+func TestConversationListNode_ReaddirFiltersStaleConversations(t *testing.T) {
+	// Test that conversations with a Shelley ID that no longer exists on server
+	// are filtered out from Readdir results (prevents broken symlinks)
+
+	// Server returns only conv-active, NOT conv-deleted
+	slug := "active-slug"
+	server := mockConversationsServer(t, []shelley.Conversation{
+		{ConversationID: "conv-active", Slug: &slug},
+	})
+	defer server.Close()
+
+	client := shelley.NewClient(server.URL)
+	store := testStore(t)
+
+	// Create a local-only conversation (no Shelley ID - should always appear)
+	localOnly, _ := store.Clone()
+
+	// Adopt conversations that exist on server
+	activeLocalID, _ := store.Adopt("conv-active")
+
+	// Adopt a conversation that NO LONGER exists on server (stale)
+	staleLocalID, _ := store.Adopt("conv-deleted")
+
+	// Verify all 3 are in the store before Readdir
+	if len(store.List()) != 3 {
+		t.Fatalf("expected 3 conversations in store, got %d", len(store.List()))
+	}
+
+	node := &ConversationListNode{client: client, state: store}
+	stream, errno := node.Readdir(context.Background())
+	if errno != 0 {
+		t.Fatalf("Readdir failed with errno %d", errno)
+	}
+
+	var names []string
+	for stream.HasNext() {
+		entry, _ := stream.Next()
+		names = append(names, entry.Name)
+	}
+
+	// Should see:
+	// - localOnly (local ID as directory)
+	// - activeLocalID (local ID as directory)
+	// - conv-active (symlink to active)
+	// - active-slug (symlink to active)
+	// Should NOT see:
+	// - staleLocalID or conv-deleted (filtered out because conv-deleted not on server)
+
+	// Check that stale entries are NOT present
+	for _, name := range names {
+		if name == staleLocalID {
+			t.Errorf("stale local ID %q should not appear in Readdir", staleLocalID)
+		}
+		if name == "conv-deleted" {
+			t.Error("stale server ID 'conv-deleted' should not appear in Readdir")
+		}
+	}
+
+	// Check that expected entries ARE present
+	namesSet := make(map[string]bool)
+	for _, name := range names {
+		namesSet[name] = true
+	}
+
+	expected := []string{localOnly, activeLocalID, "conv-active", "active-slug"}
+	for _, exp := range expected {
+		if !namesSet[exp] {
+			t.Errorf("expected entry %q not found in Readdir results: %v", exp, names)
+		}
+	}
+
+	// Verify total count: 4 entries (2 dirs + 2 symlinks for active)
+	if len(names) != 4 {
+		t.Errorf("expected 4 entries, got %d: %v", len(names), names)
+	}
+}
+
+func TestConversationListNode_ReaddirShowsStaleWhenServerFails(t *testing.T) {
+	// When server is unreachable, we should show ALL local entries
+	// including ones with Shelley IDs (since we can't verify them)
+	server := mockErrorServer(t)
+	defer server.Close()
+
+	client := shelley.NewClient(server.URL)
+	store := testStore(t)
+
+	// Create a local-only conversation
+	localOnly, _ := store.Clone()
+
+	// Adopt a conversation (simulating one that might be stale)
+	adoptedLocalID, _ := store.Adopt("conv-possibly-stale")
+
+	node := &ConversationListNode{client: client, state: store}
+	stream, errno := node.Readdir(context.Background())
+	if errno != 0 {
+		t.Fatalf("Readdir failed with errno %d", errno)
+	}
+
+	var names []string
+	for stream.HasNext() {
+		entry, _ := stream.Next()
+		names = append(names, entry.Name)
+	}
+
+	// When server fails, should see all entries:
+	// - localOnly (directory)
+	// - adoptedLocalID (directory)
+	// - conv-possibly-stale (symlink)
+	namesSet := make(map[string]bool)
+	for _, name := range names {
+		namesSet[name] = true
+	}
+
+	expected := []string{localOnly, adoptedLocalID, "conv-possibly-stale"}
+	for _, exp := range expected {
+		if !namesSet[exp] {
+			t.Errorf("expected entry %q not found when server fails: %v", exp, names)
+		}
+	}
+
+	if len(names) != 3 {
+		t.Errorf("expected 3 entries when server fails, got %d: %v", len(names), names)
+	}
+}
+
 // Helper to mount a test filesystem and return mount point and cleanup function
 func mountTestFSWithServer(t *testing.T, server *httptest.Server, store *state.Store) (string, func()) {
 	t.Helper()
