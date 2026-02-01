@@ -262,18 +262,15 @@ func TestPlan9Flow(t *testing.T) {
 		}
 	})
 
-	// 6. Read status.json before conversation is created
+	// 6. Read status/created before conversation is created
 	t.Run("StatusBeforeCreate", func(t *testing.T) {
-		data, err := ioutil.ReadFile(filepath.Join(mountPoint, "conversation", convID, "status.json"))
+		data, err := ioutil.ReadFile(filepath.Join(mountPoint, "conversation", convID, "status", "created"))
 		if err != nil {
-			t.Fatalf("Failed to read status.json: %v", err)
+			t.Fatalf("Failed to read status/created: %v", err)
 		}
-		var status map[string]interface{}
-		if err := json.Unmarshal(data, &status); err != nil {
-			t.Fatalf("Failed to parse status.json: %v", err)
-		}
-		if status["created"] != false {
-			t.Errorf("Expected created=false before first message, got %v", status["created"])
+		content := strings.TrimSpace(string(data))
+		if content != "false" {
+			t.Errorf("Expected created=false before first message, got %q", content)
 		}
 	})
 
@@ -286,21 +283,24 @@ func TestPlan9Flow(t *testing.T) {
 		}
 	})
 
-	// 8. Read status.json after conversation is created
+	// 8. Read status/ after conversation is created
 	t.Run("StatusAfterCreate", func(t *testing.T) {
-		data, err := ioutil.ReadFile(filepath.Join(mountPoint, "conversation", convID, "status.json"))
+		// Check created status
+		data, err := ioutil.ReadFile(filepath.Join(mountPoint, "conversation", convID, "status", "created"))
 		if err != nil {
-			t.Fatalf("Failed to read status.json: %v", err)
+			t.Fatalf("Failed to read status/created: %v", err)
 		}
-		var status map[string]interface{}
-		if err := json.Unmarshal(data, &status); err != nil {
-			t.Fatalf("Failed to parse status.json: %v", err)
+		if strings.TrimSpace(string(data)) != "true" {
+			t.Errorf("Expected created=true, got %q", string(data))
 		}
-		if status["created"] != true {
-			t.Errorf("Expected created=true, got %v", status["created"])
+
+		// Check shelley_id exists
+		data, err = ioutil.ReadFile(filepath.Join(mountPoint, "conversation", convID, "status", "shelley_id"))
+		if err != nil {
+			t.Fatalf("Failed to read status/shelley_id: %v", err)
 		}
-		if _, ok := status["shelley_conversation_id"]; !ok {
-			t.Error("Expected shelley_conversation_id in status")
+		if strings.TrimSpace(string(data)) == "" {
+			t.Error("Expected non-empty shelley_id")
 		}
 	})
 
@@ -541,13 +541,12 @@ func TestPlan9Flow(t *testing.T) {
 		}
 
 		expectedFiles := map[string]bool{
-			"ctl":         false,
-			"new":         false,
-			"status.json": false,
-			"id":          false,
-			"slug":        false,
-			"all.json":    false,
-			"all.md":      false,
+			"ctl":      false,
+			"new":      false,
+			"id":       false,
+			"slug":     false,
+			"all.json": false,
+			"all.md":   false,
 		}
 		expectedDirs := map[string]bool{
 			"status": false,
@@ -978,20 +977,22 @@ func TestSymlinkAccess(t *testing.T) {
 	})
 
 	t.Run("ReadStatusThroughSymlink", func(t *testing.T) {
-		data, err := ioutil.ReadFile(filepath.Join(mountPoint, "conversation", serverID, "status.json"))
+		// Read local_id through symlink
+		data, err := ioutil.ReadFile(filepath.Join(mountPoint, "conversation", serverID, "status", "local_id"))
 		if err != nil {
-			t.Fatalf("Failed to read status.json through symlink: %v", err)
+			t.Fatalf("Failed to read status/local_id through symlink: %v", err)
+		}
+		if strings.TrimSpace(string(data)) != localID {
+			t.Errorf("status/local_id = %q, want %s", string(data), localID)
 		}
 
-		var status map[string]interface{}
-		if err := json.Unmarshal(data, &status); err != nil {
-			t.Fatalf("Failed to parse status: %v", err)
+		// Read shelley_id through symlink
+		data, err = ioutil.ReadFile(filepath.Join(mountPoint, "conversation", serverID, "status", "shelley_id"))
+		if err != nil {
+			t.Fatalf("Failed to read status/shelley_id through symlink: %v", err)
 		}
-		if status["local_id"] != localID {
-			t.Errorf("status.local_id = %v, want %s", status["local_id"], localID)
-		}
-		if status["shelley_conversation_id"] != serverID {
-			t.Errorf("status.shelley_conversation_id = %v, want %s", status["shelley_conversation_id"], serverID)
+		if strings.TrimSpace(string(data)) != serverID {
+			t.Errorf("status/shelley_id = %q, want %s", string(data), serverID)
 		}
 	})
 
@@ -1001,7 +1002,7 @@ func TestSymlinkAccess(t *testing.T) {
 			t.Fatalf("Failed to list dir through symlink: %v", err)
 		}
 
-		expected := map[string]bool{"ctl": false, "new": false, "status.json": false, "all.json": false}
+		expected := map[string]bool{"ctl": false, "new": false, "status": false, "all.json": false}
 		for _, e := range entries {
 			if _, ok := expected[e.Name()]; ok {
 				expected[e.Name()] = true

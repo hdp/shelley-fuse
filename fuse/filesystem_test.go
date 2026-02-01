@@ -1582,11 +1582,11 @@ func TestTimestamps_ConversationNodesUseCreatedAt(t *testing.T) {
 		}
 	})
 
-	// Test status.json file timestamp
-	t.Run("StatusFile", func(t *testing.T) {
-		info, err := os.Stat(filepath.Join(tmpDir, "conversation", convID, "status.json"))
+	// Test status directory timestamp
+	t.Run("StatusDir", func(t *testing.T) {
+		info, err := os.Stat(filepath.Join(tmpDir, "conversation", convID, "status"))
 		if err != nil {
-			t.Fatalf("Failed to stat status.json: %v", err)
+			t.Fatalf("Failed to stat status: %v", err)
 		}
 		mtime := info.ModTime()
 		diff := mtime.Sub(convTime)
@@ -1821,7 +1821,7 @@ func TestTimestamps_NeverZero(t *testing.T) {
 		filepath.Join(tmpDir, "conversation", convID),     // conversation dir
 		filepath.Join(tmpDir, "conversation", convID, "ctl"),
 		filepath.Join(tmpDir, "conversation", convID, "new"),
-		filepath.Join(tmpDir, "conversation", convID, "status.json"),
+		filepath.Join(tmpDir, "conversation", convID, "status"),
 		filepath.Join(tmpDir, "conversation", convID, "last"),
 		filepath.Join(tmpDir, "conversation", convID, "since"),
 		filepath.Join(tmpDir, "conversation", convID, "from"),

@@ -54,7 +54,6 @@ The filesystem follows a Plan 9-inspired control file model. There are no host d
     {local-id}/                         → directory per conversation (8-character hex local ID)
       ctl                               → read/write config (model=X cwd=Y); becomes read-only after creation
       new                               → write here to send a message; first write creates conversation on backend
-      status.json                       → read-only JSON status (local ID, shelley ID, message count, etc.)
       status/                            → directory with individual status fields as files
         local_id                         → local conversation ID
         shelley_id                       → Shelley server conversation ID (empty before creation)

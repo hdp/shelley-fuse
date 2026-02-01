@@ -13,7 +13,7 @@ The filesystem follows a Plan 9-inspired control file model. Conversations are m
 - Send first message (creates conversation on backend): `echo "Fix the bug" > /conversation/{ID}/new`
 - Send follow-up messages: `echo "Actually, also fix this" > /conversation/{ID}/new`
 - List all conversations (local and server): `ls /conversation`
-- Read conversation status: `cat /conversation/{ID}/status.json` or individual fields via `cat /conversation/{ID}/status/local_id`
+- Read conversation status: `cat /conversation/{ID}/status/local_id` or other fields in `status/` directory
 - Get full conversation as JSON: `cat /conversation/{ID}/all.json`
 - Get full conversation as Markdown: `cat /conversation/{ID}/all.md`
 - Get specific message by sequence number: `cat /conversation/{ID}/7.json`
@@ -50,9 +50,6 @@ cat /mnt/shelley/conversation/$ID/ctl
 # Send the first message (this creates the conversation on the Shelley backend)
 echo "Hello, Shelley!" > /mnt/shelley/conversation/$ID/new
 
-# Check conversation status (JSON)
-cat /mnt/shelley/conversation/$ID/status.json
-
 # Read individual status fields (no JSON parsing needed)
 cat /mnt/shelley/conversation/$ID/status/local_id
 cat /mnt/shelley/conversation/$ID/status/message_count
@@ -81,7 +78,6 @@ echo "Follow up message" > /mnt/shelley/conversation/$ID/new
     {id}/                               → directory per conversation (local ID or server conversation ID)
       ctl                               → read/write config (model=X cwd=Y); read-only after creation
       new                               → write here to send a message; first write creates conversation
-      status.json                       → read-only JSON status (full conversation metadata)
       status/                            → directory with individual status fields as plain-text files
         local_id                         → local conversation ID
         shelley_id                       → Shelley server conversation ID
@@ -116,7 +112,6 @@ echo "Follow up message" > /mnt/shelley/conversation/$ID/new
 | `echo msg > /conversation/{id}/new` (first) | POST /api/conversations/new | Create conversation and send first message |
 | `echo msg > /conversation/{id}/new` (subsequent) | POST /api/conversation/{id}/chat | Send message to existing conversation |
 | `cat /conversation/{id}/all.json` | GET /api/conversation/{id} | Get full conversation |
-| `cat /conversation/{id}/status.json` | GET /api/conversation/{id} | Get conversation status (JSON) |
 | `cat /conversation/{id}/status/local_id` | N/A (local state) | Get individual status field as plain text |
 | `ls /conversation` | GET /api/conversations | List all conversations (local + server) |
 | `cat /conversation/{id}/id` | (local state) | Get Shelley conversation ID |

@@ -497,8 +497,6 @@ func (c *ConversationNode) Lookup(ctx context.Context, name string, out *fuse.En
 		return c.NewInode(ctx, &CtlNode{localID: c.localID, state: c.state, startTime: c.startTime}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
 	case "new":
 		return c.NewInode(ctx, &ConvNewNode{localID: c.localID, client: c.client, state: c.state, startTime: c.startTime}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
-	case "status.json":
-		return c.NewInode(ctx, &StatusNode{localID: c.localID, client: c.client, state: c.state, startTime: c.startTime}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
 	case "status":
 		return c.NewInode(ctx, &ConvStatusDirNode{localID: c.localID, client: c.client, state: c.state, startTime: c.startTime}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
 	case "id":
@@ -542,7 +540,6 @@ func (c *ConversationNode) Readdir(ctx context.Context) (fs.DirStream, syscall.E
 	return fs.NewListDirStream([]fuse.DirEntry{
 		{Name: "ctl", Mode: fuse.S_IFREG},
 		{Name: "new", Mode: fuse.S_IFREG},
-		{Name: "status.json", Mode: fuse.S_IFREG},
 		{Name: "status", Mode: fuse.S_IFDIR},
 		{Name: "id", Mode: fuse.S_IFREG},
 		{Name: "slug", Mode: fuse.S_IFREG},
@@ -717,69 +714,6 @@ func (n *ConvNewNode) Setattr(ctx context.Context, f fs.FileHandle, in *fuse.Set
 	return n.Getattr(ctx, f, out)
 }
 
-// --- StatusNode: read-only status.json ---
-
-type StatusNode struct {
-	fs.Inode
-	localID   string
-	client    *shelley.Client
-	state     *state.Store
-	startTime time.Time // fallback if conversation has no CreatedAt
-}
-
-var _ = (fs.NodeOpener)((*StatusNode)(nil))
-var _ = (fs.NodeReader)((*StatusNode)(nil))
-var _ = (fs.NodeGetattrer)((*StatusNode)(nil))
-
-func (s *StatusNode) Open(ctx context.Context, flags uint32) (fs.FileHandle, uint32, syscall.Errno) {
-	return nil, fuse.FOPEN_DIRECT_IO, 0
-}
-
-func (s *StatusNode) Read(ctx context.Context, f fs.FileHandle, dest []byte, off int64) (fuse.ReadResult, syscall.Errno) {
-	cs := s.state.Get(s.localID)
-	if cs == nil {
-		return nil, syscall.ENOENT
-	}
-
-	status := map[string]interface{}{
-		"local_id": cs.LocalID,
-		"created":  cs.Created,
-		"model":    cs.Model,
-		"cwd":      cs.Cwd,
-	}
-	if cs.ShelleyConversationID != "" {
-		status["shelley_conversation_id"] = cs.ShelleyConversationID
-	}
-
-	if cs.Created && cs.ShelleyConversationID != "" {
-		convData, err := s.client.GetConversation(cs.ShelleyConversationID)
-		if err == nil {
-			msgs, err := shelley.ParseMessages(convData)
-			if err == nil {
-				status["message_count"] = len(msgs)
-			}
-		}
-	}
-
-	data, err := json.MarshalIndent(status, "", "  ")
-	if err != nil {
-		return nil, syscall.EIO
-	}
-	data = append(data, '\n')
-	return fuse.ReadResultData(readAt(data, dest, off)), 0
-}
-
-func (s *StatusNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
-	out.Mode = fuse.S_IFREG | 0444
-	// Use conversation creation time if available, otherwise fall back to FS start time
-	cs := s.state.Get(s.localID)
-	if cs != nil && !cs.CreatedAt.IsZero() {
-		setTimestamps(&out.Attr, cs.CreatedAt)
-	} else {
-		setTimestamps(&out.Attr, s.startTime)
-	}
-	return 0
-}
 
 // --- ConvStatusDirNode: /conversation/{id}/status/ directory ---
 
