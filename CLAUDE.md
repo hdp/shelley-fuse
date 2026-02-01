@@ -25,6 +25,10 @@ just dev
 just clean
 ```
 
+## Version Control
+
+This repository uses **jj** (Jujutsu) for version control, not raw git. Use `jj` commands for all VCS operations (status, log, commit, etc.). Do not use `git` directly.
+
 ## Architecture
 
 ### Core Packages
@@ -47,20 +51,24 @@ The filesystem follows a Plan 9-inspired control file model. There are no host d
   new/
     clone                               → read to allocate a new local conversation ID
   conversation/                           → lists local IDs + server conversations (merged via GET /api/conversations)
-    {id}/                               → directory per conversation (local ID from clone, or server conversation ID)
+    {local-id}/                         → directory per conversation (8-character hex local ID)
       ctl                               → read/write config (model=X cwd=Y); becomes read-only after creation
       new                               → write here to send a message; first write creates conversation on backend
       status.json                       → read-only JSON status (local ID, shelley ID, message count, etc.)
+      id                                → read-only: Shelley server conversation ID (ENOENT before creation)
+      slug                              → read-only: conversation slug (ENOENT before creation or if no slug)
       all.json                          → full conversation as JSON
       all.md                            → full conversation as Markdown
-      {N}.json                          → specific message by sequence number
-      {N}.md                            → specific message as Markdown
+      {N}.json                          → specific message by sequence number (virtual, not in listings)
+      {N}.md                            → specific message as Markdown (virtual, not in listings)
       last/{N}.json                     → last N messages as JSON
       last/{N}.md                       → last N messages as Markdown
       since/{person}/{N}.json           → messages since Nth-to-last message from {person}
       since/{person}/{N}.md             → same, as Markdown
       from/{person}/{N}.json            → Nth message from {person} (counting from end)
       from/{person}/{N}.md              → same, as Markdown
+    {server-id}                         → symlink to local-id: allows access via Shelley server ID
+    {slug}                              → symlink to local-id: allows access via conversation slug
 ```
 
 Key design: conversation creation is split into clone → configure via ctl → first write to new. The `state` package maps local IDs to Shelley backend conversation IDs, persisted to `~/.shelley-fuse/state.json`.
