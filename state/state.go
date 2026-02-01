@@ -9,16 +9,18 @@ import (
 	"path/filepath"
 	"sort"
 	"sync"
+	"time"
 )
 
 // ConversationState tracks the local and remote state of a conversation.
 type ConversationState struct {
-	LocalID               string `json:"local_id"`
-	ShelleyConversationID string `json:"shelley_conversation_id,omitempty"`
-	Slug                  string `json:"slug,omitempty"`
-	Model                 string `json:"model,omitempty"`
-	Cwd                   string `json:"cwd,omitempty"`
-	Created               bool   `json:"created"`
+	LocalID               string    `json:"local_id"`
+	ShelleyConversationID string    `json:"shelley_conversation_id,omitempty"`
+	Slug                  string    `json:"slug,omitempty"`
+	Model                 string    `json:"model,omitempty"`
+	Cwd                   string    `json:"cwd,omitempty"`
+	Created               bool      `json:"created"`
+	CreatedAt             time.Time `json:"created_at,omitempty"`
 }
 
 // Store manages local conversation state, persisted to a JSON file.
@@ -56,7 +58,10 @@ func (s *Store) Clone() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	s.Conversations[id] = &ConversationState{LocalID: id}
+	s.Conversations[id] = &ConversationState{
+		LocalID:   id,
+		CreatedAt: time.Now(),
+	}
 	if err := s.saveLocked(); err != nil {
 		delete(s.Conversations, id)
 		return "", err
@@ -199,6 +204,7 @@ func (s *Store) AdoptWithSlug(shelleyConversationID, slug string) (string, error
 		ShelleyConversationID: shelleyConversationID,
 		Slug:                  slug,
 		Created:               true, // Already exists on server
+		CreatedAt:             time.Now(),
 	}
 
 	if err := s.saveLocked(); err != nil {

@@ -1334,3 +1334,752 @@ func TestConversationListNode_ReaddirWithSlugs(t *testing.T) {
 		}
 	}
 }
+
+// --- Tests for timestamp functionality ---
+
+func TestTimestamps_StaticNodesUseStartTime(t *testing.T) {
+	// Test that static nodes (models, new, root) use FS start time
+	server := mockModelsServer(t, []shelley.Model{{ID: "test-model", Ready: true}})
+	defer server.Close()
+
+	client := shelley.NewClient(server.URL)
+	store := testStore(t)
+	shelleyFS := NewFS(client, store)
+
+	// Get the start time from the FS
+	startTime := shelleyFS.StartTime()
+
+	// Create mount
+	tmpDir, err := ioutil.TempDir("", "shelley-fuse-timestamp-test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	opts := &fs.Options{}
+	entryTimeout := time.Duration(0)
+	attrTimeout := time.Duration(0)
+	negativeTimeout := time.Duration(0)
+	opts.EntryTimeout = &entryTimeout
+	opts.AttrTimeout = &attrTimeout
+	opts.NegativeTimeout = &negativeTimeout
+
+	fssrv, err := fs.Mount(tmpDir, shelleyFS, opts)
+	if err != nil {
+		t.Fatalf("Mount failed: %v", err)
+	}
+	defer fssrv.Unmount()
+
+	// Test root directory timestamp
+	t.Run("RootDirectory", func(t *testing.T) {
+		info, err := os.Stat(tmpDir)
+		if err != nil {
+			t.Fatalf("Failed to stat root: %v", err)
+		}
+		mtime := info.ModTime()
+		// Should be within 1 second of startTime
+		diff := mtime.Sub(startTime)
+		if diff < -time.Second || diff > time.Second {
+			t.Errorf("Root mtime %v differs from startTime %v by %v", mtime, startTime, diff)
+		}
+		// Should not be zero (1970)
+		if mtime.Unix() == 0 {
+			t.Error("Root mtime is zero (1970)")
+		}
+	})
+
+	// Test models directory timestamp
+	t.Run("ModelsDirectory", func(t *testing.T) {
+		info, err := os.Stat(filepath.Join(tmpDir, "models"))
+		if err != nil {
+			t.Fatalf("Failed to stat models: %v", err)
+		}
+		mtime := info.ModTime()
+		diff := mtime.Sub(startTime)
+		if diff < -time.Second || diff > time.Second {
+			t.Errorf("Models mtime %v differs from startTime %v by %v", mtime, startTime, diff)
+		}
+		if mtime.Unix() == 0 {
+			t.Error("Models mtime is zero (1970)")
+		}
+	})
+
+	// Test new directory timestamp
+	t.Run("NewDirectory", func(t *testing.T) {
+		info, err := os.Stat(filepath.Join(tmpDir, "new"))
+		if err != nil {
+			t.Fatalf("Failed to stat new: %v", err)
+		}
+		mtime := info.ModTime()
+		diff := mtime.Sub(startTime)
+		if diff < -time.Second || diff > time.Second {
+			t.Errorf("New mtime %v differs from startTime %v by %v", mtime, startTime, diff)
+		}
+		if mtime.Unix() == 0 {
+			t.Error("New mtime is zero (1970)")
+		}
+	})
+
+	// Test model subdirectory timestamp
+	t.Run("ModelSubdirectory", func(t *testing.T) {
+		info, err := os.Stat(filepath.Join(tmpDir, "models", "test-model"))
+		if err != nil {
+			t.Fatalf("Failed to stat model: %v", err)
+		}
+		mtime := info.ModTime()
+		diff := mtime.Sub(startTime)
+		if diff < -time.Second || diff > time.Second {
+			t.Errorf("Model mtime %v differs from startTime %v by %v", mtime, startTime, diff)
+		}
+		if mtime.Unix() == 0 {
+			t.Error("Model mtime is zero (1970)")
+		}
+	})
+
+	// Test model file timestamp
+	t.Run("ModelFile", func(t *testing.T) {
+		info, err := os.Stat(filepath.Join(tmpDir, "models", "test-model", "id"))
+		if err != nil {
+			t.Fatalf("Failed to stat model/id: %v", err)
+		}
+		mtime := info.ModTime()
+		diff := mtime.Sub(startTime)
+		if diff < -time.Second || diff > time.Second {
+			t.Errorf("Model/id mtime %v differs from startTime %v by %v", mtime, startTime, diff)
+		}
+		if mtime.Unix() == 0 {
+			t.Error("Model/id mtime is zero (1970)")
+		}
+	})
+
+	// Test clone file timestamp
+	t.Run("CloneFile", func(t *testing.T) {
+		info, err := os.Stat(filepath.Join(tmpDir, "new", "clone"))
+		if err != nil {
+			t.Fatalf("Failed to stat clone: %v", err)
+		}
+		mtime := info.ModTime()
+		diff := mtime.Sub(startTime)
+		if diff < -time.Second || diff > time.Second {
+			t.Errorf("Clone mtime %v differs from startTime %v by %v", mtime, startTime, diff)
+		}
+		if mtime.Unix() == 0 {
+			t.Error("Clone mtime is zero (1970)")
+		}
+	})
+
+	// Test conversation list directory timestamp
+	t.Run("ConversationListDirectory", func(t *testing.T) {
+		info, err := os.Stat(filepath.Join(tmpDir, "conversation"))
+		if err != nil {
+			t.Fatalf("Failed to stat conversation: %v", err)
+		}
+		mtime := info.ModTime()
+		diff := mtime.Sub(startTime)
+		if diff < -time.Second || diff > time.Second {
+			t.Errorf("Conversation mtime %v differs from startTime %v by %v", mtime, startTime, diff)
+		}
+		if mtime.Unix() == 0 {
+			t.Error("Conversation mtime is zero (1970)")
+		}
+	})
+}
+
+func TestTimestamps_ConversationNodesUseCreatedAt(t *testing.T) {
+	// Test that conversation nodes use conversation creation time
+	server := mockConversationsServer(t, []shelley.Conversation{})
+	defer server.Close()
+
+	client := shelley.NewClient(server.URL)
+	store := testStore(t)
+	shelleyFS := NewFS(client, store)
+
+	// Wait a bit so we can distinguish start time from conversation time
+	time.Sleep(10 * time.Millisecond)
+
+	// Clone a conversation - this sets CreatedAt
+	convID, err := store.Clone()
+	if err != nil {
+		t.Fatalf("Failed to clone: %v", err)
+	}
+
+	// Get the conversation creation time
+	cs := store.Get(convID)
+	if cs == nil {
+		t.Fatal("Conversation not found in store")
+	}
+	convTime := cs.CreatedAt
+	if convTime.IsZero() {
+		t.Fatal("Conversation CreatedAt is zero")
+	}
+
+	// Create mount
+	tmpDir, err := ioutil.TempDir("", "shelley-fuse-conv-timestamp-test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	opts := &fs.Options{}
+	entryTimeout := time.Duration(0)
+	attrTimeout := time.Duration(0)
+	negativeTimeout := time.Duration(0)
+	opts.EntryTimeout = &entryTimeout
+	opts.AttrTimeout = &attrTimeout
+	opts.NegativeTimeout = &negativeTimeout
+
+	fssrv, err := fs.Mount(tmpDir, shelleyFS, opts)
+	if err != nil {
+		t.Fatalf("Mount failed: %v", err)
+	}
+	defer fssrv.Unmount()
+
+	// Test conversation directory timestamp
+	t.Run("ConversationDirectory", func(t *testing.T) {
+		info, err := os.Stat(filepath.Join(tmpDir, "conversation", convID))
+		if err != nil {
+			t.Fatalf("Failed to stat conversation dir: %v", err)
+		}
+		mtime := info.ModTime()
+		diff := mtime.Sub(convTime)
+		if diff < -time.Second || diff > time.Second {
+			t.Errorf("Conversation dir mtime %v differs from convTime %v by %v", mtime, convTime, diff)
+		}
+		if mtime.Unix() == 0 {
+			t.Error("Conversation dir mtime is zero (1970)")
+		}
+	})
+
+	// Test ctl file timestamp
+	t.Run("CtlFile", func(t *testing.T) {
+		info, err := os.Stat(filepath.Join(tmpDir, "conversation", convID, "ctl"))
+		if err != nil {
+			t.Fatalf("Failed to stat ctl: %v", err)
+		}
+		mtime := info.ModTime()
+		diff := mtime.Sub(convTime)
+		if diff < -time.Second || diff > time.Second {
+			t.Errorf("Ctl mtime %v differs from convTime %v by %v", mtime, convTime, diff)
+		}
+		if mtime.Unix() == 0 {
+			t.Error("Ctl mtime is zero (1970)")
+		}
+	})
+
+	// Test new file timestamp
+	t.Run("NewFile", func(t *testing.T) {
+		info, err := os.Stat(filepath.Join(tmpDir, "conversation", convID, "new"))
+		if err != nil {
+			t.Fatalf("Failed to stat new: %v", err)
+		}
+		mtime := info.ModTime()
+		diff := mtime.Sub(convTime)
+		if diff < -time.Second || diff > time.Second {
+			t.Errorf("New mtime %v differs from convTime %v by %v", mtime, convTime, diff)
+		}
+		if mtime.Unix() == 0 {
+			t.Error("New mtime is zero (1970)")
+		}
+	})
+
+	// Test status.json file timestamp
+	t.Run("StatusFile", func(t *testing.T) {
+		info, err := os.Stat(filepath.Join(tmpDir, "conversation", convID, "status.json"))
+		if err != nil {
+			t.Fatalf("Failed to stat status.json: %v", err)
+		}
+		mtime := info.ModTime()
+		diff := mtime.Sub(convTime)
+		if diff < -time.Second || diff > time.Second {
+			t.Errorf("Status mtime %v differs from convTime %v by %v", mtime, convTime, diff)
+		}
+		if mtime.Unix() == 0 {
+			t.Error("Status mtime is zero (1970)")
+		}
+	})
+
+	// Test last directory timestamp
+	t.Run("LastDirectory", func(t *testing.T) {
+		info, err := os.Stat(filepath.Join(tmpDir, "conversation", convID, "last"))
+		if err != nil {
+			t.Fatalf("Failed to stat last: %v", err)
+		}
+		mtime := info.ModTime()
+		diff := mtime.Sub(convTime)
+		if diff < -time.Second || diff > time.Second {
+			t.Errorf("Last mtime %v differs from convTime %v by %v", mtime, convTime, diff)
+		}
+		if mtime.Unix() == 0 {
+			t.Error("Last mtime is zero (1970)")
+		}
+	})
+
+	// Test since directory timestamp
+	t.Run("SinceDirectory", func(t *testing.T) {
+		info, err := os.Stat(filepath.Join(tmpDir, "conversation", convID, "since"))
+		if err != nil {
+			t.Fatalf("Failed to stat since: %v", err)
+		}
+		mtime := info.ModTime()
+		diff := mtime.Sub(convTime)
+		if diff < -time.Second || diff > time.Second {
+			t.Errorf("Since mtime %v differs from convTime %v by %v", mtime, convTime, diff)
+		}
+		if mtime.Unix() == 0 {
+			t.Error("Since mtime is zero (1970)")
+		}
+	})
+
+	// Test from directory timestamp
+	t.Run("FromDirectory", func(t *testing.T) {
+		info, err := os.Stat(filepath.Join(tmpDir, "conversation", convID, "from"))
+		if err != nil {
+			t.Fatalf("Failed to stat from: %v", err)
+		}
+		mtime := info.ModTime()
+		diff := mtime.Sub(convTime)
+		if diff < -time.Second || diff > time.Second {
+			t.Errorf("From mtime %v differs from convTime %v by %v", mtime, convTime, diff)
+		}
+		if mtime.Unix() == 0 {
+			t.Error("From mtime is zero (1970)")
+		}
+	})
+}
+
+func TestTimestamps_DoNotConstantlyUpdate(t *testing.T) {
+	// Test that timestamps don't constantly update to "now"
+	server := mockModelsServer(t, []shelley.Model{{ID: "test-model", Ready: true}})
+	defer server.Close()
+
+	client := shelley.NewClient(server.URL)
+	store := testStore(t)
+	shelleyFS := NewFS(client, store)
+
+	// Create mount
+	tmpDir, err := ioutil.TempDir("", "shelley-fuse-stable-timestamp-test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	opts := &fs.Options{}
+	entryTimeout := time.Duration(0)
+	attrTimeout := time.Duration(0)
+	negativeTimeout := time.Duration(0)
+	opts.EntryTimeout = &entryTimeout
+	opts.AttrTimeout = &attrTimeout
+	opts.NegativeTimeout = &negativeTimeout
+
+	fssrv, err := fs.Mount(tmpDir, shelleyFS, opts)
+	if err != nil {
+		t.Fatalf("Mount failed: %v", err)
+	}
+	defer fssrv.Unmount()
+
+	// Stat the models directory twice with a delay
+	info1, err := os.Stat(filepath.Join(tmpDir, "models"))
+	if err != nil {
+		t.Fatalf("Failed to stat models (1): %v", err)
+	}
+	mtime1 := info1.ModTime()
+
+	// Wait a bit
+	time.Sleep(50 * time.Millisecond)
+
+	info2, err := os.Stat(filepath.Join(tmpDir, "models"))
+	if err != nil {
+		t.Fatalf("Failed to stat models (2): %v", err)
+	}
+	mtime2 := info2.ModTime()
+
+	// Timestamps should be identical (not updating to "now")
+	if !mtime1.Equal(mtime2) {
+		t.Errorf("Models timestamp changed between stats: %v -> %v", mtime1, mtime2)
+	}
+}
+
+func TestTimestamps_ConversationTimeDiffersFromStartTime(t *testing.T) {
+	// Test that conversation time is different from FS start time
+	server := mockConversationsServer(t, []shelley.Conversation{})
+	defer server.Close()
+
+	client := shelley.NewClient(server.URL)
+	store := testStore(t)
+	shelleyFS := NewFS(client, store)
+
+	startTime := shelleyFS.StartTime()
+
+	// Wait a bit so conversation time is clearly different
+	time.Sleep(50 * time.Millisecond)
+
+	// Clone a conversation
+	convID, err := store.Clone()
+	if err != nil {
+		t.Fatalf("Failed to clone: %v", err)
+	}
+
+	// Create mount
+	tmpDir, err := ioutil.TempDir("", "shelley-fuse-time-diff-test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	opts := &fs.Options{}
+	entryTimeout := time.Duration(0)
+	attrTimeout := time.Duration(0)
+	negativeTimeout := time.Duration(0)
+	opts.EntryTimeout = &entryTimeout
+	opts.AttrTimeout = &attrTimeout
+	opts.NegativeTimeout = &negativeTimeout
+
+	fssrv, err := fs.Mount(tmpDir, shelleyFS, opts)
+	if err != nil {
+		t.Fatalf("Mount failed: %v", err)
+	}
+	defer fssrv.Unmount()
+
+	// Get models mtime (should be startTime)
+	modelsInfo, err := os.Stat(filepath.Join(tmpDir, "models"))
+	if err != nil {
+		t.Fatalf("Failed to stat models: %v", err)
+	}
+	modelsMtime := modelsInfo.ModTime()
+
+	// Get conversation mtime (should be convTime, later than startTime)
+	convInfo, err := os.Stat(filepath.Join(tmpDir, "conversation", convID))
+	if err != nil {
+		t.Fatalf("Failed to stat conversation: %v", err)
+	}
+	convMtime := convInfo.ModTime()
+
+	// Models should use startTime
+	modelsDiff := modelsMtime.Sub(startTime)
+	if modelsDiff < -time.Second || modelsDiff > time.Second {
+		t.Errorf("Models mtime %v should be close to startTime %v", modelsMtime, startTime)
+	}
+
+	// Conversation should be later than startTime
+	if !convMtime.After(startTime) {
+		t.Errorf("Conversation mtime %v should be after startTime %v", convMtime, startTime)
+	}
+
+	// Conversation should be different from models
+	if modelsMtime.Equal(convMtime) {
+		t.Error("Conversation mtime should differ from models mtime")
+	}
+
+	t.Logf("startTime: %v, modelsMtime: %v, convMtime: %v", startTime, modelsMtime, convMtime)
+}
+
+func TestTimestamps_NeverZero(t *testing.T) {
+	// Test that no timestamps are ever zero (1970)
+	server := mockModelsServer(t, []shelley.Model{{ID: "test-model", Ready: true}})
+	defer server.Close()
+
+	client := shelley.NewClient(server.URL)
+	store := testStore(t)
+	shelleyFS := NewFS(client, store)
+
+	// Clone a conversation
+	convID, err := store.Clone()
+	if err != nil {
+		t.Fatalf("Failed to clone: %v", err)
+	}
+
+	// Create mount
+	tmpDir, err := ioutil.TempDir("", "shelley-fuse-nonzero-timestamp-test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	opts := &fs.Options{}
+	entryTimeout := time.Duration(0)
+	attrTimeout := time.Duration(0)
+	negativeTimeout := time.Duration(0)
+	opts.EntryTimeout = &entryTimeout
+	opts.AttrTimeout = &attrTimeout
+	opts.NegativeTimeout = &negativeTimeout
+
+	fssrv, err := fs.Mount(tmpDir, shelleyFS, opts)
+	if err != nil {
+		t.Fatalf("Mount failed: %v", err)
+	}
+	defer fssrv.Unmount()
+
+	// Check various paths - none should have zero timestamp
+	pathsToCheck := []string{
+		tmpDir,                                            // root
+		filepath.Join(tmpDir, "models"),                   // models dir
+		filepath.Join(tmpDir, "models", "test-model"),     // model dir
+		filepath.Join(tmpDir, "models", "test-model", "id"), // model file
+		filepath.Join(tmpDir, "new"),                      // new dir
+		filepath.Join(tmpDir, "new", "clone"),             // clone file
+		filepath.Join(tmpDir, "conversation"),             // conversation list
+		filepath.Join(tmpDir, "conversation", convID),     // conversation dir
+		filepath.Join(tmpDir, "conversation", convID, "ctl"),
+		filepath.Join(tmpDir, "conversation", convID, "new"),
+		filepath.Join(tmpDir, "conversation", convID, "status.json"),
+		filepath.Join(tmpDir, "conversation", convID, "last"),
+		filepath.Join(tmpDir, "conversation", convID, "since"),
+		filepath.Join(tmpDir, "conversation", convID, "from"),
+	}
+
+	for _, path := range pathsToCheck {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Errorf("Failed to stat %s: %v", path, err)
+			continue
+		}
+		mtime := info.ModTime()
+		if mtime.Unix() == 0 {
+			t.Errorf("Path %s has zero mtime (1970)", path)
+		}
+		// Also check it's a reasonable recent time (within last hour)
+		if time.Since(mtime) > time.Hour {
+			t.Errorf("Path %s has mtime %v which is more than 1 hour ago", path, mtime)
+		}
+	}
+}
+
+func TestTimestamps_SymlinksUseConversationTime(t *testing.T) {
+	// Test that symlinks for server IDs use conversation creation time
+	serverConvs := []shelley.Conversation{
+		{ConversationID: "server-conv-123"},
+	}
+	server := mockConversationsServer(t, serverConvs)
+	defer server.Close()
+
+	client := shelley.NewClient(server.URL)
+	store := testStore(t)
+	shelleyFS := NewFS(client, store)
+
+	// Wait a bit
+	time.Sleep(50 * time.Millisecond)
+
+	// Create mount
+	tmpDir, err := ioutil.TempDir("", "shelley-fuse-symlink-timestamp-test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	opts := &fs.Options{}
+	entryTimeout := time.Duration(0)
+	attrTimeout := time.Duration(0)
+	negativeTimeout := time.Duration(0)
+	opts.EntryTimeout = &entryTimeout
+	opts.AttrTimeout = &attrTimeout
+	opts.NegativeTimeout = &negativeTimeout
+
+	fssrv, err := fs.Mount(tmpDir, shelleyFS, opts)
+	if err != nil {
+		t.Fatalf("Mount failed: %v", err)
+	}
+	defer fssrv.Unmount()
+
+	// List conversations to trigger adoption
+	_, err = ioutil.ReadDir(filepath.Join(tmpDir, "conversation"))
+	if err != nil {
+		t.Fatalf("Failed to read conversation dir: %v", err)
+	}
+
+	// Get the symlink info (use Lstat to not follow)
+	symlinkInfo, err := os.Lstat(filepath.Join(tmpDir, "conversation", "server-conv-123"))
+	if err != nil {
+		t.Fatalf("Failed to lstat symlink: %v", err)
+	}
+
+	mtime := symlinkInfo.ModTime()
+
+	// Should not be zero
+	if mtime.Unix() == 0 {
+		t.Error("Symlink mtime is zero (1970)")
+	}
+
+	// Should be a reasonable recent time
+	if time.Since(mtime) > time.Hour {
+		t.Errorf("Symlink mtime %v is more than 1 hour ago", mtime)
+	}
+}
+
+func TestTimestamps_MultipleConversationsHaveDifferentTimes(t *testing.T) {
+	// Test that different conversations have different creation times
+	server := mockConversationsServer(t, []shelley.Conversation{})
+	defer server.Close()
+
+	client := shelley.NewClient(server.URL)
+	store := testStore(t)
+	shelleyFS := NewFS(client, store)
+
+	// Clone first conversation
+	convID1, err := store.Clone()
+	if err != nil {
+		t.Fatalf("Failed to clone first: %v", err)
+	}
+
+	// Wait a bit
+	time.Sleep(50 * time.Millisecond)
+
+	// Clone second conversation
+	convID2, err := store.Clone()
+	if err != nil {
+		t.Fatalf("Failed to clone second: %v", err)
+	}
+
+	// Create mount
+	tmpDir, err := ioutil.TempDir("", "shelley-fuse-multi-conv-timestamp-test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	opts := &fs.Options{}
+	entryTimeout := time.Duration(0)
+	attrTimeout := time.Duration(0)
+	negativeTimeout := time.Duration(0)
+	opts.EntryTimeout = &entryTimeout
+	opts.AttrTimeout = &attrTimeout
+	opts.NegativeTimeout = &negativeTimeout
+
+	fssrv, err := fs.Mount(tmpDir, shelleyFS, opts)
+	if err != nil {
+		t.Fatalf("Mount failed: %v", err)
+	}
+	defer fssrv.Unmount()
+
+	// Get timestamps for both conversations
+	info1, err := os.Stat(filepath.Join(tmpDir, "conversation", convID1))
+	if err != nil {
+		t.Fatalf("Failed to stat conv1: %v", err)
+	}
+	mtime1 := info1.ModTime()
+
+	info2, err := os.Stat(filepath.Join(tmpDir, "conversation", convID2))
+	if err != nil {
+		t.Fatalf("Failed to stat conv2: %v", err)
+	}
+	mtime2 := info2.ModTime()
+
+	// Second conversation should be later
+	if !mtime2.After(mtime1) {
+		t.Errorf("Second conversation mtime %v should be after first %v", mtime2, mtime1)
+	}
+
+	t.Logf("conv1 mtime: %v, conv2 mtime: %v, diff: %v", mtime1, mtime2, mtime2.Sub(mtime1))
+}
+
+func TestTimestamps_NestedQueryDirsUseConversationTime(t *testing.T) {
+	// Test that nested query directories (since/user/, from/user/) use conversation time
+	server := mockConversationsServer(t, []shelley.Conversation{})
+	defer server.Close()
+
+	client := shelley.NewClient(server.URL)
+	store := testStore(t)
+	shelleyFS := NewFS(client, store)
+
+	// Wait a bit so we can distinguish times
+	time.Sleep(50 * time.Millisecond)
+
+	// Clone a conversation
+	convID, err := store.Clone()
+	if err != nil {
+		t.Fatalf("Failed to clone: %v", err)
+	}
+
+	cs := store.Get(convID)
+	convTime := cs.CreatedAt
+
+	// Create mount
+	tmpDir, err := ioutil.TempDir("", "shelley-fuse-nested-query-timestamp-test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	opts := &fs.Options{}
+	entryTimeout := time.Duration(0)
+	attrTimeout := time.Duration(0)
+	negativeTimeout := time.Duration(0)
+	opts.EntryTimeout = &entryTimeout
+	opts.AttrTimeout = &attrTimeout
+	opts.NegativeTimeout = &negativeTimeout
+
+	fssrv, err := fs.Mount(tmpDir, shelleyFS, opts)
+	if err != nil {
+		t.Fatalf("Mount failed: %v", err)
+	}
+	defer fssrv.Unmount()
+
+	// Test since/user directory (nested QueryDirNode)
+	t.Run("SinceUserDirectory", func(t *testing.T) {
+		info, err := os.Stat(filepath.Join(tmpDir, "conversation", convID, "since", "user"))
+		if err != nil {
+			t.Fatalf("Failed to stat since/user: %v", err)
+		}
+		mtime := info.ModTime()
+		diff := mtime.Sub(convTime)
+		if diff < -time.Second || diff > time.Second {
+			t.Errorf("since/user mtime %v differs from convTime %v by %v", mtime, convTime, diff)
+		}
+	})
+
+	// Test from/assistant directory (nested QueryDirNode)
+	t.Run("FromAssistantDirectory", func(t *testing.T) {
+		info, err := os.Stat(filepath.Join(tmpDir, "conversation", convID, "from", "assistant"))
+		if err != nil {
+			t.Fatalf("Failed to stat from/assistant: %v", err)
+		}
+		mtime := info.ModTime()
+		diff := mtime.Sub(convTime)
+		if diff < -time.Second || diff > time.Second {
+			t.Errorf("from/assistant mtime %v differs from convTime %v by %v", mtime, convTime, diff)
+		}
+	})
+}
+
+func TestTimestamps_StateCreatedAtIsPersisted(t *testing.T) {
+	// Test that CreatedAt is persisted to the state file and survives reload
+	tmpDir := t.TempDir()
+	statePath := filepath.Join(tmpDir, "state.json")
+
+	// Create store and clone
+	store1, err := state.NewStore(statePath)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+
+	convID, err := store1.Clone()
+	if err != nil {
+		t.Fatalf("Failed to clone: %v", err)
+	}
+
+	cs1 := store1.Get(convID)
+	if cs1.CreatedAt.IsZero() {
+		t.Fatal("CreatedAt should be set after clone")
+	}
+	originalTime := cs1.CreatedAt
+
+	// Create new store from same path (simulating restart)
+	store2, err := state.NewStore(statePath)
+	if err != nil {
+		t.Fatalf("Failed to reload store: %v", err)
+	}
+
+	cs2 := store2.Get(convID)
+	if cs2 == nil {
+		t.Fatal("Conversation not found after reload")
+	}
+
+	if cs2.CreatedAt.IsZero() {
+		t.Error("CreatedAt is zero after reload")
+	}
+
+	// Times should be equal (within nanosecond precision loss from JSON)
+	diff := cs2.CreatedAt.Sub(originalTime)
+	if diff < -time.Microsecond || diff > time.Microsecond {
+		t.Errorf("CreatedAt changed after reload: %v -> %v (diff: %v)", originalTime, cs2.CreatedAt, diff)
+	}
+}

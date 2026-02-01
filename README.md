@@ -19,6 +19,8 @@ The filesystem follows a Plan 9-inspired control file model. Conversations are m
 - Get specific message by sequence number: `cat /conversation/{ID}/7.json`
 - Get last N messages: `cat /conversation/{ID}/last/5.json`
 - Get messages since Nth-to-last from a person: `cat /conversation/{ID}/since/me/2.json` (or `.md`)
+- Get Shelley conversation ID: `cat /conversation/{ID}/id`
+- Get conversation slug: `cat /conversation/{ID}/slug`
 - Get Nth message from a person (from end): `cat /conversation/{ID}/from/shelley/1.json` (or `.md`)
 
 ## Usage
@@ -78,6 +80,8 @@ echo "Follow up message" > /mnt/shelley/conversation/$ID/new
       status.json                       → read-only status (local ID, shelley ID, message count, etc.)
       all.json                          → full conversation as JSON
       all.md                            → full conversation as Markdown
+      {N}.json                          → specific message by sequence number (virtual, not in listings)
+      {N}.md                            → specific message as Markdown (virtual, not in listings)
       {N}.json                          → specific message by sequence number
       {N}.md                            → specific message as Markdown
       last/{N}.json                     → last N messages as JSON
@@ -86,6 +90,8 @@ echo "Follow up message" > /mnt/shelley/conversation/$ID/new
       since/{person}/{N}.md             → same, as Markdown
       from/{person}/{N}.json            → Nth message from {person} (counting from end)
       from/{person}/{N}.md              → same, as Markdown
+    {server-id}                         → symlink to local-id: allows access via Shelley server ID
+    {slug}                              → symlink to local-id: allows access via conversation slug
 ```
 
 ## API Mapping
@@ -101,6 +107,8 @@ echo "Follow up message" > /mnt/shelley/conversation/$ID/new
 | `cat /conversation/{id}/all.json` | GET /api/conversation/{id} | Get full conversation |
 | `cat /conversation/{id}/status.json` | GET /api/conversation/{id} | Get conversation status |
 | `ls /conversation` | GET /api/conversations | List all conversations (local + server) |
+| `cat /conversation/{id}/id` | (local state) | Get Shelley conversation ID |
+| `cat /conversation/{id}/slug` | (local state) | Get conversation slug |
 
 ## Testing
 
@@ -137,6 +145,26 @@ The `/conversation` directory automatically discovers and adopts conversations f
 - **All conversations** appear with 8-character hex local IDs (e.g., `a1b2c3d4`)
 - **Server conversations** are automatically adopted when you run `ls /conversation`, creating local ID mappings
 - **No server IDs in listings** — users always see consistent local IDs
+
+This means conversations created outside of FUSE (e.g., via the web UI or API) are seamlessly integrated into the filesystem with local IDs. You can also access a conversation by its Shelley server ID directly (e.g., `cat /conversation/{server-id}/all.json`), which will adopt it if not already tracked.
+
+The `/conversation` directory provides three ways to access conversations:
+
+- **Local IDs (directories)**: The primary 8-character hex identifiers (e.g., `a1b2c3d4/`)
+- **Server IDs (symlinks)**: Point to the local ID directory, allowing access via Shelley backend IDs
+- **Slugs (symlinks)**: Point to the local ID directory, allowing access via human-readable slugs
+
+When you run `ls /conversation`, you'll see:
+- Directories for each local conversation ID
+- Symlinks for server IDs (pointing to their local ID)
+- Symlinks for slugs (pointing to their local ID)
+
+All three paths access the same conversation:
+```bash
+cat /conversation/a1b2c3d4/all.json      # via local ID (directory)
+cat /conversation/{server-id}/all.json   # via server ID (symlink)
+cat /conversation/{slug}/all.json        # via slug (symlink)
+```
 
 This means conversations created outside of FUSE (e.g., via the web UI or API) are seamlessly integrated into the filesystem with local IDs. You can also access a conversation by its Shelley server ID directly (e.g., `cat /conversation/{server-id}/all.json`), which will adopt it if not already tracked.
 

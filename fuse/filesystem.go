@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/hanwen/go-fuse/v2/fs"
 	"github.com/hanwen/go-fuse/v2/fuse"
@@ -18,7 +19,8 @@ import (
 
 type SymlinkNode struct {
 	fs.Inode
-	target string
+	target    string
+	startTime time.Time
 }
 
 var _ = (fs.NodeReadlinker)((*SymlinkNode)(nil))
@@ -31,32 +33,41 @@ func (s *SymlinkNode) Readlink(ctx context.Context) ([]byte, syscall.Errno) {
 func (s *SymlinkNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
 	out.Mode = syscall.S_IFLNK | 0777
 	out.Size = uint64(len(s.target))
+	setTimestamps(&out.Attr, s.startTime)
 	return 0
 }
 
 // FS is the root inode of the Shelley FUSE filesystem.
 type FS struct {
 	fs.Inode
-	client *shelley.Client
-	state  *state.Store
+	client    *shelley.Client
+	state     *state.Store
+	startTime time.Time
 }
 
 // NewFS creates a new Shelley FUSE filesystem.
 func NewFS(client *shelley.Client, store *state.Store) *FS {
-	return &FS{client: client, state: store}
+	return &FS{client: client, state: store, startTime: time.Now()}
+}
+
+// StartTime returns the time when the FUSE filesystem was created.
+// Used by child nodes to set timestamps for static content.
+func (f *FS) StartTime() time.Time {
+	return f.startTime
 }
 
 var _ = (fs.NodeLookuper)((*FS)(nil))
 var _ = (fs.NodeReaddirer)((*FS)(nil))
+var _ = (fs.NodeGetattrer)((*FS)(nil))
 
 func (f *FS) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
 	switch name {
 	case "models":
-		return f.NewInode(ctx, &ModelsDirNode{client: f.client}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
+		return f.NewInode(ctx, &ModelsDirNode{client: f.client, startTime: f.startTime}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
 	case "new":
-		return f.NewInode(ctx, &NewDirNode{state: f.state}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
+		return f.NewInode(ctx, &NewDirNode{state: f.state, startTime: f.startTime}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
 	case "conversation":
-		return f.NewInode(ctx, &ConversationListNode{client: f.client, state: f.state}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
+		return f.NewInode(ctx, &ConversationListNode{client: f.client, state: f.state, startTime: f.startTime}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
 	}
 	return nil, syscall.ENOENT
 }
@@ -69,15 +80,23 @@ func (f *FS) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
 	}), 0
 }
 
+func (f *FS) Getattr(ctx context.Context, fh fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
+	out.Mode = fuse.S_IFDIR | 0755
+	setTimestamps(&out.Attr, f.startTime)
+	return 0
+}
+
 // --- ModelsDirNode: /models/ directory listing available models ---
 
 type ModelsDirNode struct {
 	fs.Inode
-	client *shelley.Client
+	client    *shelley.Client
+	startTime time.Time
 }
 
 var _ = (fs.NodeLookuper)((*ModelsDirNode)(nil))
 var _ = (fs.NodeReaddirer)((*ModelsDirNode)(nil))
+var _ = (fs.NodeGetattrer)((*ModelsDirNode)(nil))
 
 func (m *ModelsDirNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
 	models, err := m.client.ListModels()
@@ -87,7 +106,7 @@ func (m *ModelsDirNode) Lookup(ctx context.Context, name string, out *fuse.Entry
 	
 	for _, model := range models {
 		if model.ID == name {
-			return m.NewInode(ctx, &ModelNode{model: model}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
+			return m.NewInode(ctx, &ModelNode{model: model, startTime: m.startTime}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
 		}
 	}
 	return nil, syscall.ENOENT
@@ -106,26 +125,34 @@ func (m *ModelsDirNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Errn
 	return fs.NewListDirStream(entries), 0
 }
 
+func (m *ModelsDirNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
+	out.Mode = fuse.S_IFDIR | 0755
+	setTimestamps(&out.Attr, m.startTime)
+	return 0
+}
+
 // --- ModelNode: /models/{model-id}/ directory for a single model ---
 
 type ModelNode struct {
 	fs.Inode
-	model shelley.Model
+	model     shelley.Model
+	startTime time.Time
 }
 
 var _ = (fs.NodeLookuper)((*ModelNode)(nil))
 var _ = (fs.NodeReaddirer)((*ModelNode)(nil))
+var _ = (fs.NodeGetattrer)((*ModelNode)(nil))
 
 func (m *ModelNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
 	switch name {
 	case "id":
-		return m.NewInode(ctx, &ModelFieldNode{value: m.model.ID}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
+		return m.NewInode(ctx, &ModelFieldNode{value: m.model.ID, startTime: m.startTime}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
 	case "ready":
 		value := "false"
 		if m.model.Ready {
 			value = "true"
 		}
-		return m.NewInode(ctx, &ModelFieldNode{value: value}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
+		return m.NewInode(ctx, &ModelFieldNode{value: value, startTime: m.startTime}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
 	}
 	return nil, syscall.ENOENT
 }
@@ -137,11 +164,18 @@ func (m *ModelNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
 	}), 0
 }
 
+func (m *ModelNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
+	out.Mode = fuse.S_IFDIR | 0755
+	setTimestamps(&out.Attr, m.startTime)
+	return 0
+}
+
 // --- ModelFieldNode: read-only file for a model field (id or ready) ---
 
 type ModelFieldNode struct {
 	fs.Inode
-	value string
+	value     string
+	startTime time.Time
 }
 
 var _ = (fs.NodeOpener)((*ModelFieldNode)(nil))
@@ -159,6 +193,7 @@ func (m *ModelFieldNode) Read(ctx context.Context, f fs.FileHandle, dest []byte,
 
 func (m *ModelFieldNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
 	out.Mode = fuse.S_IFREG | 0444
+	setTimestamps(&out.Attr, m.startTime)
 	return 0
 }
 
@@ -166,15 +201,17 @@ func (m *ModelFieldNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse
 
 type NewDirNode struct {
 	fs.Inode
-	state *state.Store
+	state     *state.Store
+	startTime time.Time
 }
 
 var _ = (fs.NodeLookuper)((*NewDirNode)(nil))
 var _ = (fs.NodeReaddirer)((*NewDirNode)(nil))
+var _ = (fs.NodeGetattrer)((*NewDirNode)(nil))
 
 func (n *NewDirNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
 	if name == "clone" {
-		return n.NewInode(ctx, &CloneNode{state: n.state}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
+		return n.NewInode(ctx, &CloneNode{state: n.state, startTime: n.startTime}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
 	}
 	return nil, syscall.ENOENT
 }
@@ -185,14 +222,22 @@ func (n *NewDirNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) 
 	}), 0
 }
 
+func (n *NewDirNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
+	out.Mode = fuse.S_IFDIR | 0755
+	setTimestamps(&out.Attr, n.startTime)
+	return 0
+}
+
 // --- CloneNode: each Open generates a new conversation ID ---
 
 type CloneNode struct {
 	fs.Inode
-	state *state.Store
+	state     *state.Store
+	startTime time.Time
 }
 
 var _ = (fs.NodeOpener)((*CloneNode)(nil))
+var _ = (fs.NodeGetattrer)((*CloneNode)(nil))
 
 func (c *CloneNode) Open(ctx context.Context, flags uint32) (fs.FileHandle, uint32, syscall.Errno) {
 	id, err := c.state.Clone()
@@ -200,6 +245,12 @@ func (c *CloneNode) Open(ctx context.Context, flags uint32) (fs.FileHandle, uint
 		return nil, 0, syscall.EIO
 	}
 	return &CloneFileHandle{id: id}, fuse.FOPEN_DIRECT_IO, 0
+}
+
+func (c *CloneNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
+	out.Mode = fuse.S_IFREG | 0444
+	setTimestamps(&out.Attr, c.startTime)
+	return 0
 }
 
 type CloneFileHandle struct {
@@ -217,32 +268,45 @@ func (h *CloneFileHandle) Read(ctx context.Context, dest []byte, off int64) (fus
 
 type ConversationListNode struct {
 	fs.Inode
-	client *shelley.Client
-	state  *state.Store
+	client    *shelley.Client
+	state     *state.Store
+	startTime time.Time
 }
 
 var _ = (fs.NodeLookuper)((*ConversationListNode)(nil))
 var _ = (fs.NodeReaddirer)((*ConversationListNode)(nil))
+var _ = (fs.NodeGetattrer)((*ConversationListNode)(nil))
 
 func (c *ConversationListNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
 	// First check if it's a known local ID (the common case after Readdir adoption)
 	cs := c.state.Get(name)
 	if cs != nil {
 		return c.NewInode(ctx, &ConversationNode{
-			localID: name,
-			client:  c.client,
-			state:   c.state,
+			localID:   name,
+			client:    c.client,
+			state:     c.state,
+			startTime: c.startTime,
 		}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
 	}
 
 	// Check if it's a known server ID (return symlink to local ID)
 	if localID := c.state.GetByShelleyID(name); localID != "" {
-		return c.NewInode(ctx, &SymlinkNode{target: localID}, fs.StableAttr{Mode: syscall.S_IFLNK}), 0
+		localCS := c.state.Get(localID)
+		symlinkTime := c.startTime
+		if localCS != nil && !localCS.CreatedAt.IsZero() {
+			symlinkTime = localCS.CreatedAt
+		}
+		return c.NewInode(ctx, &SymlinkNode{target: localID, startTime: symlinkTime}, fs.StableAttr{Mode: syscall.S_IFLNK}), 0
 	}
 
 	// Check if it's a known slug (return symlink to local ID)
 	if localID := c.state.GetBySlug(name); localID != "" {
-		return c.NewInode(ctx, &SymlinkNode{target: localID}, fs.StableAttr{Mode: syscall.S_IFLNK}), 0
+		localCS := c.state.Get(localID)
+		symlinkTime := c.startTime
+		if localCS != nil && !localCS.CreatedAt.IsZero() {
+			symlinkTime = localCS.CreatedAt
+		}
+		return c.NewInode(ctx, &SymlinkNode{target: localID, startTime: symlinkTime}, fs.StableAttr{Mode: syscall.S_IFLNK}), 0
 	}
 
 	// For backwards compatibility, also support lookup by Shelley server ID
@@ -263,8 +327,13 @@ func (c *ConversationListNode) Lookup(ctx context.Context, name string, out *fus
 				if err != nil {
 					return nil, syscall.EIO
 				}
-				// Return symlink to the local ID
-				return c.NewInode(ctx, &SymlinkNode{target: localID}, fs.StableAttr{Mode: syscall.S_IFLNK}), 0
+				// Return symlink to the local ID - use newly adopted conversation's time
+				localCS := c.state.Get(localID)
+				symlinkTime := c.startTime
+				if localCS != nil && !localCS.CreatedAt.IsZero() {
+					symlinkTime = localCS.CreatedAt
+				}
+				return c.NewInode(ctx, &SymlinkNode{target: localID, startTime: symlinkTime}, fs.StableAttr{Mode: syscall.S_IFLNK}), 0
 			}
 			// Also check by slug for not-yet-adopted conversations
 			if conv.Slug != nil && *conv.Slug == name {
@@ -272,7 +341,12 @@ func (c *ConversationListNode) Lookup(ctx context.Context, name string, out *fus
 				if err != nil {
 					return nil, syscall.EIO
 				}
-				return c.NewInode(ctx, &SymlinkNode{target: localID}, fs.StableAttr{Mode: syscall.S_IFLNK}), 0
+				localCS := c.state.Get(localID)
+				symlinkTime := c.startTime
+				if localCS != nil && !localCS.CreatedAt.IsZero() {
+					symlinkTime = localCS.CreatedAt
+				}
+				return c.NewInode(ctx, &SymlinkNode{target: localID, startTime: symlinkTime}, fs.StableAttr{Mode: syscall.S_IFLNK}), 0
 			}
 		}
 	}
@@ -386,36 +460,54 @@ func (c *ConversationListNode) fetchServerConversations() ([]shelley.Conversatio
 	return convs, nil
 }
 
+func (c *ConversationListNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
+	out.Mode = fuse.S_IFDIR | 0755
+	setTimestamps(&out.Attr, c.startTime)
+	return 0
+}
+
 // --- ConversationNode: /conversation/{id}/ directory ---
 
 type ConversationNode struct {
 	fs.Inode
-	localID string
-	client  *shelley.Client
-	state   *state.Store
+	localID   string
+	client    *shelley.Client
+	state     *state.Store
+	startTime time.Time // FS start time, used as fallback
 }
 
 var _ = (fs.NodeLookuper)((*ConversationNode)(nil))
 var _ = (fs.NodeReaddirer)((*ConversationNode)(nil))
+var _ = (fs.NodeGetattrer)((*ConversationNode)(nil))
+
+// getConversationTime returns the appropriate timestamp for this conversation.
+// Uses conversation CreatedAt if available, otherwise falls back to FS start time.
+func (c *ConversationNode) getConversationTime() time.Time {
+	cs := c.state.Get(c.localID)
+	if cs != nil && !cs.CreatedAt.IsZero() {
+		return cs.CreatedAt
+	}
+	return c.startTime
+}
 
 func (c *ConversationNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
 	switch name {
 	case "ctl":
-		return c.NewInode(ctx, &CtlNode{localID: c.localID, state: c.state}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
+		return c.NewInode(ctx, &CtlNode{localID: c.localID, state: c.state, startTime: c.startTime}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
 	case "new":
-		return c.NewInode(ctx, &ConvNewNode{localID: c.localID, client: c.client, state: c.state}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
+		return c.NewInode(ctx, &ConvNewNode{localID: c.localID, client: c.client, state: c.state, startTime: c.startTime}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
 	case "status.json":
-		return c.NewInode(ctx, &StatusNode{localID: c.localID, client: c.client, state: c.state}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
+		return c.NewInode(ctx, &StatusNode{localID: c.localID, client: c.client, state: c.state, startTime: c.startTime}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
 	case "id":
-		return c.NewInode(ctx, &ConvMetaFieldNode{localID: c.localID, state: c.state, field: "id"}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
+		return c.NewInode(ctx, &ConvMetaFieldNode{localID: c.localID, state: c.state, field: "id", startTime: c.startTime}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
 	case "slug":
-		return c.NewInode(ctx, &ConvMetaFieldNode{localID: c.localID, state: c.state, field: "slug"}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
+		return c.NewInode(ctx, &ConvMetaFieldNode{localID: c.localID, state: c.state, field: "slug", startTime: c.startTime}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
 	case "last":
-		return c.NewInode(ctx, &QueryDirNode{localID: c.localID, client: c.client, state: c.state, kind: queryLast}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
+		return c.NewInode(ctx, &QueryDirNode{localID: c.localID, client: c.client, state: c.state, kind: queryLast, startTime: c.startTime}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
 	case "since":
-		return c.NewInode(ctx, &QueryDirNode{localID: c.localID, client: c.client, state: c.state, kind: querySince}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
+		return c.NewInode(ctx, &QueryDirNode{localID: c.localID, client: c.client, state: c.state, kind: querySince, startTime: c.startTime}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
 	case "from":
-		return c.NewInode(ctx, &QueryDirNode{localID: c.localID, client: c.client, state: c.state, kind: queryFrom}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
+		return c.NewInode(ctx, &QueryDirNode{localID: c.localID, client: c.client, state: c.state, kind: queryFrom, startTime: c.startTime}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
 	}
 
 	// all.json, all.md, {N}.json, {N}.md
@@ -428,7 +520,7 @@ func (c *ConversationNode) Lookup(ctx context.Context, name string, out *fuse.En
 	if base == "all" {
 		return c.NewInode(ctx, &ConvContentNode{
 			localID: c.localID, client: c.client, state: c.state,
-			query: contentQuery{kind: queryAll, format: format},
+			query: contentQuery{kind: queryAll, format: format}, startTime: c.startTime,
 		}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
 	}
 
@@ -436,7 +528,7 @@ func (c *ConversationNode) Lookup(ctx context.Context, name string, out *fuse.En
 	if err == nil && n > 0 {
 		return c.NewInode(ctx, &ConvContentNode{
 			localID: c.localID, client: c.client, state: c.state,
-			query: contentQuery{kind: queryBySeq, seqNum: n, format: format},
+			query: contentQuery{kind: queryBySeq, seqNum: n, format: format}, startTime: c.startTime,
 		}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
 	}
 
@@ -458,12 +550,19 @@ func (c *ConversationNode) Readdir(ctx context.Context) (fs.DirStream, syscall.E
 	}), 0
 }
 
+func (c *ConversationNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
+	out.Mode = fuse.S_IFDIR | 0755
+	setTimestamps(&out.Attr, c.getConversationTime())
+	return 0
+}
+
 // --- CtlNode: write key=value pairs, read-only after conversation created ---
 
 type CtlNode struct {
 	fs.Inode
-	localID string
-	state   *state.Store
+	localID   string
+	state     *state.Store
+	startTime time.Time // fallback if conversation has no CreatedAt
 }
 
 var _ = (fs.NodeOpener)((*CtlNode)(nil))
@@ -529,6 +628,12 @@ func (c *CtlNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.AttrOu
 	} else {
 		out.Mode = fuse.S_IFREG | 0644
 	}
+	// Use conversation creation time if available, otherwise fall back to FS start time
+	if !cs.CreatedAt.IsZero() {
+		setTimestamps(&out.Attr, cs.CreatedAt)
+	} else {
+		setTimestamps(&out.Attr, c.startTime)
+	}
 	return 0
 }
 
@@ -541,10 +646,11 @@ func (c *CtlNode) Setattr(ctx context.Context, f fs.FileHandle, in *fuse.SetAttr
 
 type ConvNewNode struct {
 	fs.Inode
-	localID string
-	client  *shelley.Client
-	state   *state.Store
-	mu      sync.Mutex
+	localID   string
+	client    *shelley.Client
+	state     *state.Store
+	startTime time.Time // fallback if conversation has no CreatedAt
+	mu        sync.Mutex
 }
 
 var _ = (fs.NodeOpener)((*ConvNewNode)(nil))
@@ -591,6 +697,13 @@ func (n *ConvNewNode) Write(ctx context.Context, f fs.FileHandle, data []byte, o
 
 func (n *ConvNewNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
 	out.Mode = fuse.S_IFREG | 0222
+	// Use conversation creation time if available, otherwise fall back to FS start time
+	cs := n.state.Get(n.localID)
+	if cs != nil && !cs.CreatedAt.IsZero() {
+		setTimestamps(&out.Attr, cs.CreatedAt)
+	} else {
+		setTimestamps(&out.Attr, n.startTime)
+	}
 	return 0
 }
 
@@ -602,9 +715,10 @@ func (n *ConvNewNode) Setattr(ctx context.Context, f fs.FileHandle, in *fuse.Set
 
 type StatusNode struct {
 	fs.Inode
-	localID string
-	client  *shelley.Client
-	state   *state.Store
+	localID   string
+	client    *shelley.Client
+	state     *state.Store
+	startTime time.Time // fallback if conversation has no CreatedAt
 }
 
 var _ = (fs.NodeOpener)((*StatusNode)(nil))
@@ -651,6 +765,13 @@ func (s *StatusNode) Read(ctx context.Context, f fs.FileHandle, dest []byte, off
 
 func (s *StatusNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
 	out.Mode = fuse.S_IFREG | 0444
+	// Use conversation creation time if available, otherwise fall back to FS start time
+	cs := s.state.Get(s.localID)
+	if cs != nil && !cs.CreatedAt.IsZero() {
+		setTimestamps(&out.Attr, cs.CreatedAt)
+	} else {
+		setTimestamps(&out.Attr, s.startTime)
+	}
 	return 0
 }
 
@@ -658,9 +779,10 @@ func (s *StatusNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.Att
 
 type ConvMetaFieldNode struct {
 	fs.Inode
-	localID string
-	state   *state.Store
-	field   string // "id" or "slug"
+	localID   string
+	state     *state.Store
+	field     string    // "id" or "slug"
+	startTime time.Time // fallback if conversation has no CreatedAt
 }
 
 var _ = (fs.NodeOpener)((*ConvMetaFieldNode)(nil))
@@ -697,6 +819,13 @@ func (m *ConvMetaFieldNode) Read(ctx context.Context, f fs.FileHandle, dest []by
 
 func (m *ConvMetaFieldNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
 	out.Mode = fuse.S_IFREG | 0444
+	// Use conversation creation time if available, otherwise fall back to FS start time
+	cs := m.state.Get(m.localID)
+	if cs != nil && !cs.CreatedAt.IsZero() {
+		setTimestamps(&out.Attr, cs.CreatedAt)
+	} else {
+		setTimestamps(&out.Attr, m.startTime)
+	}
 	return 0
 }
 
@@ -731,10 +860,11 @@ type contentQuery struct {
 
 type ConvContentNode struct {
 	fs.Inode
-	localID string
-	client  *shelley.Client
-	state   *state.Store
-	query   contentQuery
+	localID   string
+	client    *shelley.Client
+	state     *state.Store
+	query     contentQuery
+	startTime time.Time // fallback if conversation has no CreatedAt
 }
 
 var _ = (fs.NodeOpener)((*ConvContentNode)(nil))
@@ -824,6 +954,13 @@ func (c *ConvContentNode) formatResult(msgs []shelley.Message) ([]byte, syscall.
 
 func (c *ConvContentNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
 	out.Mode = fuse.S_IFREG | 0444
+	// Use conversation creation time if available, otherwise fall back to FS start time
+	cs := c.state.Get(c.localID)
+	if cs != nil && !cs.CreatedAt.IsZero() {
+		setTimestamps(&out.Attr, cs.CreatedAt)
+	} else {
+		setTimestamps(&out.Attr, c.startTime)
+	}
 	return 0
 }
 
@@ -831,22 +968,24 @@ func (c *ConvContentNode) Getattr(ctx context.Context, f fs.FileHandle, out *fus
 
 type QueryDirNode struct {
 	fs.Inode
-	localID string
-	client  *shelley.Client
-	state   *state.Store
-	kind    queryKind // queryLast, querySince, or queryFrom
-	person  string    // set for since/{person}/ and from/{person}/
+	localID   string
+	client    *shelley.Client
+	state     *state.Store
+	kind      queryKind // queryLast, querySince, or queryFrom
+	person    string    // set for since/{person}/ and from/{person}/
+	startTime time.Time // fallback if conversation has no CreatedAt
 }
 
 var _ = (fs.NodeLookuper)((*QueryDirNode)(nil))
 var _ = (fs.NodeReaddirer)((*QueryDirNode)(nil))
+var _ = (fs.NodeGetattrer)((*QueryDirNode)(nil))
 
 func (q *QueryDirNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
 	// If this is since/ or from/ (no person set), the child is a person directory
 	if (q.kind == querySince || q.kind == queryFrom) && q.person == "" {
 		return q.NewInode(ctx, &QueryDirNode{
 			localID: q.localID, client: q.client, state: q.state,
-			kind: q.kind, person: name,
+			kind: q.kind, person: name, startTime: q.startTime,
 		}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
 	}
 
@@ -864,6 +1003,7 @@ func (q *QueryDirNode) Lookup(ctx context.Context, name string, out *fuse.EntryO
 	return q.NewInode(ctx, &ConvContentNode{
 		localID: q.localID, client: q.client, state: q.state,
 		query: contentQuery{kind: q.kind, n: n, person: q.person, format: format},
+		startTime: q.startTime,
 	}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
 }
 
@@ -872,7 +1012,31 @@ func (q *QueryDirNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno
 	return fs.NewListDirStream([]fuse.DirEntry{}), 0
 }
 
+func (q *QueryDirNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
+	out.Mode = fuse.S_IFDIR | 0755
+	// Use conversation creation time if available, otherwise fall back to FS start time
+	cs := q.state.Get(q.localID)
+	if cs != nil && !cs.CreatedAt.IsZero() {
+		setTimestamps(&out.Attr, cs.CreatedAt)
+	} else {
+		setTimestamps(&out.Attr, q.startTime)
+	}
+	return 0
+}
+
 // --- helpers ---
+
+// setTimestamps sets Atime, Mtime, and Ctime on an Attr to the given time.
+func setTimestamps(attr *fuse.Attr, t time.Time) {
+	sec := uint64(t.Unix())
+	nsec := uint32(t.Nanosecond())
+	attr.Atime = sec
+	attr.Atimensec = nsec
+	attr.Mtime = sec
+	attr.Mtimensec = nsec
+	attr.Ctime = sec
+	attr.Ctimensec = nsec
+}
 
 func parseFormat(name string) (contentFormat, bool) {
 	if strings.HasSuffix(name, ".json") {
