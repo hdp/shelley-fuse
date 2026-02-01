@@ -195,3 +195,138 @@ func TestFilterSinceCaseInsensitive(t *testing.T) {
 		t.Fatal("expected case-insensitive match")
 	}
 }
+func TestExtractTextContentPlain(t *testing.T) {
+	content := extractTextContent("Hello, world!")
+	if content != "Hello, world!" {
+		t.Errorf("Expected plain text to pass through, got %q", content)
+	}
+}
+
+func TestExtractTextContentEmpty(t *testing.T) {
+	content := extractTextContent("")
+	if content != "" {
+		t.Errorf("Expected empty string to remain empty, got %q", content)
+	}
+}
+
+func TestExtractTextContentJSONWithContent(t *testing.T) {
+	jsonStr := `{"Content": "Hi there! How can I help?"}`
+	content := extractTextContent(jsonStr)
+	if content != "Hi there! How can I help?" {
+		t.Errorf("Expected to extract content from JSON, got %q", content)
+	}
+}
+
+func TestExtractTextContentJSONWithLowercaseContent(t *testing.T) {
+	jsonStr := `{"content": "Hi there! How can I help?"}`
+	content := extractTextContent(jsonStr)
+	if content != "Hi there! How can I help?" {
+		t.Errorf("Expected to extract content from lowercase JSON, got %q", content)
+	}
+}
+
+func TestExtractTextContentJSONWithContentArray(t *testing.T) {
+	jsonStr := `{"Content": [{"Text": "Hi there!"}, {"Text": " How can I help?"}]}`
+	content := extractTextContent(jsonStr)
+	if content != "Hi there! How can I help?" {
+		t.Errorf("Expected to extract from content array, got %q", content)
+	}
+}
+
+func TestExtractTextContentJSONArray(t *testing.T) {
+	jsonStr := `[{"Content": "First part"}, {"Content": " second part"}]`
+	content := extractTextContent(jsonStr)
+	if content != "First part second part" {
+		t.Errorf("Expected to extract from JSON array, got %q", content)
+	}
+}
+
+func TestExtractTextContentMalformedJSON(t *testing.T) {
+	jsonStr := `{"Content": "incomplete`
+	content := extractTextContent(jsonStr)
+	if content != jsonStr {
+		t.Errorf("Expected malformed JSON to pass through, got %q", content)
+	}
+}
+
+func TestExtractTextContentJSONWithoutContent(t *testing.T) {
+	jsonStr := `{"other": "value"}`
+	content := extractTextContent(jsonStr)
+	// Should return the string representation of the object
+	expected := "map[other:value]"
+	if content != expected {
+		t.Errorf("Expected JSON without content to return object string, got %q", content)
+	}
+}
+
+func TestFormatMarkdownWithJSON(t *testing.T) {
+	messages := []Message{
+		{MessageID: "m1", ConversationID: "c1", SequenceID: 1, Type: "user", UserData: strPtr("Hello")},
+		{MessageID: "m2", ConversationID: "c1", SequenceID: 2, Type: "shelley", LLMData: strPtr(`{"Content": "Hi there! How can I help?"}`)},
+	}
+	
+	md := string(FormatMarkdown(messages))
+	if !strings.Contains(md, "## user") {
+		t.Error("expected markdown to contain '## user'")
+	}
+	if !strings.Contains(md, "Hello") {
+		t.Error("expected markdown to contain 'Hello'")
+	}
+	if !strings.Contains(md, "## shelley") {
+		t.Error("expected markdown to contain '## shelley'")
+	}
+	if !strings.Contains(md, "Hi there! How can I help?") {
+		t.Error("expected markdown to contain extracted text 'Hi there! How can I help?'")
+	}
+	// Should NOT contain the raw JSON
+	if strings.Contains(md, `{"Content": "Hi there! How can I help?"}`) {
+		t.Error("markdown should not contain raw JSON")
+	}
+}
+
+func TestFormatMarkdownMixedContent(t *testing.T) {
+	messages := []Message{
+		{MessageID: "m1", ConversationID: "c1", SequenceID: 1, Type: "user", UserData: strPtr("Hello")},
+		{MessageID: "m2", ConversationID: "c1", SequenceID: 2, Type: "shelley", LLMData: strPtr("Plain text response")},
+		{MessageID: "m3", ConversationID: "c1", SequenceID: 3, Type: "user", UserData: strPtr(`{"Content": "User message with JSON"}`)},
+		{MessageID: "m4", ConversationID: "c1", SequenceID: 4, Type: "shelley", LLMData: strPtr(`{"Content": [{"Text": "Complex "}, {"Text": "response"}]}`)},
+	}
+	
+	md := string(FormatMarkdown(messages))
+	
+	// Check that plain text passes through
+	if !strings.Contains(md, "Plain text response") {
+		t.Error("expected plain text to pass through")
+	}
+	
+	// Check that user JSON is also extracted
+	if !strings.Contains(md, "User message with JSON") {
+		t.Error("expected user JSON to be extracted")
+	}
+	
+	// Check that complex JSON is extracted
+	if !strings.Contains(md, "Complex response") {
+		t.Error("expected complex JSON to be extracted")
+	}
+	
+	// Should NOT contain any raw JSON
+	if strings.Contains(md, `{"Content":`) {
+		t.Error("markdown should not contain raw JSON")
+	}
+}
+
+func TestMessageContentNil(t *testing.T) {
+	msg := Message{MessageID: "m1", SequenceID: 1, Type: "user"}
+	content := messageContent(msg)
+	if content != "" {
+		t.Errorf("expected empty content for nil UserData/LLMData, got %q", content)
+	}
+}
+
+func TestMessageContentEmptyString(t *testing.T) {
+	msg := Message{MessageID: "m1", SequenceID: 1, Type: "user", UserData: strPtr("")}
+	content := messageContent(msg)
+	if content != "" {
+		t.Errorf("expected empty content for empty string, got %q", content)
+	}
+}

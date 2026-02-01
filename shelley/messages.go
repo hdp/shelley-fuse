@@ -108,10 +108,103 @@ func matchPerson(msgType, person string) bool {
 
 func messageContent(m Message) string {
 	if m.UserData != nil {
-		return *m.UserData
+		return extractTextContent(*m.UserData)
 	}
 	if m.LLMData != nil {
-		return *m.LLMData
+		return extractTextContent(*m.LLMData)
 	}
 	return ""
+}
+
+// extractTextContent extracts human-readable text from message data
+// which may be plain text or JSON with a "Content" field
+func extractTextContent(data string) string {
+	if data == "" {
+		return ""
+	}
+
+	// Check if it's JSON - if so, try to parse and extract content
+	trimmed := strings.TrimSpace(data)
+	if strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[") {
+		return extractFromJSON(data)
+	}
+	
+	// Plain text, return as-is
+	return data
+}
+
+// extractFromJSON attempts to parse JSON and extract text content
+func extractFromJSON(jsonStr string) string {
+	var content interface{}
+	if err := json.Unmarshal([]byte(jsonStr), &content); err != nil {
+		// Not valid JSON, return as-is
+		return jsonStr
+	}
+
+	// Handle different JSON structures
+	switch c := content.(type) {
+	case []interface{}:
+		return extractFromArray(c)
+	case map[string]interface{}:
+		return extractFromMap(c)
+	default:
+		// Unknown structure, return the original JSON string
+		return jsonStr
+	}
+}
+
+// extractFromArray handles arrays of content objects
+func extractFromArray(arr []interface{}) string {
+	var parts []string
+	for _, item := range arr {
+		if obj, ok := item.(map[string]interface{}); ok {
+			parts = append(parts, extractFromMap(obj))
+		} else {
+			parts = append(parts, fmt.Sprintf("%v", item))
+		}
+	}
+	return strings.Join(parts, "")
+}
+
+// extractFromMap extracts text from a content object map
+func extractFromMap(obj map[string]interface{}) string {
+	// Look for Content field first (capitalized, as seen in some API responses)
+	if content, ok := obj["Content"]; ok {
+		return extractFromContentField(content)
+	}
+
+	// Look for content field (lowercase)
+	if content, ok := obj["content"]; ok {
+		return extractFromContentField(content)
+	}
+
+	// If no content field found, return the whole object as string
+	return fmt.Sprintf("%v", obj)
+}
+
+// extractFromContentField extracts text from a Content field
+func extractFromContentField(content interface{}) string {
+	switch c := content.(type) {
+	case string:
+		return c
+	case []interface{}:
+		var parts []string
+		for _, item := range c {
+			if obj, ok := item.(map[string]interface{}); ok {
+				if text, ok := obj["Text"].(string); ok {
+					parts = append(parts, text)
+				}
+			} else {
+				parts = append(parts, fmt.Sprintf("%v", item))
+			}
+		}
+		return strings.Join(parts, "")
+	case map[string]interface{}:
+		if text, ok := c["Text"].(string); ok {
+			return text
+		}
+		return fmt.Sprintf("%v", c)
+	default:
+		return fmt.Sprintf("%v", content)
+	}
 }
