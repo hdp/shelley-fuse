@@ -902,6 +902,9 @@ func (m *ConvMetaFieldNode) Read(ctx context.Context, f fs.FileHandle, dest []by
 	case "id":
 		value = cs.ShelleyConversationID
 	case "slug":
+		if cs.Slug == "" {
+			return nil, syscall.ENOENT
+		}
 		value = cs.Slug
 	default:
 		return nil, syscall.ENOENT

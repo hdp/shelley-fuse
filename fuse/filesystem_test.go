@@ -432,8 +432,7 @@ func TestConversationListNode_ReaddirFiltersStaleConversations(t *testing.T) {
 	// Should see:
 	// - activeLocalID (local ID as directory)
 	// - conv-active (symlink to active)
-	// Note: active-slug won't appear because AdoptWithSlug doesn't update slugs
-	// for already-tracked conversations (pre-existing limitation)
+	// - active-slug (symlink, now that AdoptWithSlug updates empty slugs)
 	// Should NOT see:
 	// - staleLocalID or conv-deleted (filtered out because conv-deleted not on server)
 
@@ -453,17 +452,17 @@ func TestConversationListNode_ReaddirFiltersStaleConversations(t *testing.T) {
 		namesSet[name] = true
 	}
 
-	// Note: active-slug is not expected because AdoptWithSlug doesn't update slugs
-	expected := []string{activeLocalID, "conv-active"}
+	// AdoptWithSlug now updates empty slugs, so we should see the slug symlink
+	expected := []string{activeLocalID, "conv-active", "active-slug"}
 	for _, exp := range expected {
 		if !namesSet[exp] {
 			t.Errorf("expected entry %q not found in Readdir results: %v", exp, names)
 		}
 	}
 
-	// Verify total count: 2 entries (1 dir + 1 symlink for active)
-	if len(names) != 2 {
-		t.Errorf("expected 2 entries, got %d: %v", len(names), names)
+	// Verify total count: 3 entries (1 dir + 2 symlinks for server ID and slug)
+	if len(names) != 3 {
+		t.Errorf("expected 3 entries, got %d: %v", len(names), names)
 	}
 }
 
@@ -1189,10 +1188,8 @@ func TestModelsDirNode_EmptyModels(t *testing.T) {
 }
 
 func TestConversationListNode_ReaddirUpdatesEmptySlugs(t *testing.T) {
-	// NOTE: This test documents current behavior where AdoptWithSlug does NOT
-	// update slugs for already-tracked conversations. The slug symlink will
-	// NOT appear for conversations adopted without a slug initially.
-	// This is a known limitation (see TestAdoptWithSlugUpdatesEmptySlug).
+	// This test verifies that AdoptWithSlug correctly updates empty slugs
+	// for already-tracked conversations when rediscovered via Readdir.
 
 	// Server returns a conversation with a slug
 	slug := "my-conversation-slug"
@@ -1217,7 +1214,7 @@ func TestConversationListNode_ReaddirUpdatesEmptySlugs(t *testing.T) {
 		t.Fatalf("Expected empty slug initially, got %q", cs.Slug)
 	}
 
-	// Readdir - note that it does NOT update the slug for already-tracked conversations
+	// Readdir should update the slug for already-tracked conversations
 	node := &ConversationListNode{client: client, state: store, cloneTimeout: time.Hour}
 	stream, errno := node.Readdir(context.Background())
 	if errno != 0 {
@@ -1243,20 +1240,27 @@ func TestConversationListNode_ReaddirUpdatesEmptySlugs(t *testing.T) {
 		t.Errorf("Expected directory %q, got %q", localID, dirs[0])
 	}
 
-	// Should have 1 symlink: server ID only (slug not updated due to limitation)
-	if len(symlinks) != 1 {
-		t.Fatalf("Expected 1 symlink (server ID only, slug not updated), got %d: %v", len(symlinks), symlinks)
+	// Should have 2 symlinks: server ID and slug (slug now updated)
+	if len(symlinks) != 2 {
+		t.Fatalf("Expected 2 symlinks (server ID and slug), got %d: %v", len(symlinks), symlinks)
 	}
 
-	// Verify server ID symlink is present
-	if symlinks[0] != "server-conv-slug-update" {
-		t.Errorf("Expected server ID symlink, got %q", symlinks[0])
+	// Verify both symlinks are present
+	symlinkSet := make(map[string]bool)
+	for _, s := range symlinks {
+		symlinkSet[s] = true
+	}
+	if !symlinkSet["server-conv-slug-update"] {
+		t.Errorf("Expected server ID symlink 'server-conv-slug-update', got %v", symlinks)
+	}
+	if !symlinkSet[slug] {
+		t.Errorf("Expected slug symlink %q, got %v", slug, symlinks)
 	}
 
-	// Verify the state was NOT updated with the slug (current limitation)
+	// Verify the state WAS updated with the slug
 	cs = store.Get(localID)
-	if cs.Slug != "" {
-		t.Errorf("State slug not updated: got %q, want %q", cs.Slug, slug)
+	if cs.Slug != slug {
+		t.Errorf("State slug should be updated: got %q, want %q", cs.Slug, slug)
 	}
 }
 

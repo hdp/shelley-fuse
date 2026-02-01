@@ -468,6 +468,101 @@ func TestAdoptWithSlugUpdatesEmptySlug(t *testing.T) {
 	}
 }
 
+func TestAdoptWithSlugDoesNotOverwriteExistingSlug(t *testing.T) {
+	s, err := NewStore(tempStatePath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// First adopt with a slug
+	localID1, err := s.AdoptWithSlug("server-conv-keep-slug", "original-slug")
+	if err != nil {
+		t.Fatalf("first AdoptWithSlug failed: %v", err)
+	}
+
+	cs := s.Get(localID1)
+	if cs.Slug != "original-slug" {
+		t.Errorf("expected original-slug, got %s", cs.Slug)
+	}
+
+	// Adopt again with a different slug - should NOT update the slug
+	localID2, err := s.AdoptWithSlug("server-conv-keep-slug", "new-slug")
+	if err != nil {
+		t.Fatalf("second AdoptWithSlug failed: %v", err)
+	}
+
+	// Should return same local ID
+	if localID1 != localID2 {
+		t.Errorf("expected same local ID, got %q and %q", localID1, localID2)
+	}
+
+	// Slug should still be the original
+	cs = s.Get(localID1)
+	if cs.Slug != "original-slug" {
+		t.Errorf("expected Slug=original-slug, got %s", cs.Slug)
+	}
+}
+
+func TestAdoptWithSlugUpdatesPersists(t *testing.T) {
+	path := tempStatePath(t)
+
+	s1, err := NewStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Adopt without slug
+	localID, err := s1.AdoptWithSlug("server-persist-slug", "")
+	if err != nil {
+		t.Fatalf("first AdoptWithSlug failed: %v", err)
+	}
+
+	// Adopt again with a slug - should update the slug
+	_, err = s1.AdoptWithSlug("server-persist-slug", "persisted-slug")
+	if err != nil {
+		t.Fatalf("second AdoptWithSlug failed: %v", err)
+	}
+
+	// Load into fresh store
+	s2, err := NewStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Slug should be persisted
+	cs := s2.Get(localID)
+	if cs == nil {
+		t.Fatal("expected conversation state after reload, got nil")
+	}
+	if cs.Slug != "persisted-slug" {
+		t.Errorf("expected Slug=persisted-slug after reload, got %s", cs.Slug)
+	}
+}
+
+func TestAdoptWithSlugNoopOnEmptyNewSlug(t *testing.T) {
+	s, err := NewStore(tempStatePath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Adopt with a slug
+	localID, err := s.AdoptWithSlug("server-conv-empty-noop", "has-slug")
+	if err != nil {
+		t.Fatalf("first AdoptWithSlug failed: %v", err)
+	}
+
+	// Adopt again with empty slug - should not change anything
+	_, err = s.AdoptWithSlug("server-conv-empty-noop", "")
+	if err != nil {
+		t.Fatalf("second AdoptWithSlug failed: %v", err)
+	}
+
+	cs := s.Get(localID)
+	if cs.Slug != "has-slug" {
+		t.Errorf("expected Slug=has-slug, got %s", cs.Slug)
+	}
+}
+
 func TestGetBySlug(t *testing.T) {
 	s, err := NewStore(tempStatePath(t))
 	if err != nil {

@@ -207,7 +207,11 @@ func (s *Store) AdoptWithSlug(shelleyConversationID, slug string) (string, error
 	// Check if already tracked
 	for _, cs := range s.Conversations {
 		if cs.ShelleyConversationID == shelleyConversationID {
-			// Return existing - slug will always be provided by Shelley immediately
+			// Update slug if it was previously empty and a new slug is provided
+			if slug != "" && cs.Slug == "" {
+				cs.Slug = slug
+				_ = s.saveLocked() // Best effort save
+			}
 			return cs.LocalID, nil
 		}
 	}

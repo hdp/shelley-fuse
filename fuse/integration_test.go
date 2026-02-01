@@ -326,14 +326,18 @@ func TestPlan9Flow(t *testing.T) {
 		t.Logf("Shelley conversation ID: %s", shelleyConvID)
 	})
 
-	// 8c. Read the slug file (may be empty for predictable model, but should not error)
+	// 8c. Read the slug file (returns ENOENT if slug is empty, which is expected for predictable model)
 	t.Run("ReadConversationSlug", func(t *testing.T) {
 		data, err := ioutil.ReadFile(filepath.Join(mountPoint, "conversation", convID, "slug"))
 		if err != nil {
+			// ENOENT is expected when slug is empty (e.g., predictable model)
+			if os.IsNotExist(err) {
+				t.Logf("Slug file returned ENOENT (empty slug, expected for predictable model)")
+				return
+			}
 			t.Fatalf("Failed to read slug: %v", err)
 		}
 		slug := strings.TrimSpace(string(data))
-		// Slug may be empty for predictable model, that's ok
 		t.Logf("Conversation slug: %q", slug)
 	})
 
