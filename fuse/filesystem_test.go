@@ -1187,11 +1187,6 @@ func TestModelsDirNode_EmptyModels(t *testing.T) {
 	}
 }
 
-// TestConversationListNode_ReaddirUpdatesEmptySlugs tests that Readdir updates
-// slugs for conversations that were previously adopted without a slug.
-// This is a regression test for a bug where conversations adopted before
-// the slug feature existed (or before the server assigned a slug) would
-// never get their slug symlinks created.
 func TestConversationListNode_ReaddirUpdatesEmptySlugs(t *testing.T) {
 	// Server returns a conversation with a slug
 	slug := "my-conversation-slug"
