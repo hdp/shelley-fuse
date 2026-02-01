@@ -2374,3 +2374,243 @@ func TestTimestamps_StateCreatedAtIsPersisted(t *testing.T) {
 		t.Errorf("CreatedAt changed after reload: %v -> %v (diff: %v)", originalTime, cs2.CreatedAt, diff)
 	}
 }
+
+// --- Model Symlink Tests ---
+
+func TestConversationNode_ModelSymlink_NoModel(t *testing.T) {
+	// Test that model symlink returns ENOENT when model is not set
+	store, err := state.NewStore(filepath.Join(t.TempDir(), "state.json"))
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+
+	convID, err := store.Clone()
+	if err != nil {
+		t.Fatalf("Failed to clone: %v", err)
+	}
+
+	// Create mount
+	client := shelley.NewClient("http://example.com")
+	shelleyFS := NewFS(client, store, 0)
+
+	tmpDir := t.TempDir()
+	opts := &fs.Options{}
+	entryTimeout := time.Duration(0)
+	attrTimeout := time.Duration(0)
+	negativeTimeout := time.Duration(0)
+	opts.EntryTimeout = &entryTimeout
+	opts.AttrTimeout = &attrTimeout
+	opts.NegativeTimeout = &negativeTimeout
+
+	fssrv, err := fs.Mount(tmpDir, shelleyFS, opts)
+	if err != nil {
+		t.Fatalf("Mount failed: %v", err)
+	}
+	defer fssrv.Unmount()
+
+	// Try to read model symlink - should fail with ENOENT
+	modelPath := filepath.Join(tmpDir, "conversation", convID, "model")
+	_, err = os.Lstat(modelPath)
+	if err == nil {
+		t.Error("Expected error for model symlink when model not set")
+	} else if !os.IsNotExist(err) {
+		t.Errorf("Expected ENOENT, got: %v", err)
+	}
+}
+
+func TestConversationNode_ModelSymlink_WithModel(t *testing.T) {
+	// Test that model symlink is created and points to correct target
+	store, err := state.NewStore(filepath.Join(t.TempDir(), "state.json"))
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+
+	convID, err := store.Clone()
+	if err != nil {
+		t.Fatalf("Failed to clone: %v", err)
+	}
+
+	// Set model
+	err = store.SetCtl(convID, "model", "claude-opus-4")
+	if err != nil {
+		t.Fatalf("Failed to set model: %v", err)
+	}
+
+	// Create mount
+	client := shelley.NewClient("http://example.com")
+	shelleyFS := NewFS(client, store, 0)
+
+	tmpDir := t.TempDir()
+	opts := &fs.Options{}
+	entryTimeout := time.Duration(0)
+	attrTimeout := time.Duration(0)
+	negativeTimeout := time.Duration(0)
+	opts.EntryTimeout = &entryTimeout
+	opts.AttrTimeout = &attrTimeout
+	opts.NegativeTimeout = &negativeTimeout
+
+	fssrv, err := fs.Mount(tmpDir, shelleyFS, opts)
+	if err != nil {
+		t.Fatalf("Mount failed: %v", err)
+	}
+	defer fssrv.Unmount()
+
+	modelPath := filepath.Join(tmpDir, "conversation", convID, "model")
+
+	// Check that symlink exists
+	info, err := os.Lstat(modelPath)
+	if err != nil {
+		t.Fatalf("Failed to lstat model symlink: %v", err)
+	}
+
+	// Verify it's a symlink
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Errorf("Expected symlink, got mode %v", info.Mode())
+	}
+
+	// Read the symlink target
+	target, err := os.Readlink(modelPath)
+	if err != nil {
+		t.Fatalf("Failed to readlink: %v", err)
+	}
+
+	expectedTarget := "../../models/claude-opus-4"
+	if target != expectedTarget {
+		t.Errorf("Expected target %q, got %q", expectedTarget, target)
+	}
+}
+
+func TestConversationNode_ModelSymlink_InReaddir(t *testing.T) {
+	// Test that model symlink appears in Readdir when model is set
+	store, err := state.NewStore(filepath.Join(t.TempDir(), "state.json"))
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+
+	convID, err := store.Clone()
+	if err != nil {
+		t.Fatalf("Failed to clone: %v", err)
+	}
+
+	// Create mount without model set first
+	client := shelley.NewClient("http://example.com")
+	shelleyFS := NewFS(client, store, 0)
+
+	tmpDir := t.TempDir()
+	opts := &fs.Options{}
+	entryTimeout := time.Duration(0)
+	attrTimeout := time.Duration(0)
+	negativeTimeout := time.Duration(0)
+	opts.EntryTimeout = &entryTimeout
+	opts.AttrTimeout = &attrTimeout
+	opts.NegativeTimeout = &negativeTimeout
+
+	fssrv, err := fs.Mount(tmpDir, shelleyFS, opts)
+	if err != nil {
+		t.Fatalf("Mount failed: %v", err)
+	}
+	defer fssrv.Unmount()
+
+	convDir := filepath.Join(tmpDir, "conversation", convID)
+
+	// Read dir without model - should NOT contain model entry
+	entries, err := ioutil.ReadDir(convDir)
+	if err != nil {
+		t.Fatalf("Failed to read dir: %v", err)
+	}
+
+	hasModel := false
+	for _, e := range entries {
+		if e.Name() == "model" {
+			hasModel = true
+			break
+		}
+	}
+	if hasModel {
+		t.Error("model symlink should not appear when model is not set")
+	}
+
+	// Now set the model
+	err = store.SetCtl(convID, "model", "test-model")
+	if err != nil {
+		t.Fatalf("Failed to set model: %v", err)
+	}
+
+	// Read dir again - should now contain model entry
+	entries, err = ioutil.ReadDir(convDir)
+	if err != nil {
+		t.Fatalf("Failed to read dir after setting model: %v", err)
+	}
+
+	hasModel = false
+	var modelEntry os.FileInfo
+	for _, e := range entries {
+		if e.Name() == "model" {
+			hasModel = true
+			modelEntry = e
+			break
+		}
+	}
+	if !hasModel {
+		t.Error("model symlink should appear when model is set")
+	}
+
+	// Verify it's listed as a symlink
+	if modelEntry != nil && modelEntry.Mode()&os.ModeSymlink == 0 {
+		t.Errorf("model entry should be a symlink, got mode %v", modelEntry.Mode())
+	}
+}
+
+func TestConversationNode_ModelSymlink_Timestamp(t *testing.T) {
+	// Test that model symlink uses conversation creation time
+	store, err := state.NewStore(filepath.Join(t.TempDir(), "state.json"))
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+
+	convID, err := store.Clone()
+	if err != nil {
+		t.Fatalf("Failed to clone: %v", err)
+	}
+
+	cs := store.Get(convID)
+	convTime := cs.CreatedAt
+
+	// Set model
+	err = store.SetCtl(convID, "model", "test-model")
+	if err != nil {
+		t.Fatalf("Failed to set model: %v", err)
+	}
+
+	// Create mount
+	client := shelley.NewClient("http://example.com")
+	shelleyFS := NewFS(client, store, 0)
+
+	tmpDir := t.TempDir()
+	opts := &fs.Options{}
+	entryTimeout := time.Duration(0)
+	attrTimeout := time.Duration(0)
+	negativeTimeout := time.Duration(0)
+	opts.EntryTimeout = &entryTimeout
+	opts.AttrTimeout = &attrTimeout
+	opts.NegativeTimeout = &negativeTimeout
+
+	fssrv, err := fs.Mount(tmpDir, shelleyFS, opts)
+	if err != nil {
+		t.Fatalf("Mount failed: %v", err)
+	}
+	defer fssrv.Unmount()
+
+	modelPath := filepath.Join(tmpDir, "conversation", convID, "model")
+
+	info, err := os.Lstat(modelPath)
+	if err != nil {
+		t.Fatalf("Failed to lstat model symlink: %v", err)
+	}
+
+	mtime := info.ModTime()
+	diff := mtime.Sub(convTime)
+	if diff < -time.Second || diff > time.Second {
+		t.Errorf("Model symlink mtime %v differs from conversation time %v by %v", mtime, convTime, diff)
+	}
+}

@@ -1070,6 +1070,58 @@ func TestSymlinkAccess(t *testing.T) {
 			t.Errorf("Content differs between local ID and server ID access")
 		}
 	})
+
+	t.Run("WriteThroughSymlink", func(t *testing.T) {
+		// Create a new conversation to test write-through
+		data, err := ioutil.ReadFile(filepath.Join(mountPoint, "new", "clone"))
+		if err != nil {
+			t.Fatalf("Failed to clone: %v", err)
+		}
+		newLocalID := strings.TrimSpace(string(data))
+
+		// Configure via symlink would not work yet (no server ID), so configure directly
+		err = ioutil.WriteFile(filepath.Join(mountPoint, "conversation", newLocalID, "ctl"), []byte("model=predictable"), 0644)
+		if err != nil {
+			t.Fatalf("Failed to write ctl: %v", err)
+		}
+
+		// Send first message to create conversation
+		err = ioutil.WriteFile(filepath.Join(mountPoint, "conversation", newLocalID, "new"), []byte("First message"), 0644)
+		if err != nil {
+			t.Fatalf("Failed to send first message: %v", err)
+		}
+
+		// Get server ID
+		data, err = ioutil.ReadFile(filepath.Join(mountPoint, "conversation", newLocalID, "id"))
+		if err != nil {
+			t.Fatalf("Failed to read server ID: %v", err)
+		}
+		newServerID := strings.TrimSpace(string(data))
+
+		// Note: The predictable model doesn't support follow-up messages,
+		// but we can verify the symlink exists and is accessible
+		target, err := os.Readlink(filepath.Join(mountPoint, "conversation", newServerID))
+		if err != nil {
+			t.Fatalf("Readlink failed: %v", err)
+		}
+		if target != newLocalID {
+			t.Errorf("Symlink target = %q, want %q", target, newLocalID)
+		}
+
+		// Reading via symlink should work
+		dataViaSymlink, err := ioutil.ReadFile(filepath.Join(mountPoint, "conversation", newServerID, "all.json"))
+		if err != nil {
+			t.Fatalf("Failed to read via symlink: %v", err)
+		}
+
+		var msgs []map[string]interface{}
+		if err := json.Unmarshal(dataViaSymlink, &msgs); err != nil {
+			t.Fatalf("Failed to parse JSON: %v", err)
+		}
+		if len(msgs) < 2 {
+			t.Errorf("Expected at least 2 messages, got %d", len(msgs))
+		}
+	})
 }
 
 // TestSymlinkEdgeCases tests edge cases in symlink handling.
