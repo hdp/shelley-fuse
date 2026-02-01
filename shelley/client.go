@@ -62,6 +62,12 @@ type Model struct {
 	Ready bool   `json:"ready"`
 }
 
+// ModelsResult holds the result of listing models
+type ModelsResult struct {
+	Models       []Model
+	DefaultModel string
+}
+
 // StartConversationResult holds the response from starting a new conversation
 type StartConversationResult struct {
 	ConversationID string
@@ -186,29 +192,29 @@ func (c *Client) SendMessage(conversationID, message, model string) error {
 }
 
 // ListModels lists available models by parsing the HTML page to extract window.__SHELLEY_INIT__
-func (c *Client) ListModels() ([]Model, error) {
+func (c *Client) ListModels() (ModelsResult, error) {
 	req, err := http.NewRequest("GET", c.baseURL, nil)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
+		return ModelsResult{}, fmt.Errorf("failed to create request: %w", err)
 	}
 	
 	req.Header.Set("X-Exedev-Userid", "1")
 	
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("failed to send request: %w", err)
+		return ModelsResult{}, fmt.Errorf("failed to send request: %w", err)
 	}
 	defer resp.Body.Close()
 	
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(body))
+		return ModelsResult{}, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(body))
 	}
 	
 	// Read the response body
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read response body: %w", err)
+		return ModelsResult{}, fmt.Errorf("failed to read response body: %w", err)
 	}
 	
 	// Parse HTML to extract window.__SHELLEY_INIT__
@@ -219,30 +225,35 @@ func (c *Client) ListModels() ([]Model, error) {
 		// Try to parse the JSON
 		var initData map[string]interface{}
 		if err := json.Unmarshal([]byte(match[1]), &initData); err == nil {
+			var result ModelsResult
+			
+			// Extract default_model
+			result.DefaultModel = getString(initData, "default_model")
+			
+			// Extract models list
 			if models, ok := initData["models"].([]interface{}); ok {
-				// Convert to our Model struct
-				var result []Model
 				for _, m := range models {
 					if modelMap, ok := m.(map[string]interface{}); ok {
 						model := Model{
 							ID:    getString(modelMap, "id"),
 							Ready: getBool(modelMap, "ready"),
 						}
-						result = append(result, model)
+						result.Models = append(result.Models, model)
 					}
 				}
-				return result, nil
 			}
+			return result, nil
 		}
 	}
 	
 	// Fallback to a fixed list of models
-	models := []Model{
-		{ID: "predictable", Ready: true},
-		{ID: "qwen3-coder-fireworks", Ready: true},
-	}
-	
-	return models, nil
+	return ModelsResult{
+		Models: []Model{
+			{ID: "predictable", Ready: true},
+			{ID: "qwen3-coder-fireworks", Ready: true},
+		},
+		DefaultModel: "",
+	}, nil
 }
 
 // ListConversations lists all conversations

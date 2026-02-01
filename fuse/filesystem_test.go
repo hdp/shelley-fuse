@@ -800,11 +800,21 @@ func TestConversationListingMounted(t *testing.T) {
 // mockModelsServer creates a test server that returns mock model data
 func mockModelsServer(t *testing.T, models []shelley.Model) *httptest.Server {
 	t.Helper()
+	return mockModelsServerWithDefault(t, models, "")
+}
+
+// mockModelsServerWithDefault creates a test server that returns mock model data with an optional default model
+func mockModelsServerWithDefault(t *testing.T, models []shelley.Model, defaultModel string) *httptest.Server {
+	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/" {
 			// Simulate the HTML response with embedded model data
 			modelsJSON, _ := json.Marshal(models)
-			fmt.Fprintf(w, `<html><script>window.__SHELLEY_INIT__ = {"models": %s};</script></html>`, modelsJSON)
+			defaultModelJSON := "null"
+			if defaultModel != "" {
+				defaultModelJSON = fmt.Sprintf("%q", defaultModel)
+			}
+			fmt.Fprintf(w, `<html><script>window.__SHELLEY_INIT__ = {"models": %s, "default_model": %s};</script></html>`, modelsJSON, defaultModelJSON)
 			return
 		}
 		http.NotFound(w, r)
@@ -1184,6 +1194,284 @@ func TestModelsDirNode_EmptyModels(t *testing.T) {
 
 	if count != 0 {
 		t.Errorf("expected 0 entries for empty model list, got %d", count)
+	}
+}
+
+// --- Tests for Default Model Symlink ---
+
+func TestModelsDirNode_DefaultSymlink_Readdir(t *testing.T) {
+	// When a default model is set, it should appear as a symlink in the directory listing
+	models := []shelley.Model{
+		{ID: "model-a", Ready: true},
+		{ID: "model-b", Ready: false},
+	}
+	server := mockModelsServerWithDefault(t, models, "model-a")
+	defer server.Close()
+
+	client := shelley.NewClient(server.URL)
+	node := &ModelsDirNode{client: client}
+
+	stream, errno := node.Readdir(context.Background())
+	if errno != 0 {
+		t.Fatalf("Readdir failed with errno %d", errno)
+	}
+
+	var dirs, symlinks []string
+	for stream.HasNext() {
+		entry, _ := stream.Next()
+		if entry.Mode&syscall.S_IFLNK != 0 {
+			symlinks = append(symlinks, entry.Name)
+		} else if entry.Mode == fuse.S_IFDIR {
+			dirs = append(dirs, entry.Name)
+		}
+	}
+
+	// Should have 2 directories (model-a, model-b) and 1 symlink (default)
+	if len(dirs) != 2 {
+		t.Errorf("expected 2 directories, got %d: %v", len(dirs), dirs)
+	}
+	if len(symlinks) != 1 {
+		t.Fatalf("expected 1 symlink, got %d: %v", len(symlinks), symlinks)
+	}
+	if symlinks[0] != "default" {
+		t.Errorf("expected symlink named 'default', got %q", symlinks[0])
+	}
+}
+
+func TestModelsDirNode_DefaultSymlink_NoDefault_Readdir(t *testing.T) {
+	// When no default model is set, the symlink should NOT appear in the listing
+	models := []shelley.Model{
+		{ID: "model-a", Ready: true},
+		{ID: "model-b", Ready: false},
+	}
+	server := mockModelsServerWithDefault(t, models, "") // No default
+	defer server.Close()
+
+	client := shelley.NewClient(server.URL)
+	node := &ModelsDirNode{client: client}
+
+	stream, errno := node.Readdir(context.Background())
+	if errno != 0 {
+		t.Fatalf("Readdir failed with errno %d", errno)
+	}
+
+	var names []string
+	hasSymlink := false
+	for stream.HasNext() {
+		entry, _ := stream.Next()
+		names = append(names, entry.Name)
+		if entry.Mode&syscall.S_IFLNK != 0 {
+			hasSymlink = true
+		}
+	}
+
+	// Should have only directories, no symlink
+	if hasSymlink {
+		t.Error("unexpected symlink in directory listing when no default model is set")
+	}
+	if len(names) != 2 {
+		t.Errorf("expected 2 entries (models only), got %d: %v", len(names), names)
+	}
+}
+
+func TestModelsDirNode_DefaultSymlink_Lookup(t *testing.T) {
+	// Looking up "default" should return a symlink pointing to the default model
+	models := []shelley.Model{
+		{ID: "claude-3", Ready: true},
+		{ID: "gpt-4", Ready: true},
+	}
+	server := mockModelsServerWithDefault(t, models, "claude-3")
+	defer server.Close()
+
+	client := shelley.NewClient(server.URL)
+	store := testStore(t)
+	shelleyFS := NewFS(client, store, time.Hour)
+
+	tmpDir, err := ioutil.TempDir("", "shelley-fuse-default-symlink-test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	opts := &fs.Options{}
+	entryTimeout := time.Duration(0)
+	attrTimeout := time.Duration(0)
+	negativeTimeout := time.Duration(0)
+	opts.EntryTimeout = &entryTimeout
+	opts.AttrTimeout = &attrTimeout
+	opts.NegativeTimeout = &negativeTimeout
+
+	fssrv, err := fs.Mount(tmpDir, shelleyFS, opts)
+	if err != nil {
+		t.Fatalf("Mount failed: %v", err)
+	}
+	defer fssrv.Unmount()
+
+	// Check that "default" exists and is a symlink
+	defaultPath := filepath.Join(tmpDir, "models", "default")
+	fi, err := os.Lstat(defaultPath)
+	if err != nil {
+		t.Fatalf("Failed to lstat default symlink: %v", err)
+	}
+	if fi.Mode()&os.ModeSymlink == 0 {
+		t.Errorf("expected 'default' to be a symlink, got mode %v", fi.Mode())
+	}
+
+	// Verify the symlink target
+	target, err := os.Readlink(defaultPath)
+	if err != nil {
+		t.Fatalf("Failed to readlink: %v", err)
+	}
+	if target != "claude-3" {
+		t.Errorf("expected symlink target 'claude-3', got %q", target)
+	}
+}
+
+func TestModelsDirNode_DefaultSymlink_NoDefault_Lookup(t *testing.T) {
+	// Looking up "default" when no default is set should return ENOENT
+	models := []shelley.Model{
+		{ID: "model-a", Ready: true},
+	}
+	server := mockModelsServerWithDefault(t, models, "") // No default
+	defer server.Close()
+
+	client := shelley.NewClient(server.URL)
+	store := testStore(t)
+	shelleyFS := NewFS(client, store, time.Hour)
+
+	tmpDir, err := ioutil.TempDir("", "shelley-fuse-no-default-test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	opts := &fs.Options{}
+	entryTimeout := time.Duration(0)
+	attrTimeout := time.Duration(0)
+	negativeTimeout := time.Duration(0)
+	opts.EntryTimeout = &entryTimeout
+	opts.AttrTimeout = &attrTimeout
+	opts.NegativeTimeout = &negativeTimeout
+
+	fssrv, err := fs.Mount(tmpDir, shelleyFS, opts)
+	if err != nil {
+		t.Fatalf("Mount failed: %v", err)
+	}
+	defer fssrv.Unmount()
+
+	// Check that "default" does NOT exist
+	defaultPath := filepath.Join(tmpDir, "models", "default")
+	_, err = os.Lstat(defaultPath)
+	if err == nil {
+		t.Error("expected 'default' to not exist when no default model is set")
+	} else if !os.IsNotExist(err) {
+		t.Errorf("expected ENOENT error, got: %v", err)
+	}
+}
+
+func TestModelsDirNode_DefaultSymlink_FollowsToModel(t *testing.T) {
+	// Following the default symlink should reach the model directory
+	models := []shelley.Model{
+		{ID: "target-model", Ready: true},
+		{ID: "other-model", Ready: false},
+	}
+	server := mockModelsServerWithDefault(t, models, "target-model")
+	defer server.Close()
+
+	client := shelley.NewClient(server.URL)
+	store := testStore(t)
+	shelleyFS := NewFS(client, store, time.Hour)
+
+	tmpDir, err := ioutil.TempDir("", "shelley-fuse-follow-default-test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	opts := &fs.Options{}
+	entryTimeout := time.Duration(0)
+	attrTimeout := time.Duration(0)
+	negativeTimeout := time.Duration(0)
+	opts.EntryTimeout = &entryTimeout
+	opts.AttrTimeout = &attrTimeout
+	opts.NegativeTimeout = &negativeTimeout
+
+	fssrv, err := fs.Mount(tmpDir, shelleyFS, opts)
+	if err != nil {
+		t.Fatalf("Mount failed: %v", err)
+	}
+	defer fssrv.Unmount()
+
+	// Follow the symlink and read the id file
+	idPath := filepath.Join(tmpDir, "models", "default", "id")
+	content, err := ioutil.ReadFile(idPath)
+	if err != nil {
+		t.Fatalf("Failed to read models/default/id: %v", err)
+	}
+	if strings.TrimSpace(string(content)) != "target-model" {
+		t.Errorf("expected id content 'target-model', got %q", strings.TrimSpace(string(content)))
+	}
+
+	// Also check the ready file
+	readyPath := filepath.Join(tmpDir, "models", "default", "ready")
+	content, err = ioutil.ReadFile(readyPath)
+	if err != nil {
+		t.Fatalf("Failed to read models/default/ready: %v", err)
+	}
+	if strings.TrimSpace(string(content)) != "true" {
+		t.Errorf("expected ready content 'true', got %q", strings.TrimSpace(string(content)))
+	}
+}
+
+func TestModelsDirNode_DefaultSymlink_Getattr(t *testing.T) {
+	// Verify that the default symlink has correct attributes
+	models := []shelley.Model{
+		{ID: "test-model", Ready: true},
+	}
+	server := mockModelsServerWithDefault(t, models, "test-model")
+	defer server.Close()
+
+	client := shelley.NewClient(server.URL)
+	store := testStore(t)
+	startTime := time.Now()
+	shelleyFS := NewFS(client, store, time.Hour)
+
+	tmpDir, err := ioutil.TempDir("", "shelley-fuse-default-getattr-test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	opts := &fs.Options{}
+	entryTimeout := time.Duration(0)
+	attrTimeout := time.Duration(0)
+	negativeTimeout := time.Duration(0)
+	opts.EntryTimeout = &entryTimeout
+	opts.AttrTimeout = &attrTimeout
+	opts.NegativeTimeout = &negativeTimeout
+
+	fssrv, err := fs.Mount(tmpDir, shelleyFS, opts)
+	if err != nil {
+		t.Fatalf("Mount failed: %v", err)
+	}
+	defer fssrv.Unmount()
+
+	defaultPath := filepath.Join(tmpDir, "models", "default")
+	fi, err := os.Lstat(defaultPath)
+	if err != nil {
+		t.Fatalf("Failed to lstat default symlink: %v", err)
+	}
+
+	// Verify it's a symlink
+	if fi.Mode()&os.ModeSymlink == 0 {
+		t.Errorf("expected symlink mode, got %v", fi.Mode())
+	}
+
+	// Verify timestamp is reasonable (within a few seconds of startTime)
+	mtime := fi.ModTime()
+	diff := mtime.Sub(startTime)
+	if diff < -time.Second || diff > time.Second {
+		t.Errorf("symlink mtime %v differs from startTime %v by %v", mtime, startTime, diff)
 	}
 }
 

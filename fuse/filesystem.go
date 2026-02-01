@@ -102,12 +102,20 @@ var _ = (fs.NodeReaddirer)((*ModelsDirNode)(nil))
 var _ = (fs.NodeGetattrer)((*ModelsDirNode)(nil))
 
 func (m *ModelsDirNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
-	models, err := m.client.ListModels()
+	result, err := m.client.ListModels()
 	if err != nil {
 		return nil, syscall.EIO
 	}
 	
-	for _, model := range models {
+	// Handle "default" symlink
+	if name == "default" {
+		if result.DefaultModel == "" {
+			return nil, syscall.ENOENT
+		}
+		return m.NewInode(ctx, &SymlinkNode{target: result.DefaultModel, startTime: m.startTime}, fs.StableAttr{Mode: syscall.S_IFLNK}), 0
+	}
+	
+	for _, model := range result.Models {
 		if model.ID == name {
 			return m.NewInode(ctx, &ModelNode{model: model, startTime: m.startTime}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
 		}
@@ -116,14 +124,22 @@ func (m *ModelsDirNode) Lookup(ctx context.Context, name string, out *fuse.Entry
 }
 
 func (m *ModelsDirNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
-	models, err := m.client.ListModels()
+	result, err := m.client.ListModels()
 	if err != nil {
 		return nil, syscall.EIO
 	}
 	
-	entries := make([]fuse.DirEntry, len(models))
-	for i, model := range models {
-		entries[i] = fuse.DirEntry{Name: model.ID, Mode: fuse.S_IFDIR}
+	// Capacity for models + optional default symlink
+	entries := make([]fuse.DirEntry, 0, len(result.Models)+1)
+	
+	// Add "default" symlink if default model is set
+	if result.DefaultModel != "" {
+		entries = append(entries, fuse.DirEntry{Name: "default", Mode: syscall.S_IFLNK})
+	}
+	
+	// Add all model directories
+	for _, model := range result.Models {
+		entries = append(entries, fuse.DirEntry{Name: model.ID, Mode: fuse.S_IFDIR})
 	}
 	return fs.NewListDirStream(entries), 0
 }
