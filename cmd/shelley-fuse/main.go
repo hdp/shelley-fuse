@@ -17,6 +17,7 @@ import (
 
 func main() {
 	debug := flag.Bool("debug", false, "enable debug output")
+	cloneTimeout := flag.Duration("clone-timeout", time.Hour, "duration after which unconversed clone IDs are cleaned up")
 	flag.Parse()
 
 	if flag.NArg() < 2 {
@@ -39,7 +40,7 @@ func main() {
 	}
 
 	// Create FUSE filesystem
-	shelleyFS := shelleyfuse.NewFS(client, store)
+	shelleyFS := shelleyfuse.NewFS(client, store, *cloneTimeout)
 
 	// Set up FUSE server options
 	opts := &fs.Options{}

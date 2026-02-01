@@ -89,6 +89,14 @@ func startShelleyServer(t *testing.T) string {
 
 // mountTestFS mounts a shelley-fuse filesystem for testing.
 func mountTestFS(t *testing.T, serverURL string) string {
+	mountPoint, _ := mountTestFSWithStore(t, serverURL, time.Hour)
+	return mountPoint
+}
+
+// mountTestFSWithStore mounts a shelley-fuse filesystem for testing and returns both
+// the mount point and the state store. The cloneTimeout parameter controls how long
+// unconversed IDs are kept before cleanup.
+func mountTestFSWithStore(t *testing.T, serverURL string, cloneTimeout time.Duration) (string, *state.Store) {
 	t.Helper()
 
 	tmpDir := t.TempDir()
@@ -103,7 +111,7 @@ func mountTestFS(t *testing.T, serverURL string) string {
 		t.Fatalf("Failed to create state store: %v", err)
 	}
 
-	shelleyFS := NewFS(client, store)
+	shelleyFS := NewFS(client, store, cloneTimeout)
 
 	opts := &fs.Options{}
 	entryTimeout := time.Duration(0)
@@ -121,7 +129,7 @@ func mountTestFS(t *testing.T, serverURL string) string {
 		fssrv.Unmount()
 	})
 
-	return mountPoint
+	return mountPoint, store
 }
 
 // TestPlan9Flow is the main end-to-end test exercising the Plan 9-style API.
@@ -1346,3 +1354,282 @@ func TestSymlinkWithSlug(t *testing.T) {
 	})
 }
 
+
+// TestUnconversedIDsHiddenFromListing verifies that cloned but uncreated conversations
+// are hidden from directory listings but still accessible via Lookup.
+func TestUnconversedIDsHiddenFromListing(t *testing.T) {
+	skipIfNoFusermount(t)
+	skipIfNoShelley(t)
+
+	serverURL := startShelleyServer(t)
+	mountPoint, store := mountTestFSWithStore(t, serverURL, time.Hour)
+
+	// Clone a new conversation
+	var convID string
+	t.Run("Clone", func(t *testing.T) {
+		data, err := ioutil.ReadFile(filepath.Join(mountPoint, "new", "clone"))
+		if err != nil {
+			t.Fatalf("Failed to read new/clone: %v", err)
+		}
+		convID = strings.TrimSpace(string(data))
+		if len(convID) != 8 {
+			t.Fatalf("Expected 8-char hex ID, got %q", convID)
+		}
+		t.Logf("Cloned conversation ID: %s", convID)
+	})
+
+	// Verify the conversation exists in state but is NOT created
+	t.Run("VerifyStateUncreated", func(t *testing.T) {
+		cs := store.Get(convID)
+		if cs == nil {
+			t.Fatal("Expected conversation in state")
+		}
+		if cs.Created {
+			t.Error("Expected Created=false for cloned conversation")
+		}
+	})
+
+	// Verify the conversation does NOT appear in ls /conversation
+	t.Run("NotInListing", func(t *testing.T) {
+		entries, err := ioutil.ReadDir(filepath.Join(mountPoint, "conversation"))
+		if err != nil {
+			t.Fatalf("Failed to read conversation directory: %v", err)
+		}
+		for _, e := range entries {
+			if e.Name() == convID {
+				t.Errorf("Uncreated conversation %s should NOT appear in listing", convID)
+			}
+		}
+		t.Logf("Verified: conversation %s not in listing (entries: %d)", convID, len(entries))
+	})
+
+	// Verify the conversation IS accessible via Lookup (can access its files)
+	t.Run("AccessibleViaLookup", func(t *testing.T) {
+		// Should be able to read ctl
+		_, err := ioutil.ReadFile(filepath.Join(mountPoint, "conversation", convID, "ctl"))
+		if err != nil {
+			t.Fatalf("Failed to read ctl for uncreated conversation: %v", err)
+		}
+
+		// Should be able to stat the directory
+		info, err := os.Stat(filepath.Join(mountPoint, "conversation", convID))
+		if err != nil {
+			t.Fatalf("Failed to stat uncreated conversation: %v", err)
+		}
+		if !info.IsDir() {
+			t.Error("Expected conversation to be a directory")
+		}
+	})
+
+	// Configure and create the conversation
+	t.Run("WriteCtlAndNew", func(t *testing.T) {
+		ctlPath := filepath.Join(mountPoint, "conversation", convID, "ctl")
+		err := ioutil.WriteFile(ctlPath, []byte("model=predictable"), 0644)
+		if err != nil {
+			t.Fatalf("Failed to write ctl: %v", err)
+		}
+
+		newPath := filepath.Join(mountPoint, "conversation", convID, "new")
+		err = ioutil.WriteFile(newPath, []byte("Hello from test"), 0644)
+		if err != nil {
+			t.Fatalf("Failed to write first message: %v", err)
+		}
+	})
+
+	// Verify the conversation now appears in listing
+	t.Run("NowInListing", func(t *testing.T) {
+		entries, err := ioutil.ReadDir(filepath.Join(mountPoint, "conversation"))
+		if err != nil {
+			t.Fatalf("Failed to read conversation directory: %v", err)
+		}
+		found := false
+		for _, e := range entries {
+			if e.Name() == convID {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("Created conversation %s should appear in listing", convID)
+			t.Logf("Entries: %v", entryNames(entries))
+		}
+	})
+
+	// Verify state is now marked as created
+	t.Run("VerifyStateCreated", func(t *testing.T) {
+		cs := store.Get(convID)
+		if cs == nil {
+			t.Fatal("Expected conversation in state")
+		}
+		if !cs.Created {
+			t.Error("Expected Created=true after writing message")
+		}
+	})
+}
+
+// TestUnconversedIDsCleanup verifies that unconversed IDs are cleaned up after the timeout.
+func TestUnconversedIDsCleanup(t *testing.T) {
+	skipIfNoFusermount(t)
+	skipIfNoShelley(t)
+
+	serverURL := startShelleyServer(t)
+	// Use a very short timeout for testing
+	mountPoint, store := mountTestFSWithStore(t, serverURL, 100*time.Millisecond)
+
+	// Clone a new conversation
+	var convID string
+	t.Run("Clone", func(t *testing.T) {
+		data, err := ioutil.ReadFile(filepath.Join(mountPoint, "new", "clone"))
+		if err != nil {
+			t.Fatalf("Failed to read new/clone: %v", err)
+		}
+		convID = strings.TrimSpace(string(data))
+		t.Logf("Cloned conversation ID: %s", convID)
+	})
+
+	// Verify the conversation exists in state
+	t.Run("ExistsInState", func(t *testing.T) {
+		cs := store.Get(convID)
+		if cs == nil {
+			t.Fatal("Expected conversation in state")
+		}
+	})
+
+	// Wait for timeout to expire
+	t.Run("WaitForTimeout", func(t *testing.T) {
+		time.Sleep(150 * time.Millisecond)
+	})
+
+	// Trigger cleanup by reading the conversation directory
+	t.Run("TriggerCleanup", func(t *testing.T) {
+		_, err := ioutil.ReadDir(filepath.Join(mountPoint, "conversation"))
+		if err != nil {
+			t.Fatalf("Failed to read conversation directory: %v", err)
+		}
+	})
+
+	// Verify the conversation is gone from state
+	t.Run("CleanedUpFromState", func(t *testing.T) {
+		cs := store.Get(convID)
+		if cs != nil {
+			t.Errorf("Expected conversation %s to be cleaned up from state", convID)
+		}
+	})
+}
+
+// TestUnconversedIDsNotCleanedUpBeforeTimeout verifies that unconversed IDs are not
+// cleaned up before the timeout expires.
+func TestUnconversedIDsNotCleanedUpBeforeTimeout(t *testing.T) {
+	skipIfNoFusermount(t)
+	skipIfNoShelley(t)
+
+	serverURL := startShelleyServer(t)
+	// Use a longer timeout
+	mountPoint, store := mountTestFSWithStore(t, serverURL, time.Hour)
+
+	// Clone a new conversation
+	var convID string
+	t.Run("Clone", func(t *testing.T) {
+		data, err := ioutil.ReadFile(filepath.Join(mountPoint, "new", "clone"))
+		if err != nil {
+			t.Fatalf("Failed to read new/clone: %v", err)
+		}
+		convID = strings.TrimSpace(string(data))
+		t.Logf("Cloned conversation ID: %s", convID)
+	})
+
+	// Trigger Readdir multiple times
+	t.Run("MultipleReaddirs", func(t *testing.T) {
+		for i := 0; i < 3; i++ {
+			_, err := ioutil.ReadDir(filepath.Join(mountPoint, "conversation"))
+			if err != nil {
+				t.Fatalf("Failed to read conversation directory: %v", err)
+			}
+		}
+	})
+
+	// Verify the conversation still exists in state (not cleaned up)
+	t.Run("StillInState", func(t *testing.T) {
+		cs := store.Get(convID)
+		if cs == nil {
+			t.Errorf("Conversation %s should not be cleaned up before timeout", convID)
+		}
+	})
+}
+
+// TestCreatedConversationNotCleanedUp verifies that created conversations are never
+// cleaned up, even with a short timeout.
+func TestCreatedConversationNotCleanedUp(t *testing.T) {
+	skipIfNoFusermount(t)
+	skipIfNoShelley(t)
+
+	serverURL := startShelleyServer(t)
+	// Use a very short timeout
+	mountPoint, store := mountTestFSWithStore(t, serverURL, 100*time.Millisecond)
+
+	// Clone and create a conversation
+	var convID string
+	t.Run("CloneAndCreate", func(t *testing.T) {
+		data, err := ioutil.ReadFile(filepath.Join(mountPoint, "new", "clone"))
+		if err != nil {
+			t.Fatalf("Failed to read new/clone: %v", err)
+		}
+		convID = strings.TrimSpace(string(data))
+
+		// Configure and create
+		ctlPath := filepath.Join(mountPoint, "conversation", convID, "ctl")
+		err = ioutil.WriteFile(ctlPath, []byte("model=predictable"), 0644)
+		if err != nil {
+			t.Fatalf("Failed to write ctl: %v", err)
+		}
+
+		newPath := filepath.Join(mountPoint, "conversation", convID, "new")
+		err = ioutil.WriteFile(newPath, []byte("Hello"), 0644)
+		if err != nil {
+			t.Fatalf("Failed to write message: %v", err)
+		}
+		t.Logf("Created conversation ID: %s", convID)
+	})
+
+	// Wait for timeout to expire
+	t.Run("WaitForTimeout", func(t *testing.T) {
+		time.Sleep(150 * time.Millisecond)
+	})
+
+	// Trigger cleanup attempt
+	t.Run("TriggerCleanup", func(t *testing.T) {
+		_, err := ioutil.ReadDir(filepath.Join(mountPoint, "conversation"))
+		if err != nil {
+			t.Fatalf("Failed to read conversation directory: %v", err)
+		}
+	})
+
+	// Verify the created conversation still exists
+	t.Run("StillInState", func(t *testing.T) {
+		cs := store.Get(convID)
+		if cs == nil {
+			t.Fatal("Created conversation should not be cleaned up")
+		}
+		if !cs.Created {
+			t.Error("Expected conversation to still be marked as created")
+		}
+	})
+
+	// Verify it still appears in listing
+	t.Run("StillInListing", func(t *testing.T) {
+		entries, err := ioutil.ReadDir(filepath.Join(mountPoint, "conversation"))
+		if err != nil {
+			t.Fatalf("Failed to read conversation directory: %v", err)
+		}
+		found := false
+		for _, e := range entries {
+			if e.Name() == convID {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Error("Created conversation should still appear in listing")
+		}
+	})
+}

@@ -41,14 +41,16 @@ func (s *SymlinkNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.At
 // FS is the root inode of the Shelley FUSE filesystem.
 type FS struct {
 	fs.Inode
-	client    *shelley.Client
-	state     *state.Store
-	startTime time.Time
+	client       *shelley.Client
+	state        *state.Store
+	cloneTimeout time.Duration
+	startTime    time.Time
 }
 
 // NewFS creates a new Shelley FUSE filesystem.
-func NewFS(client *shelley.Client, store *state.Store) *FS {
-	return &FS{client: client, state: store, startTime: time.Now()}
+// cloneTimeout specifies how long to wait before cleaning up unconversed clone IDs.
+func NewFS(client *shelley.Client, store *state.Store, cloneTimeout time.Duration) *FS {
+	return &FS{client: client, state: store, cloneTimeout: cloneTimeout, startTime: time.Now()}
 }
 
 // StartTime returns the time when the FUSE filesystem was created.
@@ -68,7 +70,7 @@ func (f *FS) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.I
 	case "new":
 		return f.NewInode(ctx, &NewDirNode{state: f.state, startTime: f.startTime}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
 	case "conversation":
-		return f.NewInode(ctx, &ConversationListNode{client: f.client, state: f.state, startTime: f.startTime}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
+		return f.NewInode(ctx, &ConversationListNode{client: f.client, state: f.state, cloneTimeout: f.cloneTimeout, startTime: f.startTime}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
 	}
 	return nil, syscall.ENOENT
 }
@@ -269,9 +271,10 @@ func (h *CloneFileHandle) Read(ctx context.Context, dest []byte, off int64) (fus
 
 type ConversationListNode struct {
 	fs.Inode
-	client    *shelley.Client
-	state     *state.Store
-	startTime time.Time
+	client       *shelley.Client
+	state        *state.Store
+	cloneTimeout time.Duration
+	startTime    time.Time
 }
 
 var _ = (fs.NodeLookuper)((*ConversationListNode)(nil))
@@ -374,8 +377,6 @@ func (c *ConversationListNode) Readdir(ctx context.Context) (fs.DirStream, sysca
 			// AdoptWithSlug handles the case where a conversation is not yet tracked locally
 			// Errors are non-fatal; worst case the conversation won't appear
 			// in this listing but will be adopted on next Lookup
-			// Errors are non-fatal; worst case the conversation won't appear
-			// in this listing but will be adopted on next Lookup
 			_, _ = c.state.AdoptWithSlug(conv.ConversationID, slug)
 		}
 	}
@@ -385,12 +386,24 @@ func (c *ConversationListNode) Readdir(ctx context.Context) (fs.DirStream, sysca
 	// Build entries: directories for local IDs, symlinks for server IDs and slugs
 	mappings := c.state.ListMappings()
 
-	// Filter out stale mappings: those with a Shelley ID that no longer exists on server
-	// Only filter if we successfully fetched from server; otherwise show all local entries
+	// Filter mappings and handle cleanup:
+	// - Only include created conversations in listing (uncreated ones are still accessible via Lookup)
+	// - Clean up expired uncreated conversations (lazy cleanup)
+	// - Filter out stale mappings with Shelley IDs that no longer exist on server
 	var filteredMappings []state.ConversationState
 	for _, cs := range mappings {
+		if !cs.Created {
+			// Uncreated conversation - check if it should be cleaned up
+			if c.cloneTimeout > 0 && !cs.CreatedAt.IsZero() && time.Since(cs.CreatedAt) > c.cloneTimeout {
+				// Expired - delete it (errors are non-fatal, will retry next Readdir)
+				_ = c.state.Delete(cs.LocalID)
+			}
+			// Either way, don't include uncreated conversations in listing
+			continue
+		}
+
 		if cs.ShelleyConversationID == "" {
-			// Local-only conversation, always include
+			// Created but no server ID - shouldn't happen, but include it
 			filteredMappings = append(filteredMappings, cs)
 		} else if !serverFetchSucceeded {
 			// Server fetch failed, include all to avoid data loss

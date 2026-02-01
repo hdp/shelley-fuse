@@ -556,3 +556,95 @@ func TestListMappings(t *testing.T) {
 		}
 	}
 }
+
+func TestDelete(t *testing.T) {
+	s, err := NewStore(tempStatePath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Clone a conversation
+	id, err := s.Clone()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify it exists
+	if s.Get(id) == nil {
+		t.Fatal("expected conversation to exist")
+	}
+
+	// Delete it
+	if err := s.Delete(id); err != nil {
+		t.Fatalf("Delete failed: %v", err)
+	}
+
+	// Verify it's gone
+	if s.Get(id) != nil {
+		t.Error("expected conversation to be deleted")
+	}
+}
+
+func TestDeleteNotFound(t *testing.T) {
+	s, err := NewStore(tempStatePath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Try to delete non-existent conversation
+	if err := s.Delete("nonexistent"); err == nil {
+		t.Error("expected error for nonexistent conversation")
+	}
+}
+
+func TestDeleteRefusesCreatedConversation(t *testing.T) {
+	s, err := NewStore(tempStatePath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Clone and mark created
+	id, _ := s.Clone()
+	_ = s.MarkCreated(id, "shelley-123", "slug")
+
+	// Try to delete - should fail
+	if err := s.Delete(id); err == nil {
+		t.Error("expected error when deleting created conversation")
+	}
+
+	// Verify it still exists
+	if s.Get(id) == nil {
+		t.Error("created conversation should not be deleted")
+	}
+}
+
+func TestDeletePersistence(t *testing.T) {
+	path := tempStatePath(t)
+
+	s1, err := NewStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Clone two conversations
+	id1, _ := s1.Clone()
+	id2, _ := s1.Clone()
+
+	// Delete one
+	if err := s1.Delete(id1); err != nil {
+		t.Fatalf("Delete failed: %v", err)
+	}
+
+	// Load into fresh store and verify persistence
+	s2, err := NewStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if s2.Get(id1) != nil {
+		t.Error("deleted conversation should not persist")
+	}
+	if s2.Get(id2) == nil {
+		t.Error("non-deleted conversation should persist")
+	}
+}

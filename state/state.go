@@ -159,6 +159,25 @@ func (s *Store) GetBySlug(slug string) string {
 	return ""
 }
 
+// Delete removes an unconversed conversation from state.
+// Returns an error if the conversation doesn't exist or is already created.
+// This is used for cleaning up abandoned clone operations.
+func (s *Store) Delete(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	cs, ok := s.Conversations[id]
+	if !ok {
+		return fmt.Errorf("conversation %s not found", id)
+	}
+	if cs.Created {
+		return fmt.Errorf("cannot delete created conversation %s", id)
+	}
+
+	delete(s.Conversations, id)
+	return s.saveLocked()
+}
+
 // ListMappings returns all conversations with their server IDs and slugs.
 // Used by FUSE to create symlinks for alternative access paths.
 func (s *Store) ListMappings() []ConversationState {
