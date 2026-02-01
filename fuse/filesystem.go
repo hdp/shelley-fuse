@@ -522,6 +522,13 @@ func (c *ConversationNode) Lookup(ctx context.Context, name string, out *fuse.En
 		return c.NewInode(ctx, &QueryDirNode{localID: c.localID, client: c.client, state: c.state, kind: querySince, startTime: c.startTime}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
 	case "from":
 		return c.NewInode(ctx, &QueryDirNode{localID: c.localID, client: c.client, state: c.state, kind: queryFrom, startTime: c.startTime}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
+	case "model":
+		cs := c.state.Get(c.localID)
+		if cs == nil || cs.Model == "" {
+			return nil, syscall.ENOENT
+		}
+		target := "../../models/" + cs.Model
+		return c.NewInode(ctx, &SymlinkNode{target: target, startTime: c.getConversationTime()}, fs.StableAttr{Mode: syscall.S_IFLNK}), 0
 	}
 
 	// all.json, all.md, {N}.json, {N}.md
@@ -550,7 +557,7 @@ func (c *ConversationNode) Lookup(ctx context.Context, name string, out *fuse.En
 }
 
 func (c *ConversationNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
-	return fs.NewListDirStream([]fuse.DirEntry{
+	entries := []fuse.DirEntry{
 		{Name: "ctl", Mode: fuse.S_IFREG},
 		{Name: "new", Mode: fuse.S_IFREG},
 		{Name: "status", Mode: fuse.S_IFDIR},
@@ -561,7 +568,15 @@ func (c *ConversationNode) Readdir(ctx context.Context) (fs.DirStream, syscall.E
 		{Name: "last", Mode: fuse.S_IFDIR},
 		{Name: "since", Mode: fuse.S_IFDIR},
 		{Name: "from", Mode: fuse.S_IFDIR},
-	}), 0
+	}
+
+	// Include model symlink only if model is set
+	cs := c.state.Get(c.localID)
+	if cs != nil && cs.Model != "" {
+		entries = append(entries, fuse.DirEntry{Name: "model", Mode: syscall.S_IFLNK})
+	}
+
+	return fs.NewListDirStream(entries), 0
 }
 
 func (c *ConversationNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
