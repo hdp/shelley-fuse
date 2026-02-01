@@ -601,30 +601,41 @@ func TestPlan9Flow(t *testing.T) {
 			t.Fatalf("Failed to read status directory: %v", err)
 		}
 
-		expectedFields := map[string]bool{
+		// Files that should be regular files
+		expectedFiles := map[string]bool{
 			"local_id":      false,
 			"shelley_id":    false,
 			"slug":          false,
 			"model":         false,
-			"cwd":           false,
 			"created":       false,
 			"created_at":    false,
 			"message_count": false,
 		}
 
+		// cwd should be a symlink
+		cwdFound := false
+
 		for _, e := range entries {
-			if _, ok := expectedFields[e.Name()]; ok {
-				expectedFields[e.Name()] = true
+			if e.Name() == "cwd" {
+				cwdFound = true
+				if e.Mode()&os.ModeSymlink == 0 {
+					t.Errorf("Expected 'cwd' to be a symlink, got mode %v", e.Mode())
+				}
+			} else if _, ok := expectedFiles[e.Name()]; ok {
+				expectedFiles[e.Name()] = true
 				if e.IsDir() {
 					t.Errorf("Expected %q to be a file, not a directory", e.Name())
 				}
 			}
 		}
 
-		for name, found := range expectedFields {
+		for name, found := range expectedFiles {
 			if !found {
 				t.Errorf("Expected file %q in status directory", name)
 			}
+		}
+		if !cwdFound {
+			t.Errorf("Expected symlink 'cwd' in status directory")
 		}
 	})
 
@@ -659,13 +670,13 @@ func TestPlan9Flow(t *testing.T) {
 			t.Errorf("Expected model=predictable, got %q", strings.TrimSpace(string(data)))
 		}
 
-		// Check cwd
-		data, err = ioutil.ReadFile(filepath.Join(statusDir, "cwd"))
+		// Check cwd (symlink to the working directory)
+		cwdTarget, err := os.Readlink(filepath.Join(statusDir, "cwd"))
 		if err != nil {
-			t.Fatalf("Failed to read status/cwd: %v", err)
+			t.Fatalf("Failed to readlink status/cwd: %v", err)
 		}
-		if strings.TrimSpace(string(data)) != "/tmp" {
-			t.Errorf("Expected cwd=/tmp, got %q", strings.TrimSpace(string(data)))
+		if cwdTarget != "/tmp" {
+			t.Errorf("Expected cwd symlink target=/tmp, got %q", cwdTarget)
 		}
 
 		// Check created (should be "true" after conversation is created)

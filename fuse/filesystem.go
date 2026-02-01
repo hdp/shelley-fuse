@@ -775,18 +775,31 @@ var _ = (fs.NodeGetattrer)((*ConvStatusDirNode)(nil))
 
 // statusFields defines the files exposed in the status/ directory.
 // Each field name maps to a function that extracts the value from ConversationState.
+// Note: "cwd" is handled specially as a symlink, not included here.
 var statusFields = []string{
 	"local_id",
 	"shelley_id",
 	"slug",
 	"model",
-	"cwd",
 	"created",
 	"created_at",
 	"message_count",
 }
 
 func (s *ConvStatusDirNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
+	// Handle "cwd" specially as a symlink
+	if name == "cwd" {
+		cs := s.state.Get(s.localID)
+		if cs == nil || cs.Cwd == "" {
+			return nil, syscall.ENOENT
+		}
+		return s.NewInode(ctx, &CwdSymlinkNode{
+			localID:   s.localID,
+			state:     s.state,
+			startTime: s.startTime,
+		}, fs.StableAttr{Mode: syscall.S_IFLNK}), 0
+	}
+
 	// Check if it's a valid status field
 	for _, field := range statusFields {
 		if field == name {
@@ -803,9 +816,14 @@ func (s *ConvStatusDirNode) Lookup(ctx context.Context, name string, out *fuse.E
 }
 
 func (s *ConvStatusDirNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
-	entries := make([]fuse.DirEntry, len(statusFields))
-	for i, field := range statusFields {
-		entries[i] = fuse.DirEntry{Name: field, Mode: fuse.S_IFREG}
+	entries := make([]fuse.DirEntry, 0, len(statusFields)+1)
+	for _, field := range statusFields {
+		entries = append(entries, fuse.DirEntry{Name: field, Mode: fuse.S_IFREG})
+	}
+	// Add cwd as a symlink (only if cwd is set)
+	cs := s.state.Get(s.localID)
+	if cs != nil && cs.Cwd != "" {
+		entries = append(entries, fuse.DirEntry{Name: "cwd", Mode: syscall.S_IFLNK})
 	}
 	return fs.NewListDirStream(entries), 0
 }
@@ -856,8 +874,6 @@ func (f *ConvStatusFieldNode) Read(ctx context.Context, fh fs.FileHandle, dest [
 		value = cs.Slug
 	case "model":
 		value = cs.Model
-	case "cwd":
-		value = cs.Cwd
 	case "created":
 		if cs.Created {
 			value = "true"
@@ -896,6 +912,41 @@ func (f *ConvStatusFieldNode) Getattr(ctx context.Context, fh fs.FileHandle, out
 		setTimestamps(&out.Attr, cs.CreatedAt)
 	} else {
 		setTimestamps(&out.Attr, f.startTime)
+	}
+	return 0
+}
+
+// --- CwdSymlinkNode: symlink pointing to the conversation's working directory ---
+
+type CwdSymlinkNode struct {
+	fs.Inode
+	localID   string
+	state     *state.Store
+	startTime time.Time
+}
+
+var _ = (fs.NodeReadlinker)((*CwdSymlinkNode)(nil))
+var _ = (fs.NodeGetattrer)((*CwdSymlinkNode)(nil))
+
+func (c *CwdSymlinkNode) Readlink(ctx context.Context) ([]byte, syscall.Errno) {
+	cs := c.state.Get(c.localID)
+	if cs == nil || cs.Cwd == "" {
+		return nil, syscall.ENOENT
+	}
+	return []byte(cs.Cwd), 0
+}
+
+func (c *CwdSymlinkNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
+	cs := c.state.Get(c.localID)
+	if cs == nil || cs.Cwd == "" {
+		return syscall.ENOENT
+	}
+	out.Mode = syscall.S_IFLNK | 0777
+	out.Size = uint64(len(cs.Cwd))
+	if !cs.CreatedAt.IsZero() {
+		setTimestamps(&out.Attr, cs.CreatedAt)
+	} else {
+		setTimestamps(&out.Attr, c.startTime)
 	}
 	return 0
 }
