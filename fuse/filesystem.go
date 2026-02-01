@@ -281,23 +281,21 @@ func (c *ConversationListNode) Lookup(ctx context.Context, name string, out *fus
 }
 
 func (c *ConversationListNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
-	// Adopt any server conversations that aren't tracked locally.
-	// This ensures all conversations always appear with local IDs.
+	// Adopt any server conversations that aren't tracked locally, and update
+	// slugs for already-tracked conversations (slugs may be added later).
 	serverConvs, err := c.fetchServerConversations()
 	if err == nil {
 		for _, conv := range serverConvs {
-			// Check if this server conversation is already tracked locally
-			localID := c.state.GetByShelleyID(conv.ConversationID)
-			if localID == "" {
-				// Not tracked locally - adopt it now
-				slug := ""
-				if conv.Slug != nil {
-					slug = *conv.Slug
-				}
-				// Adopt errors are non-fatal; worst case the conversation
-				// won't appear in this listing but will be adopted on next Lookup
-				_, _ = c.state.AdoptWithSlug(conv.ConversationID, slug)
+			slug := ""
+			if conv.Slug != nil {
+				slug = *conv.Slug
 			}
+			// AdoptWithSlug handles both cases:
+			// - New conversation: creates local entry with slug
+			// - Existing conversation: updates slug if it was previously empty
+			// Errors are non-fatal; worst case the conversation won't appear
+			// in this listing but will be adopted on next Lookup
+			_, _ = c.state.AdoptWithSlug(conv.ConversationID, slug)
 		}
 	}
 	// Note: if fetchServerConversations fails, we still return local entries

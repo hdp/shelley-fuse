@@ -1126,3 +1126,4 @@ func TestSymlinkWithSlug(t *testing.T) {
 		t.Logf("Both slug and server ID symlinks point to: %s", targetViaSlug)
 	})
 }
+

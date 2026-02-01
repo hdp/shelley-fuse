@@ -1061,3 +1061,156 @@ func TestModelsDirNode_EmptyModels(t *testing.T) {
 		t.Errorf("expected 0 entries for empty model list, got %d", count)
 	}
 }
+
+// TestConversationListNode_ReaddirUpdatesEmptySlugs tests that Readdir updates
+// slugs for conversations that were previously adopted without a slug.
+// This is a regression test for a bug where conversations adopted before
+// the slug feature existed (or before the server assigned a slug) would
+// never get their slug symlinks created.
+func TestConversationListNode_ReaddirUpdatesEmptySlugs(t *testing.T) {
+	// Server returns a conversation with a slug
+	slug := "my-conversation-slug"
+	serverConvs := []shelley.Conversation{
+		{ConversationID: "server-conv-slug-update", Slug: &slug},
+	}
+	server := mockConversationsServer(t, serverConvs)
+	defer server.Close()
+
+	client := shelley.NewClient(server.URL)
+	store := testStore(t)
+
+	// Adopt the conversation WITHOUT a slug (simulating old adoption)
+	localID, err := store.AdoptWithSlug("server-conv-slug-update", "")
+	if err != nil {
+		t.Fatalf("AdoptWithSlug failed: %v", err)
+	}
+
+	// Verify slug is empty initially
+	cs := store.Get(localID)
+	if cs.Slug != "" {
+		t.Fatalf("Expected empty slug initially, got %q", cs.Slug)
+	}
+
+	// Readdir should update the slug
+	node := &ConversationListNode{client: client, state: store}
+	stream, errno := node.Readdir(context.Background())
+	if errno != 0 {
+		t.Fatalf("Readdir failed with errno %d", errno)
+	}
+
+	// Collect all entries
+	var dirs, symlinks []string
+	for stream.HasNext() {
+		entry, _ := stream.Next()
+		if entry.Mode&syscall.S_IFLNK != 0 {
+			symlinks = append(symlinks, entry.Name)
+		} else if entry.Mode&syscall.S_IFDIR != 0 {
+			dirs = append(dirs, entry.Name)
+		}
+	}
+
+	// Should have 1 directory (local ID)
+	if len(dirs) != 1 {
+		t.Fatalf("Expected 1 directory, got %d: %v", len(dirs), dirs)
+	}
+	if dirs[0] != localID {
+		t.Errorf("Expected directory %q, got %q", localID, dirs[0])
+	}
+
+	// Should have 2 symlinks: server ID and slug
+	if len(symlinks) != 2 {
+		t.Fatalf("Expected 2 symlinks (server ID + slug), got %d: %v", len(symlinks), symlinks)
+	}
+
+	// Verify slug symlink is present
+	foundSlug := false
+	for _, name := range symlinks {
+		if name == slug {
+			foundSlug = true
+			break
+		}
+	}
+	if !foundSlug {
+		t.Errorf("Slug symlink %q not found in listing, symlinks: %v", slug, symlinks)
+	}
+
+	// Verify the state was updated with the slug
+	cs = store.Get(localID)
+	if cs.Slug != slug {
+		t.Errorf("State slug not updated: got %q, want %q", cs.Slug, slug)
+	}
+}
+
+// TestConversationListNode_ReaddirWithSlugs tests that conversations with slugs
+// appear correctly in the directory listing with slug symlinks.
+func TestConversationListNode_ReaddirWithSlugs(t *testing.T) {
+	// Server returns conversations with slugs
+	slug1 := "first-conversation"
+	slug2 := "second-conversation"
+	serverConvs := []shelley.Conversation{
+		{ConversationID: "server-conv-with-slug-1", Slug: &slug1},
+		{ConversationID: "server-conv-with-slug-2", Slug: &slug2},
+	}
+	server := mockConversationsServer(t, serverConvs)
+	defer server.Close()
+
+	client := shelley.NewClient(server.URL)
+	store := testStore(t)
+
+	node := &ConversationListNode{client: client, state: store}
+	stream, errno := node.Readdir(context.Background())
+	if errno != 0 {
+		t.Fatalf("Readdir failed with errno %d", errno)
+	}
+
+	// Collect all entries
+	var dirs, symlinks []string
+	for stream.HasNext() {
+		entry, _ := stream.Next()
+		if entry.Mode&syscall.S_IFLNK != 0 {
+			symlinks = append(symlinks, entry.Name)
+		} else if entry.Mode&syscall.S_IFDIR != 0 {
+			dirs = append(dirs, entry.Name)
+		}
+	}
+
+	// Should have 2 directories (local IDs)
+	if len(dirs) != 2 {
+		t.Fatalf("Expected 2 directories, got %d: %v", len(dirs), dirs)
+	}
+
+	// Should have 4 symlinks: 2 server IDs + 2 slugs
+	if len(symlinks) != 4 {
+		t.Fatalf("Expected 4 symlinks (2 server IDs + 2 slugs), got %d: %v", len(symlinks), symlinks)
+	}
+
+	// Verify both slugs are present as symlinks
+	expectedSymlinks := map[string]bool{
+		"server-conv-with-slug-1": false,
+		"server-conv-with-slug-2": false,
+		"first-conversation":      false,
+		"second-conversation":     false,
+	}
+	for _, name := range symlinks {
+		if _, ok := expectedSymlinks[name]; ok {
+			expectedSymlinks[name] = true
+		}
+	}
+	for name, found := range expectedSymlinks {
+		if !found {
+			t.Errorf("Expected symlink %q not found", name)
+		}
+	}
+
+	// Verify slugs were persisted in state
+	for _, localID := range dirs {
+		cs := store.Get(localID)
+		if cs == nil {
+			t.Errorf("Missing state for local ID %s", localID)
+			continue
+		}
+		if cs.Slug == "" {
+			t.Errorf("Expected non-empty slug for local ID %s", localID)
+		}
+	}
+}
