@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"time"
 )
 
 // Client is a Shelley API client
@@ -20,7 +21,9 @@ type Client struct {
 func NewClient(baseURL string) *Client {
 	return &Client{
 		baseURL:    strings.TrimRight(baseURL, "/"),
-		httpClient: &http.Client{},
+		httpClient: &http.Client{
+			Timeout: 2 * time.Minute, // Prevent hanging on unresponsive servers
+		},
 	}
 }
 
