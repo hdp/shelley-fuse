@@ -30,6 +30,8 @@ func testStore(t *testing.T) *state.Store {
 	return s
 }
 
+func strPtr(s string) *string { return &s }
+
 func TestBasicMount(t *testing.T) {
 	mockClient := shelley.NewClient("http://localhost:11002")
 	store := testStore(t)
@@ -2726,5 +2728,267 @@ func TestConversationNode_ModelSymlink_Timestamp(t *testing.T) {
 	diff := mtime.Sub(convTime)
 	if diff < -time.Second || diff > time.Second {
 		t.Errorf("Model symlink mtime %v differs from conversation time %v by %v", mtime, convTime, diff)
+	}
+}
+
+// TestMessagesDirNodeReaddirWithToolCalls verifies that Readdir generates correct
+// filenames for tool call and result messages.
+func TestMessagesDirNodeReaddirWithToolCalls(t *testing.T) {
+	// Create mock server that returns conversation with tool calls
+	convID := "test-conv-with-tools"
+	msgs := []shelley.Message{
+		{MessageID: "m1", ConversationID: convID, SequenceID: 1, Type: "user", UserData: strPtr("Hello")},
+		{MessageID: "m2", ConversationID: convID, SequenceID: 2, Type: "shelley", LLMData: strPtr(`{"Content": [{"Type": 5, "ToolUseID": "tu_123", "ToolName": "bash"}]}`)},
+		{MessageID: "m3", ConversationID: convID, SequenceID: 3, Type: "user", UserData: strPtr(`{"Content": [{"Type": 6, "ToolUseID": "tu_123"}]}`)},
+		{MessageID: "m4", ConversationID: convID, SequenceID: 4, Type: "shelley", LLMData: strPtr("Done!")},
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Client uses /api/conversation/{id} (singular)
+		if r.URL.Path == "/api/conversation/"+convID {
+			data, _ := json.Marshal(struct {
+				Messages []shelley.Message `json:"messages"`
+			}{Messages: msgs})
+			w.Write(data)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	client := shelley.NewClient(server.URL)
+	store := testStore(t)
+
+	// Create and mark conversation as created
+	localID, _ := store.Clone()
+	store.MarkCreated(localID, convID, "")
+
+	node := &MessagesDirNode{
+		localID:   localID,
+		client:    client,
+		state:     store,
+		startTime: time.Now(),
+	}
+
+	stream, errno := node.Readdir(context.Background())
+	if errno != 0 {
+		t.Fatalf("Readdir failed with errno %d", errno)
+	}
+
+	// Collect all entries
+	var names []string
+	for stream.HasNext() {
+		entry, _ := stream.Next()
+		names = append(names, entry.Name)
+	}
+
+	// Expected files:
+	// - Static: all.json, all.md, last, since, from
+	// - Message 1 (user): 001-user.json, 001-user.md
+	// - Message 2 (bash-tool): 002-bash-tool.json, 002-bash-tool.md
+	// - Message 3 (bash-result): 003-bash-result.json, 003-bash-result.md
+	// - Message 4 (shelley): 004-shelley.json, 004-shelley.md
+	expected := []string{
+		"all.json", "all.md", "last", "since", "from",
+		"001-user.json", "001-user.md",
+		"002-bash-tool.json", "002-bash-tool.md",
+		"003-bash-result.json", "003-bash-result.md",
+		"004-shelley.json", "004-shelley.md",
+	}
+
+	namesSet := make(map[string]bool)
+	for _, name := range names {
+		namesSet[name] = true
+	}
+
+	for _, exp := range expected {
+		if !namesSet[exp] {
+			t.Errorf("Expected file %q not found in Readdir results: %v", exp, names)
+		}
+	}
+
+	// Verify total count
+	if len(names) != len(expected) {
+		t.Errorf("Expected %d entries, got %d: %v", len(expected), len(names), names)
+	}
+}
+
+// TestMessagesDirNodeLookupWithToolCalls verifies that Lookup correctly maps
+// tool call/result filenames to their messages via a mounted filesystem.
+func TestMessagesDirNodeLookupWithToolCalls(t *testing.T) {
+	convID := "test-conv-lookup-tools"
+	msgs := []shelley.Message{
+		{MessageID: "m1", ConversationID: convID, SequenceID: 1, Type: "user", UserData: strPtr("Hello")},
+		{MessageID: "m2", ConversationID: convID, SequenceID: 2, Type: "shelley", LLMData: strPtr(`{"Content": [{"Type": 5, "ToolUseID": "tu_456", "ToolName": "patch"}]}`)},
+		{MessageID: "m3", ConversationID: convID, SequenceID: 3, Type: "user", UserData: strPtr(`{"Content": [{"Type": 6, "ToolUseID": "tu_456"}]}`)},
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Client uses /api/conversation/{id} (singular)
+		if r.URL.Path == "/api/conversation/"+convID {
+			data, _ := json.Marshal(struct {
+				Messages []shelley.Message `json:"messages"`
+			}{Messages: msgs})
+			w.Write(data)
+			return
+		}
+		if r.URL.Path == "/api/conversations" {
+			// Return conversation list for adoption
+			data, _ := json.Marshal([]shelley.Conversation{{ConversationID: convID}})
+			w.Write(data)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	client := shelley.NewClient(server.URL)
+	store := testStore(t)
+
+	localID, _ := store.Clone()
+	store.MarkCreated(localID, convID, "")
+
+	shelleyFS := NewFS(client, store, time.Hour)
+
+	tmpDir, err := ioutil.TempDir("", "shelley-fuse-tool-lookup-test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	opts := &fs.Options{}
+	entryTimeout := time.Duration(0)
+	attrTimeout := time.Duration(0)
+	negativeTimeout := time.Duration(0)
+	opts.EntryTimeout = &entryTimeout
+	opts.AttrTimeout = &attrTimeout
+	opts.NegativeTimeout = &negativeTimeout
+
+	fssrv, err := fs.Mount(tmpDir, shelleyFS, opts)
+	if err != nil {
+		t.Fatalf("Mount failed: %v", err)
+	}
+	defer fssrv.Unmount()
+
+	msgDir := filepath.Join(tmpDir, "conversation", localID, "messages")
+
+	testCases := []struct {
+		filename string
+		wantOK   bool
+	}{
+		{"001-user.json", true},
+		{"001-user.md", true},
+		{"002-patch-tool.json", true},
+		{"002-patch-tool.md", true},
+		{"003-patch-result.json", true},
+		{"003-patch-result.md", true},
+		// Wrong slug for seq 1 (should be user, not shelley)
+		{"001-shelley.json", false},
+		// Wrong slug for seq 2 (should be patch-tool, not bash-tool)
+		{"002-bash-tool.json", false},
+		// Non-existent sequence
+		{"099-user.json", false},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.filename, func(t *testing.T) {
+			_, err := os.Stat(filepath.Join(msgDir, tc.filename))
+			gotOK := err == nil
+			if gotOK != tc.wantOK {
+				if tc.wantOK {
+					t.Errorf("Stat(%q): expected success, got error: %v", tc.filename, err)
+				} else {
+					t.Errorf("Stat(%q): expected failure, got success", tc.filename)
+				}
+			}
+		})
+	}
+}
+
+// TestMessagesDirNodeReadToolCallContent verifies that reading a tool call/result
+// file returns the correct message content.
+func TestMessagesDirNodeReadToolCallContent(t *testing.T) {
+	convID := "test-conv-read-tools"
+	msgs := []shelley.Message{
+		{MessageID: "m1", ConversationID: convID, SequenceID: 100, Type: "shelley", LLMData: strPtr(`{"Content": [{"Type": 5, "ToolUseID": "tu_789", "ToolName": "bash"}]}`)},
+		{MessageID: "m2", ConversationID: convID, SequenceID: 101, Type: "user", UserData: strPtr(`{"Content": [{"Type": 6, "ToolUseID": "tu_789"}]}`)},
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/conversation/"+convID {
+			data, _ := json.Marshal(struct {
+				Messages []shelley.Message `json:"messages"`
+			}{Messages: msgs})
+			w.Write(data)
+			return
+		}
+		if r.URL.Path == "/api/conversations" {
+			data, _ := json.Marshal([]shelley.Conversation{{ConversationID: convID}})
+			w.Write(data)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	client := shelley.NewClient(server.URL)
+	store := testStore(t)
+
+	localID, _ := store.Clone()
+	store.MarkCreated(localID, convID, "")
+
+	shelleyFS := NewFS(client, store, time.Hour)
+
+	tmpDir, err := ioutil.TempDir("", "shelley-fuse-tool-read-test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	opts := &fs.Options{}
+	entryTimeout := time.Duration(0)
+	attrTimeout := time.Duration(0)
+	negativeTimeout := time.Duration(0)
+	opts.EntryTimeout = &entryTimeout
+	opts.AttrTimeout = &attrTimeout
+	opts.NegativeTimeout = &negativeTimeout
+
+	fssrv, err := fs.Mount(tmpDir, shelleyFS, opts)
+	if err != nil {
+		t.Fatalf("Mount failed: %v", err)
+	}
+	defer fssrv.Unmount()
+
+	msgDir := filepath.Join(tmpDir, "conversation", localID, "messages")
+
+	// Read 100-bash-tool.json and verify it contains the tool call message
+	data, err := ioutil.ReadFile(filepath.Join(msgDir, "100-bash-tool.json"))
+	if err != nil {
+		t.Fatalf("Failed to read 100-bash-tool.json: %v", err)
+	}
+	var readMsgs []shelley.Message
+	if err := json.Unmarshal(data, &readMsgs); err != nil {
+		t.Fatalf("Failed to parse 100-bash-tool.json: %v", err)
+	}
+	if len(readMsgs) != 1 {
+		t.Fatalf("Expected 1 message, got %d", len(readMsgs))
+	}
+	if readMsgs[0].SequenceID != 100 {
+		t.Errorf("Expected SequenceID=100, got %d", readMsgs[0].SequenceID)
+	}
+
+	// Read 101-bash-result.json and verify it contains the tool result message
+	data, err = ioutil.ReadFile(filepath.Join(msgDir, "101-bash-result.json"))
+	if err != nil {
+		t.Fatalf("Failed to read 101-bash-result.json: %v", err)
+	}
+	if err := json.Unmarshal(data, &readMsgs); err != nil {
+		t.Fatalf("Failed to parse 101-bash-result.json: %v", err)
+	}
+	if len(readMsgs) != 1 {
+		t.Fatalf("Expected 1 message, got %d", len(readMsgs))
+	}
+	if readMsgs[0].SequenceID != 101 {
+		t.Errorf("Expected SequenceID=101, got %d", readMsgs[0].SequenceID)
 	}
 }

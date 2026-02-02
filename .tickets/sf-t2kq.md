@@ -1,6 +1,6 @@
 ---
 id: sf-t2kq
-status: open
+status: closed
 deps: [sf-fbwg]
 links: []
 created: 2026-02-02T14:29:44Z

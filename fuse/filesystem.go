@@ -741,8 +741,46 @@ func (m *MessagesDirNode) Lookup(ctx context.Context, name string, out *fuse.Ent
 		}
 	}
 
-	// Named message files: {NNN}-{type}.json, {NNN}-{type}.md
+	// Named message files: {NNN}-{slug}.json, {NNN}-{slug}.md
+	// We need to verify the filename matches the expected slug for that message
 	if seqNum, fmt, ok := parseNamedMessageFile(name); ok {
+		// Fetch conversation and verify the filename matches the computed slug
+		cs := m.state.Get(m.localID)
+		if cs == nil || !cs.Created || cs.ShelleyConversationID == "" {
+			return nil, syscall.ENOENT
+		}
+
+		convData, err := m.client.GetConversation(cs.ShelleyConversationID)
+		if err != nil {
+			return nil, syscall.EIO
+		}
+
+		msgs, err := shelley.ParseMessages(convData)
+		if err != nil {
+			return nil, syscall.EIO
+		}
+
+		// Find the message by sequence number
+		msg := shelley.GetMessage(msgs, seqNum)
+		if msg == nil {
+			return nil, syscall.ENOENT
+		}
+
+		// Build tool map and compute expected slug
+		msgPtrs := make([]*shelley.Message, len(msgs))
+		for i := range msgs {
+			msgPtrs[i] = &msgs[i]
+		}
+		toolMap := shelley.BuildToolNameMap(msgPtrs)
+		expectedSlug := shelley.MessageSlug(msg, toolMap)
+		expectedBase := messageFileBase(seqNum, expectedSlug)
+
+		// Verify the filename matches the expected slug
+		base := strings.TrimSuffix(strings.TrimSuffix(name, ".json"), ".md")
+		if base != expectedBase {
+			return nil, syscall.ENOENT
+		}
+
 		return m.NewInode(ctx, &ConvContentNode{
 			localID: m.localID, client: m.client, state: m.state,
 			query: contentQuery{kind: queryBySeq, seqNum: seqNum, format: fmt}, startTime: m.startTime,
@@ -761,15 +799,23 @@ func (m *MessagesDirNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Er
 		{Name: "from", Mode: fuse.S_IFDIR},
 	}
 
-	// List individual messages with named files (001-user.json, 001-user.md, ...)
+	// List individual messages with named files (001-user.json, 100-bash-tool.md, ...)
 	cs := m.state.Get(m.localID)
 	if cs != nil && cs.Created && cs.ShelleyConversationID != "" {
 		convData, err := m.client.GetConversation(cs.ShelleyConversationID)
 		if err == nil {
 			msgs, err := shelley.ParseMessages(convData)
 			if err == nil {
-				for _, msg := range msgs {
-					base := messageFileBase(msg.SequenceID, msg.Type)
+				// Build tool name map for proper tool_result naming
+				msgPtrs := make([]*shelley.Message, len(msgs))
+				for i := range msgs {
+					msgPtrs[i] = &msgs[i]
+				}
+				toolMap := shelley.BuildToolNameMap(msgPtrs)
+
+				for i := range msgs {
+					slug := shelley.MessageSlug(&msgs[i], toolMap)
+					base := messageFileBase(msgs[i].SequenceID, slug)
 					entries = append(entries, fuse.DirEntry{Name: base + ".json", Mode: fuse.S_IFREG})
 					entries = append(entries, fuse.DirEntry{Name: base + ".md", Mode: fuse.S_IFREG})
 				}
@@ -1337,16 +1383,19 @@ func readAt(data, dest []byte, off int64) []byte {
 	return data[off:end]
 }
 
-// messageFileBase returns the base name for a message file, e.g. "001-user" or "002-shelley".
-func messageFileBase(seqID int, msgType string) string {
-	slug := strings.ToLower(msgType)
-	// Replace any non-alphanumeric characters with hyphens
-	slug = regexp.MustCompile(`[^a-z0-9]+`).ReplaceAllString(slug, "-")
-	slug = strings.Trim(slug, "-")
-	if slug == "" {
-		slug = "unknown"
+// slugSanitizerRe matches non-alphanumeric characters for slug sanitization.
+var slugSanitizerRe = regexp.MustCompile(`[^a-z0-9]+`)
+
+// messageFileBase returns the base name for a message file, e.g. "001-user" or "002-bash-tool".
+// The slug parameter should be obtained from shelley.MessageSlug() for proper tool naming.
+func messageFileBase(seqID int, slug string) string {
+	// Sanitize slug: replace any non-alphanumeric characters with hyphens
+	sanitized := slugSanitizerRe.ReplaceAllString(strings.ToLower(slug), "-")
+	sanitized = strings.Trim(sanitized, "-")
+	if sanitized == "" {
+		sanitized = "unknown"
 	}
-	return fmt.Sprintf("%03d-%s", seqID, slug)
+	return fmt.Sprintf("%03d-%s", seqID, sanitized)
 }
 
 // namedMessageFileRe matches named message files like "001-user.json" or "002-shelley.md".

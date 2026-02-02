@@ -343,12 +343,14 @@ func TestConversationFlow(t *testing.T) {
 	}
 
 	// Read specific message via named file
-	data, err = ioutil.ReadFile(filepath.Join(mountPoint, "conversation", convID, "messages", "001-user.json"))
+	// Note: The first message is typically a system message (001-system.json),
+	// so the user message is at sequence 2 (002-user.json)
+	data, err = ioutil.ReadFile(filepath.Join(mountPoint, "conversation", convID, "messages", "002-user.json"))
 	if err != nil {
-		t.Fatalf("Failed to read 001-user.json: %v", err)
+		t.Fatalf("Failed to read 002-user.json: %v", err)
 	}
 	if err := json.Unmarshal(data, &msgs); err != nil || len(msgs) != 1 {
-		t.Errorf("Expected 1 message in 001-user.json")
+		t.Errorf("Expected 1 message in 002-user.json")
 	}
 
 	// Read last/2
