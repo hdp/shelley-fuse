@@ -321,7 +321,7 @@ func TestConversationFlow(t *testing.T) {
 	}
 
 	// Read all.json
-	data, err = ioutil.ReadFile(filepath.Join(mountPoint, "conversation", convID, "all.json"))
+	data, err = ioutil.ReadFile(filepath.Join(mountPoint, "conversation", convID, "messages", "all.json"))
 	if err != nil {
 		t.Fatalf("Failed to read all.json: %v", err)
 	}
@@ -334,7 +334,7 @@ func TestConversationFlow(t *testing.T) {
 	}
 
 	// Read all.md
-	data, err = ioutil.ReadFile(filepath.Join(mountPoint, "conversation", convID, "all.md"))
+	data, err = ioutil.ReadFile(filepath.Join(mountPoint, "conversation", convID, "messages", "all.md"))
 	if err != nil {
 		t.Fatalf("Failed to read all.md: %v", err)
 	}
@@ -342,17 +342,17 @@ func TestConversationFlow(t *testing.T) {
 		t.Error("Expected markdown headers in all.md")
 	}
 
-	// Read specific message
-	data, err = ioutil.ReadFile(filepath.Join(mountPoint, "conversation", convID, "1.json"))
+	// Read specific message via named file
+	data, err = ioutil.ReadFile(filepath.Join(mountPoint, "conversation", convID, "messages", "001-user.json"))
 	if err != nil {
-		t.Fatalf("Failed to read 1.json: %v", err)
+		t.Fatalf("Failed to read 001-user.json: %v", err)
 	}
 	if err := json.Unmarshal(data, &msgs); err != nil || len(msgs) != 1 {
-		t.Errorf("Expected 1 message in 1.json")
+		t.Errorf("Expected 1 message in 001-user.json")
 	}
 
 	// Read last/2
-	data, err = ioutil.ReadFile(filepath.Join(mountPoint, "conversation", convID, "last", "2.json"))
+	data, err = ioutil.ReadFile(filepath.Join(mountPoint, "conversation", convID, "messages", "last", "2.json"))
 	if err != nil {
 		t.Fatalf("Failed to read last/2.json: %v", err)
 	}
@@ -361,7 +361,7 @@ func TestConversationFlow(t *testing.T) {
 	}
 
 	// Read since/user/1
-	data, err = ioutil.ReadFile(filepath.Join(mountPoint, "conversation", convID, "since", "user", "1.json"))
+	data, err = ioutil.ReadFile(filepath.Join(mountPoint, "conversation", convID, "messages", "since", "user", "1.json"))
 	if err != nil {
 		t.Fatalf("Failed to read since/user/1.json: %v", err)
 	}
@@ -370,7 +370,7 @@ func TestConversationFlow(t *testing.T) {
 	}
 
 	// Read from/user/1
-	data, err = ioutil.ReadFile(filepath.Join(mountPoint, "conversation", convID, "from", "user", "1.json"))
+	data, err = ioutil.ReadFile(filepath.Join(mountPoint, "conversation", convID, "messages", "from", "user", "1.json"))
 	if err != nil {
 		t.Fatalf("Failed to read from/user/1.json: %v", err)
 	}
@@ -410,10 +410,9 @@ func TestConversationDirectoryStructure(t *testing.T) {
 
 	expectedFiles := map[string]bool{
 		"ctl": false, "new": false, "id": false, "slug": false,
-		"all.json": false, "all.md": false,
 		"fuse_id": false, "created": false, "created_at": false, "message_count": false,
 	}
-	expectedDirs := map[string]bool{"last": false, "since": false, "from": false}
+	expectedDirs := map[string]bool{"messages": false}
 
 	for _, e := range entries {
 		if _, ok := expectedFiles[e.Name()]; ok {
@@ -532,7 +531,7 @@ func TestServerConversationAdoption(t *testing.T) {
 	}
 
 	// Can read via local ID
-	data, err := ioutil.ReadFile(filepath.Join(mountPoint, "conversation", adoptedLocalID, "all.json"))
+	data, err := ioutil.ReadFile(filepath.Join(mountPoint, "conversation", adoptedLocalID, "messages", "all.json"))
 	if err != nil {
 		t.Fatalf("Failed to read via local ID: %v", err)
 	}
@@ -606,7 +605,7 @@ func TestSymlinkAccess(t *testing.T) {
 	}
 
 	// Read file through symlink
-	data, err := ioutil.ReadFile(filepath.Join(mountPoint, "conversation", serverID, "all.json"))
+	data, err := ioutil.ReadFile(filepath.Join(mountPoint, "conversation", serverID, "messages", "all.json"))
 	if err != nil {
 		t.Fatalf("Failed to read through symlink: %v", err)
 	}
@@ -626,7 +625,7 @@ func TestSymlinkAccess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to list through symlink: %v", err)
 	}
-	expected := map[string]bool{"ctl": false, "new": false, "all.json": false}
+	expected := map[string]bool{"ctl": false, "new": false, "messages": false}
 	for _, e := range entries {
 		if _, ok := expected[e.Name()]; ok {
 			expected[e.Name()] = true
@@ -639,7 +638,7 @@ func TestSymlinkAccess(t *testing.T) {
 	}
 
 	// Nested path through symlink
-	data, err = ioutil.ReadFile(filepath.Join(mountPoint, "conversation", serverID, "last", "2.json"))
+	data, err = ioutil.ReadFile(filepath.Join(mountPoint, "conversation", serverID, "messages", "last", "2.json"))
 	if err != nil {
 		t.Fatalf("Failed to read last/2.json through symlink: %v", err)
 	}
@@ -648,8 +647,8 @@ func TestSymlinkAccess(t *testing.T) {
 	}
 
 	// Both paths return same content
-	dataViaLocal, _ := ioutil.ReadFile(filepath.Join(mountPoint, "conversation", localID, "all.json"))
-	dataViaServer, _ := ioutil.ReadFile(filepath.Join(mountPoint, "conversation", serverID, "all.json"))
+	dataViaLocal, _ := ioutil.ReadFile(filepath.Join(mountPoint, "conversation", localID, "messages", "all.json"))
+	dataViaServer, _ := ioutil.ReadFile(filepath.Join(mountPoint, "conversation", serverID, "messages", "all.json"))
 	if string(dataViaLocal) != string(dataViaServer) {
 		t.Error("Content differs between local and server ID access")
 	}
@@ -792,7 +791,7 @@ func TestSlugSymlink(t *testing.T) {
 	}
 
 	// Can read via slug
-	data, err := ioutil.ReadFile(filepath.Join(mountPoint, "conversation", slug, "all.json"))
+	data, err := ioutil.ReadFile(filepath.Join(mountPoint, "conversation", slug, "messages", "all.json"))
 	if err != nil {
 		t.Fatalf("Failed to read via slug: %v", err)
 	}

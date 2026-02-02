@@ -62,16 +62,17 @@ The filesystem follows a Plan 9-inspired control file model. There are no host d
       message_count                     → read-only: number of messages in conversation (0 before creation)
       model                             → symlink to ../../models/{model-id} (only if model is set)
       cwd                               → symlink to working directory (only if cwd is set)
-      all.json                          → full conversation as JSON
-      all.md                            → full conversation as Markdown
-      {N}.json                          → specific message by sequence number (virtual, not in listings)
-      {N}.md                            → specific message as Markdown (virtual, not in listings)
-      last/{N}.json                     → last N messages as JSON
-      last/{N}.md                       → last N messages as Markdown
-      since/{person}/{N}.json           → messages since Nth-to-last message from {person}
-      since/{person}/{N}.md             → same, as Markdown
-      from/{person}/{N}.json            → Nth message from {person} (counting from end)
-      from/{person}/{N}.md              → same, as Markdown
+      messages/                         → all message content
+        all.json                        → full conversation as JSON
+        all.md                          → full conversation as Markdown
+        {NNN}-{type}.json                → specific message (e.g. 001-user.json, 002-shelley.json)
+        {NNN}-{type}.md                 → specific message as Markdown
+        last/{N}.json                   → last N messages as JSON
+        last/{N}.md                     → last N messages as Markdown
+        since/{person}/{N}.json         → messages since Nth-to-last message from {person}
+        since/{person}/{N}.md           → same, as Markdown
+        from/{person}/{N}.json          → Nth message from {person} (counting from end)
+        from/{person}/{N}.md            → same, as Markdown
     {server-id}                         → symlink to local-id: allows access via Shelley server ID
     {slug}                              → symlink to local-id: allows access via conversation slug
 ```

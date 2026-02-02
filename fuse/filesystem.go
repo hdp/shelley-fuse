@@ -3,7 +3,9 @@ package fuse
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -113,7 +115,7 @@ echo "model=claude-sonnet-4.5 cwd=$PWD" > conversation/$ID/ctl
 echo "Hello, Shelley!" > conversation/$ID/new
 
 # Read the response
-cat conversation/$ID/all.md
+cat conversation/$ID/messages/all.md
 
 # Send follow-up
 echo "Thanks!" > conversation/$ID/new
@@ -137,11 +139,13 @@ echo "Thanks!" > conversation/$ID/new
       new                → write here to send messages
       id                 → Shelley server conversation ID
       slug               → conversation slug (if set)
-      all.json           → full conversation as JSON
-      all.md             → full conversation as Markdown
-      last/{N}.md        → last N messages
-      since/{person}/{N}.md → messages since Nth from person
-      from/{person}/{N}.md  → Nth message from person
+      messages/          → all message content
+        all.json         → full conversation as JSON
+        all.md           → full conversation as Markdown
+        001-user.json    → specific message (named by type)
+        last/{N}.md      → last N messages
+        since/{person}/{N}.md → messages since Nth from person
+        from/{person}/{N}.md  → Nth message from person
 ` + "```" + `
 
 ## Common Operations
@@ -157,10 +161,10 @@ readlink models/default
 ls conversation/
 
 # Read last 5 messages
-cat conversation/$ID/last/5.md
+cat conversation/$ID/messages/last/5.md
 
 # Read messages since your last message
-cat conversation/$ID/since/me/1.md
+cat conversation/$ID/messages/since/me/1.md
 ` + "```" + `
 `
 
@@ -626,6 +630,8 @@ func (c *ConversationNode) Lookup(ctx context.Context, name string, out *fuse.En
 		return c.NewInode(ctx, &CtlNode{localID: c.localID, state: c.state, startTime: c.startTime}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
 	case "new":
 		return c.NewInode(ctx, &ConvNewNode{localID: c.localID, client: c.client, state: c.state, startTime: c.startTime}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
+	case "messages":
+		return c.NewInode(ctx, &MessagesDirNode{localID: c.localID, client: c.client, state: c.state, startTime: c.startTime}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
 	case "id":
 		return c.NewInode(ctx, &ConvMetaFieldNode{localID: c.localID, state: c.state, field: "id", startTime: c.startTime}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
 	case "slug":
@@ -638,12 +644,6 @@ func (c *ConversationNode) Lookup(ctx context.Context, name string, out *fuse.En
 		return c.NewInode(ctx, &ConvStatusFieldNode{localID: c.localID, client: c.client, state: c.state, field: "created_at", startTime: c.startTime}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
 	case "message_count":
 		return c.NewInode(ctx, &ConvStatusFieldNode{localID: c.localID, client: c.client, state: c.state, field: "message_count", startTime: c.startTime}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
-	case "last":
-		return c.NewInode(ctx, &QueryDirNode{localID: c.localID, client: c.client, state: c.state, kind: queryLast, startTime: c.startTime}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
-	case "since":
-		return c.NewInode(ctx, &QueryDirNode{localID: c.localID, client: c.client, state: c.state, kind: querySince, startTime: c.startTime}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
-	case "from":
-		return c.NewInode(ctx, &QueryDirNode{localID: c.localID, client: c.client, state: c.state, kind: queryFrom, startTime: c.startTime}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
 	case "model":
 		cs := c.state.Get(c.localID)
 		if cs == nil || cs.Model == "" {
@@ -663,28 +663,6 @@ func (c *ConversationNode) Lookup(ctx context.Context, name string, out *fuse.En
 		}, fs.StableAttr{Mode: syscall.S_IFLNK}), 0
 	}
 
-	// all.json, all.md, {N}.json, {N}.md
-	format, ok := parseFormat(name)
-	if !ok {
-		return nil, syscall.ENOENT
-	}
-
-	base := strings.TrimSuffix(strings.TrimSuffix(name, ".json"), ".md")
-	if base == "all" {
-		return c.NewInode(ctx, &ConvContentNode{
-			localID: c.localID, client: c.client, state: c.state,
-			query: contentQuery{kind: queryAll, format: format}, startTime: c.startTime,
-		}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
-	}
-
-	n, err := strconv.Atoi(base)
-	if err == nil && n > 0 {
-		return c.NewInode(ctx, &ConvContentNode{
-			localID: c.localID, client: c.client, state: c.state,
-			query: contentQuery{kind: queryBySeq, seqNum: n, format: format}, startTime: c.startTime,
-		}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
-	}
-
 	return nil, syscall.ENOENT
 }
 
@@ -692,17 +670,13 @@ func (c *ConversationNode) Readdir(ctx context.Context) (fs.DirStream, syscall.E
 	entries := []fuse.DirEntry{
 		{Name: "ctl", Mode: fuse.S_IFREG},
 		{Name: "new", Mode: fuse.S_IFREG},
+		{Name: "messages", Mode: fuse.S_IFDIR},
 		{Name: "id", Mode: fuse.S_IFREG},
 		{Name: "slug", Mode: fuse.S_IFREG},
 		{Name: "fuse_id", Mode: fuse.S_IFREG},
 		{Name: "created", Mode: fuse.S_IFREG},
 		{Name: "created_at", Mode: fuse.S_IFREG},
 		{Name: "message_count", Mode: fuse.S_IFREG},
-		{Name: "all.json", Mode: fuse.S_IFREG},
-		{Name: "all.md", Mode: fuse.S_IFREG},
-		{Name: "last", Mode: fuse.S_IFDIR},
-		{Name: "since", Mode: fuse.S_IFDIR},
-		{Name: "from", Mode: fuse.S_IFDIR},
 	}
 
 	// Include model and cwd symlinks only if set
@@ -720,6 +694,95 @@ func (c *ConversationNode) Readdir(ctx context.Context) (fs.DirStream, syscall.E
 func (c *ConversationNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
 	out.Mode = fuse.S_IFDIR | 0755
 	setTimestamps(&out.Attr, c.getConversationTime())
+	return 0
+}
+
+// --- MessagesDirNode: /conversation/{id}/messages/ directory ---
+
+type MessagesDirNode struct {
+	fs.Inode
+	localID   string
+	client    *shelley.Client
+	state     *state.Store
+	startTime time.Time
+}
+
+var _ = (fs.NodeLookuper)((*MessagesDirNode)(nil))
+var _ = (fs.NodeReaddirer)((*MessagesDirNode)(nil))
+var _ = (fs.NodeGetattrer)((*MessagesDirNode)(nil))
+
+func (m *MessagesDirNode) getConversationTime() time.Time {
+	cs := m.state.Get(m.localID)
+	if cs != nil && !cs.CreatedAt.IsZero() {
+		return cs.CreatedAt
+	}
+	return m.startTime
+}
+
+func (m *MessagesDirNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
+	switch name {
+	case "last":
+		return m.NewInode(ctx, &QueryDirNode{localID: m.localID, client: m.client, state: m.state, kind: queryLast, startTime: m.startTime}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
+	case "since":
+		return m.NewInode(ctx, &QueryDirNode{localID: m.localID, client: m.client, state: m.state, kind: querySince, startTime: m.startTime}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
+	case "from":
+		return m.NewInode(ctx, &QueryDirNode{localID: m.localID, client: m.client, state: m.state, kind: queryFrom, startTime: m.startTime}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
+	}
+
+	// all.json, all.md
+	format, ok := parseFormat(name)
+	if ok {
+		base := strings.TrimSuffix(strings.TrimSuffix(name, ".json"), ".md")
+		if base == "all" {
+			return m.NewInode(ctx, &ConvContentNode{
+				localID: m.localID, client: m.client, state: m.state,
+				query: contentQuery{kind: queryAll, format: format}, startTime: m.startTime,
+			}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
+		}
+	}
+
+	// Named message files: {NNN}-{type}.json, {NNN}-{type}.md
+	if seqNum, fmt, ok := parseNamedMessageFile(name); ok {
+		return m.NewInode(ctx, &ConvContentNode{
+			localID: m.localID, client: m.client, state: m.state,
+			query: contentQuery{kind: queryBySeq, seqNum: seqNum, format: fmt}, startTime: m.startTime,
+		}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
+	}
+
+	return nil, syscall.ENOENT
+}
+
+func (m *MessagesDirNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
+	entries := []fuse.DirEntry{
+		{Name: "all.json", Mode: fuse.S_IFREG},
+		{Name: "all.md", Mode: fuse.S_IFREG},
+		{Name: "last", Mode: fuse.S_IFDIR},
+		{Name: "since", Mode: fuse.S_IFDIR},
+		{Name: "from", Mode: fuse.S_IFDIR},
+	}
+
+	// List individual messages with named files (001-user.json, 001-user.md, ...)
+	cs := m.state.Get(m.localID)
+	if cs != nil && cs.Created && cs.ShelleyConversationID != "" {
+		convData, err := m.client.GetConversation(cs.ShelleyConversationID)
+		if err == nil {
+			msgs, err := shelley.ParseMessages(convData)
+			if err == nil {
+				for _, msg := range msgs {
+					base := messageFileBase(msg.SequenceID, msg.Type)
+					entries = append(entries, fuse.DirEntry{Name: base + ".json", Mode: fuse.S_IFREG})
+					entries = append(entries, fuse.DirEntry{Name: base + ".md", Mode: fuse.S_IFREG})
+				}
+			}
+		}
+	}
+
+	return fs.NewListDirStream(entries), 0
+}
+
+func (m *MessagesDirNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
+	out.Mode = fuse.S_IFDIR | 0755
+	setTimestamps(&out.Attr, m.getConversationTime())
 	return 0
 }
 
@@ -1272,6 +1335,42 @@ func readAt(data, dest []byte, off int64) []byte {
 		end = off + int64(len(dest))
 	}
 	return data[off:end]
+}
+
+// messageFileBase returns the base name for a message file, e.g. "001-user" or "002-shelley".
+func messageFileBase(seqID int, msgType string) string {
+	slug := strings.ToLower(msgType)
+	// Replace any non-alphanumeric characters with hyphens
+	slug = regexp.MustCompile(`[^a-z0-9]+`).ReplaceAllString(slug, "-")
+	slug = strings.Trim(slug, "-")
+	if slug == "" {
+		slug = "unknown"
+	}
+	return fmt.Sprintf("%03d-%s", seqID, slug)
+}
+
+// namedMessageFileRe matches named message files like "001-user.json" or "002-shelley.md".
+var namedMessageFileRe = regexp.MustCompile(`^(\d+)-[a-z0-9-]+\.(json|md)$`)
+
+// parseNamedMessageFile extracts the sequence number and format from a named message filename.
+// Returns (seqNum, format, ok).
+func parseNamedMessageFile(name string) (int, contentFormat, bool) {
+	m := namedMessageFileRe.FindStringSubmatch(name)
+	if m == nil {
+		return 0, 0, false
+	}
+	n, err := strconv.Atoi(m[1])
+	if err != nil || n <= 0 {
+		return 0, 0, false
+	}
+	var format contentFormat
+	switch m[2] {
+	case "json":
+		format = formatJSON
+	case "md":
+		format = formatMD
+	}
+	return n, format, true
 }
 
 // compile-time interface checks

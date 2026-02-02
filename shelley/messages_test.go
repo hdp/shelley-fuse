@@ -252,10 +252,10 @@ func TestExtractTextContentMalformedJSON(t *testing.T) {
 func TestExtractTextContentJSONWithoutContent(t *testing.T) {
 	jsonStr := `{"other": "value"}`
 	content := extractTextContent(jsonStr)
-	// Should return the string representation of the object
-	expected := "map[other:value]"
+	// Should return indented JSON for readability
+	expected := "{\n  \"other\": \"value\"\n}"
 	if content != expected {
-		t.Errorf("Expected JSON without content to return object string, got %q", content)
+		t.Errorf("Expected JSON without content to return indented JSON, got %q", content)
 	}
 }
 

@@ -2003,7 +2003,7 @@ func TestTimestamps_ConversationNodesUseCreatedAt(t *testing.T) {
 
 	// Test last directory timestamp
 	t.Run("LastDirectory", func(t *testing.T) {
-		info, err := os.Stat(filepath.Join(tmpDir, "conversation", convID, "last"))
+		info, err := os.Stat(filepath.Join(tmpDir, "conversation", convID, "messages", "last"))
 		if err != nil {
 			t.Fatalf("Failed to stat last: %v", err)
 		}
@@ -2019,7 +2019,7 @@ func TestTimestamps_ConversationNodesUseCreatedAt(t *testing.T) {
 
 	// Test since directory timestamp
 	t.Run("SinceDirectory", func(t *testing.T) {
-		info, err := os.Stat(filepath.Join(tmpDir, "conversation", convID, "since"))
+		info, err := os.Stat(filepath.Join(tmpDir, "conversation", convID, "messages", "since"))
 		if err != nil {
 			t.Fatalf("Failed to stat since: %v", err)
 		}
@@ -2035,7 +2035,7 @@ func TestTimestamps_ConversationNodesUseCreatedAt(t *testing.T) {
 
 	// Test from directory timestamp
 	t.Run("FromDirectory", func(t *testing.T) {
-		info, err := os.Stat(filepath.Join(tmpDir, "conversation", convID, "from"))
+		info, err := os.Stat(filepath.Join(tmpDir, "conversation", convID, "messages", "from"))
 		if err != nil {
 			t.Fatalf("Failed to stat from: %v", err)
 		}
@@ -2226,9 +2226,10 @@ func TestTimestamps_NeverZero(t *testing.T) {
 		filepath.Join(tmpDir, "conversation", convID, "new"),
 		filepath.Join(tmpDir, "conversation", convID, "fuse_id"),
 		filepath.Join(tmpDir, "conversation", convID, "created"),
-		filepath.Join(tmpDir, "conversation", convID, "last"),
-		filepath.Join(tmpDir, "conversation", convID, "since"),
-		filepath.Join(tmpDir, "conversation", convID, "from"),
+		filepath.Join(tmpDir, "conversation", convID, "messages"),
+		filepath.Join(tmpDir, "conversation", convID, "messages", "last"),
+		filepath.Join(tmpDir, "conversation", convID, "messages", "since"),
+		filepath.Join(tmpDir, "conversation", convID, "messages", "from"),
 	}
 
 	for _, path := range pathsToCheck {
@@ -2419,7 +2420,7 @@ func TestTimestamps_NestedQueryDirsUseConversationTime(t *testing.T) {
 
 	// Test since/user directory (nested QueryDirNode)
 	t.Run("SinceUserDirectory", func(t *testing.T) {
-		info, err := os.Stat(filepath.Join(tmpDir, "conversation", convID, "since", "user"))
+		info, err := os.Stat(filepath.Join(tmpDir, "conversation", convID, "messages", "since", "user"))
 		if err != nil {
 			t.Fatalf("Failed to stat since/user: %v", err)
 		}
@@ -2432,7 +2433,7 @@ func TestTimestamps_NestedQueryDirsUseConversationTime(t *testing.T) {
 
 	// Test from/assistant directory (nested QueryDirNode)
 	t.Run("FromAssistantDirectory", func(t *testing.T) {
-		info, err := os.Stat(filepath.Join(tmpDir, "conversation", convID, "from", "assistant"))
+		info, err := os.Stat(filepath.Join(tmpDir, "conversation", convID, "messages", "from", "assistant"))
 		if err != nil {
 			t.Fatalf("Failed to stat from/assistant: %v", err)
 		}

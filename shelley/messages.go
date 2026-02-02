@@ -108,10 +108,24 @@ func matchPerson(msgType, person string) bool {
 
 func messageContent(m Message) string {
 	if m.UserData != nil {
-		return extractTextContent(*m.UserData)
+		text := extractTextContent(*m.UserData)
+		if text != "" {
+			return text
+		}
+		// Fall back to raw data for non-empty but unextractable content
+		if *m.UserData != "" {
+			return *m.UserData
+		}
 	}
 	if m.LLMData != nil {
-		return extractTextContent(*m.LLMData)
+		text := extractTextContent(*m.LLMData)
+		if text != "" {
+			return text
+		}
+		// Fall back to raw data for non-empty but unextractable content
+		if *m.LLMData != "" {
+			return *m.LLMData
+		}
 	}
 	return ""
 }
@@ -178,8 +192,12 @@ func extractFromMap(obj map[string]interface{}) string {
 		return extractFromContentField(content)
 	}
 
-	// If no content field found, return the whole object as string
-	return fmt.Sprintf("%v", obj)
+	// If no content field found, return as indented JSON for readability
+	data, err := json.MarshalIndent(obj, "", "  ")
+	if err != nil {
+		return fmt.Sprintf("%v", obj)
+	}
+	return string(data)
 }
 
 // extractFromContentField extracts text from a Content field
