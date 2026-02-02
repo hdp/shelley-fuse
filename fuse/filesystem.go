@@ -926,51 +926,81 @@ type ConvNewNode struct {
 	client    *shelley.Client
 	state     *state.Store
 	startTime time.Time // fallback if conversation has no CreatedAt
-	mu        sync.Mutex
 }
 
 var _ = (fs.NodeOpener)((*ConvNewNode)(nil))
-var _ = (fs.NodeWriter)((*ConvNewNode)(nil))
 var _ = (fs.NodeGetattrer)((*ConvNewNode)(nil))
 var _ = (fs.NodeSetattrer)((*ConvNewNode)(nil))
 
 func (n *ConvNewNode) Open(ctx context.Context, flags uint32) (fs.FileHandle, uint32, syscall.Errno) {
-	return nil, fuse.FOPEN_DIRECT_IO, 0
+	return &ConvNewFileHandle{
+		node: n,
+	}, fuse.FOPEN_DIRECT_IO, 0
 }
 
-func (n *ConvNewNode) Write(ctx context.Context, f fs.FileHandle, data []byte, off int64) (uint32, syscall.Errno) {
-	n.mu.Lock()
-	defer n.mu.Unlock()
+// ConvNewFileHandle buffers writes and sends the message on Flush (close)
+type ConvNewFileHandle struct {
+	node    *ConvNewNode
+	buffer  []byte
+	flushed bool
+	mu      sync.Mutex
+}
 
-	cs := n.state.Get(n.localID)
+var _ = (fs.FileWriter)((*ConvNewFileHandle)(nil))
+var _ = (fs.FileFlusher)((*ConvNewFileHandle)(nil))
+
+func (h *ConvNewFileHandle) Write(ctx context.Context, data []byte, off int64) (uint32, syscall.Errno) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	// Append to buffer - message will be sent on Flush
+	h.buffer = append(h.buffer, data...)
+	return uint32(len(data)), 0
+}
+
+// Flush is called synchronously during close(2), so the caller will block until
+// the message is sent. This ensures the conversation is created before close returns.
+// Note: Flush may be called multiple times for dup'd file descriptors.
+func (h *ConvNewFileHandle) Flush(ctx context.Context) syscall.Errno {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	// Only send the message once, even if Flush is called multiple times
+	if h.flushed {
+		return 0
+	}
+	h.flushed = true
+
+	cs := h.node.state.Get(h.node.localID)
 	if cs == nil {
-		return 0, syscall.ENOENT
+		return syscall.ENOENT
 	}
 
-	message := strings.TrimRight(string(data), "\n")
+	message := strings.TrimRight(string(h.buffer), "\n")
 	if message == "" {
-		return uint32(len(data)), 0
+		return 0
 	}
 
 	if !cs.Created {
 		// First write: create the conversation on the Shelley backend
-		result, err := n.client.StartConversation(message, cs.Model, cs.Cwd)
+		result, err := h.node.client.StartConversation(message, cs.Model, cs.Cwd)
 		if err != nil {
-			log.Printf("StartConversation failed for %s: %v", n.localID, err)
-			return 0, syscall.EIO
+			log.Printf("StartConversation failed for %s: %v", h.node.localID, err)
+			return syscall.EIO
 		}
-		if err := n.state.MarkCreated(n.localID, result.ConversationID, result.Slug); err != nil {
-			return 0, syscall.EIO
+		if err := h.node.state.MarkCreated(h.node.localID, result.ConversationID, result.Slug); err != nil {
+			return syscall.EIO
 		}
 	} else {
 		// Subsequent writes: send message to existing conversation
-		if err := n.client.SendMessage(cs.ShelleyConversationID, message, ""); err != nil {
+		// Pass the model from state to ensure we use the same model as the conversation
+		if err := h.node.client.SendMessage(cs.ShelleyConversationID, message, cs.Model); err != nil {
 			log.Printf("SendMessage failed for conversation %s: %v", cs.ShelleyConversationID, err)
-			return 0, syscall.EIO
+			return syscall.EIO
 		}
 	}
 
-	return uint32(len(data)), 0
+	return 0
 }
 
 func (n *ConvNewNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.AttrOut) syscall.Errno {

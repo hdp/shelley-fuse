@@ -940,3 +940,78 @@ func TestCreatedConversationNotCleanedUp(t *testing.T) {
 		t.Error("Created conversation should still appear in listing")
 	}
 }
+
+// TestMultilineWriteToNew verifies that multiline messages written to /new
+// are buffered and sent as a single message when the file is closed, not
+// split on newlines. This tests the fix for sf-bksa.
+func TestMultilineWriteToNew(t *testing.T) {
+	skipIfNoFusermount(t)
+	skipIfNoShelley(t)
+
+	serverURL := startShelleyServer(t)
+	mountPoint := mountTestFS(t, serverURL)
+
+	localID, _ := createConversation(t, mountPoint, "Initial message")
+
+	// Write a multiline message using explicit open/write/close
+	newPath := filepath.Join(mountPoint, "conversation", localID, "new")
+	f, err := os.OpenFile(newPath, os.O_WRONLY, 0644)
+	if err != nil {
+		t.Fatalf("Failed to open new: %v", err)
+	}
+
+	// Write in multiple chunks, simulating how a shell might pipe data
+	chunks := []string{
+		"Line 1\n",
+		"Line 2\n",
+		"Line 3",
+	}
+	for _, chunk := range chunks {
+		if _, err := f.Write([]byte(chunk)); err != nil {
+			f.Close()
+			t.Fatalf("Failed to write chunk: %v", err)
+		}
+	}
+
+	if err := f.Close(); err != nil {
+		t.Fatalf("Failed to close: %v", err)
+	}
+
+	// Read the messages and verify the multiline message was sent as one
+	data, err := ioutil.ReadFile(filepath.Join(mountPoint, "conversation", localID, "messages", "all.json"))
+	if err != nil {
+		t.Fatalf("Failed to read all.json: %v", err)
+	}
+
+	var msgs []shelley.Message
+	if err := json.Unmarshal(data, &msgs); err != nil {
+		t.Fatalf("Failed to parse all.json: %v", err)
+	}
+
+	// Find user messages (Type == "user")
+	var userMsgs []shelley.Message
+	for _, m := range msgs {
+		if m.Type == "user" {
+			userMsgs = append(userMsgs, m)
+		}
+	}
+
+	// Should have exactly 2 user messages: initial + multiline
+	if len(userMsgs) != 2 {
+		t.Errorf("Expected 2 user messages, got %d", len(userMsgs))
+	}
+
+	// The second user message should contain all three lines
+	// Message content is stored in LLMData as JSON; check it contains the text
+	if len(userMsgs) >= 2 {
+		var content string
+		if userMsgs[1].LLMData != nil {
+			content = *userMsgs[1].LLMData
+		}
+		if !strings.Contains(content, "Line 1") ||
+			!strings.Contains(content, "Line 2") ||
+			!strings.Contains(content, "Line 3") {
+			t.Errorf("Expected multiline message with all 3 lines, got: %q", content)
+		}
+	}
+}
