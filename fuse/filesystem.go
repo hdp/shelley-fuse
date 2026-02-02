@@ -526,12 +526,18 @@ func (c *ConversationNode) Lookup(ctx context.Context, name string, out *fuse.En
 		return c.NewInode(ctx, &CtlNode{localID: c.localID, state: c.state, startTime: c.startTime}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
 	case "new":
 		return c.NewInode(ctx, &ConvNewNode{localID: c.localID, client: c.client, state: c.state, startTime: c.startTime}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
-	case "status":
-		return c.NewInode(ctx, &ConvStatusDirNode{localID: c.localID, client: c.client, state: c.state, startTime: c.startTime}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
 	case "id":
 		return c.NewInode(ctx, &ConvMetaFieldNode{localID: c.localID, state: c.state, field: "id", startTime: c.startTime}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
 	case "slug":
 		return c.NewInode(ctx, &ConvMetaFieldNode{localID: c.localID, state: c.state, field: "slug", startTime: c.startTime}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
+	case "fuse_id":
+		return c.NewInode(ctx, &ConvStatusFieldNode{localID: c.localID, client: c.client, state: c.state, field: "fuse_id", startTime: c.startTime}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
+	case "created":
+		return c.NewInode(ctx, &ConvStatusFieldNode{localID: c.localID, client: c.client, state: c.state, field: "created", startTime: c.startTime}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
+	case "created_at":
+		return c.NewInode(ctx, &ConvStatusFieldNode{localID: c.localID, client: c.client, state: c.state, field: "created_at", startTime: c.startTime}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
+	case "message_count":
+		return c.NewInode(ctx, &ConvStatusFieldNode{localID: c.localID, client: c.client, state: c.state, field: "message_count", startTime: c.startTime}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
 	case "last":
 		return c.NewInode(ctx, &QueryDirNode{localID: c.localID, client: c.client, state: c.state, kind: queryLast, startTime: c.startTime}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
 	case "since":
@@ -545,6 +551,16 @@ func (c *ConversationNode) Lookup(ctx context.Context, name string, out *fuse.En
 		}
 		target := "../../models/" + cs.Model
 		return c.NewInode(ctx, &SymlinkNode{target: target, startTime: c.getConversationTime()}, fs.StableAttr{Mode: syscall.S_IFLNK}), 0
+	case "cwd":
+		cs := c.state.Get(c.localID)
+		if cs == nil || cs.Cwd == "" {
+			return nil, syscall.ENOENT
+		}
+		return c.NewInode(ctx, &CwdSymlinkNode{
+			localID:   c.localID,
+			state:     c.state,
+			startTime: c.startTime,
+		}, fs.StableAttr{Mode: syscall.S_IFLNK}), 0
 	}
 
 	// all.json, all.md, {N}.json, {N}.md
@@ -576,9 +592,12 @@ func (c *ConversationNode) Readdir(ctx context.Context) (fs.DirStream, syscall.E
 	entries := []fuse.DirEntry{
 		{Name: "ctl", Mode: fuse.S_IFREG},
 		{Name: "new", Mode: fuse.S_IFREG},
-		{Name: "status", Mode: fuse.S_IFDIR},
 		{Name: "id", Mode: fuse.S_IFREG},
 		{Name: "slug", Mode: fuse.S_IFREG},
+		{Name: "fuse_id", Mode: fuse.S_IFREG},
+		{Name: "created", Mode: fuse.S_IFREG},
+		{Name: "created_at", Mode: fuse.S_IFREG},
+		{Name: "message_count", Mode: fuse.S_IFREG},
 		{Name: "all.json", Mode: fuse.S_IFREG},
 		{Name: "all.md", Mode: fuse.S_IFREG},
 		{Name: "last", Mode: fuse.S_IFDIR},
@@ -586,10 +605,13 @@ func (c *ConversationNode) Readdir(ctx context.Context) (fs.DirStream, syscall.E
 		{Name: "from", Mode: fuse.S_IFDIR},
 	}
 
-	// Include model symlink only if model is set
+	// Include model and cwd symlinks only if set
 	cs := c.state.Get(c.localID)
 	if cs != nil && cs.Model != "" {
 		entries = append(entries, fuse.DirEntry{Name: "model", Mode: syscall.S_IFLNK})
+	}
+	if cs != nil && cs.Cwd != "" {
+		entries = append(entries, fuse.DirEntry{Name: "cwd", Mode: syscall.S_IFLNK})
 	}
 
 	return fs.NewListDirStream(entries), 0
@@ -759,87 +781,7 @@ func (n *ConvNewNode) Setattr(ctx context.Context, f fs.FileHandle, in *fuse.Set
 }
 
 
-// --- ConvStatusDirNode: /conversation/{id}/status/ directory ---
-
-type ConvStatusDirNode struct {
-	fs.Inode
-	localID   string
-	client    *shelley.Client
-	state     *state.Store
-	startTime time.Time
-}
-
-var _ = (fs.NodeLookuper)((*ConvStatusDirNode)(nil))
-var _ = (fs.NodeReaddirer)((*ConvStatusDirNode)(nil))
-var _ = (fs.NodeGetattrer)((*ConvStatusDirNode)(nil))
-
-// statusFields defines the files exposed in the status/ directory.
-// Each field name maps to a function that extracts the value from ConversationState.
-// Note: "cwd" is handled specially as a symlink, not included here.
-var statusFields = []string{
-	"local_id",
-	"shelley_id",
-	"slug",
-	"model",
-	"created",
-	"created_at",
-	"message_count",
-}
-
-func (s *ConvStatusDirNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
-	// Handle "cwd" specially as a symlink
-	if name == "cwd" {
-		cs := s.state.Get(s.localID)
-		if cs == nil || cs.Cwd == "" {
-			return nil, syscall.ENOENT
-		}
-		return s.NewInode(ctx, &CwdSymlinkNode{
-			localID:   s.localID,
-			state:     s.state,
-			startTime: s.startTime,
-		}, fs.StableAttr{Mode: syscall.S_IFLNK}), 0
-	}
-
-	// Check if it's a valid status field
-	for _, field := range statusFields {
-		if field == name {
-			return s.NewInode(ctx, &ConvStatusFieldNode{
-				localID:   s.localID,
-				client:    s.client,
-				state:     s.state,
-				field:     name,
-				startTime: s.startTime,
-			}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
-		}
-	}
-	return nil, syscall.ENOENT
-}
-
-func (s *ConvStatusDirNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
-	entries := make([]fuse.DirEntry, 0, len(statusFields)+1)
-	for _, field := range statusFields {
-		entries = append(entries, fuse.DirEntry{Name: field, Mode: fuse.S_IFREG})
-	}
-	// Add cwd as a symlink (only if cwd is set)
-	cs := s.state.Get(s.localID)
-	if cs != nil && cs.Cwd != "" {
-		entries = append(entries, fuse.DirEntry{Name: "cwd", Mode: syscall.S_IFLNK})
-	}
-	return fs.NewListDirStream(entries), 0
-}
-
-func (s *ConvStatusDirNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
-	out.Mode = fuse.S_IFDIR | 0755
-	cs := s.state.Get(s.localID)
-	if cs != nil && !cs.CreatedAt.IsZero() {
-		setTimestamps(&out.Attr, cs.CreatedAt)
-	} else {
-		setTimestamps(&out.Attr, s.startTime)
-	}
-	return 0
-}
-
-// --- ConvStatusFieldNode: individual file in status/ directory ---
+// --- ConvStatusFieldNode: read-only file for conversation status fields ---
 
 type ConvStatusFieldNode struct {
 	fs.Inode
@@ -866,14 +808,8 @@ func (f *ConvStatusFieldNode) Read(ctx context.Context, fh fs.FileHandle, dest [
 
 	var value string
 	switch f.field {
-	case "local_id":
+	case "fuse_id":
 		value = cs.LocalID
-	case "shelley_id":
-		value = cs.ShelleyConversationID
-	case "slug":
-		value = cs.Slug
-	case "model":
-		value = cs.Model
 	case "created":
 		if cs.Created {
 			value = "true"

@@ -54,17 +54,14 @@ The filesystem follows a Plan 9-inspired control file model. There are no host d
     {local-id}/                         → directory per conversation (8-character hex local ID)
       ctl                               → read/write config (model=X cwd=Y); becomes read-only after creation
       new                               → write here to send a message; first write creates conversation on backend
-      status/                            → directory with individual status fields as files
-        local_id                         → local conversation ID
-        shelley_id                       → Shelley server conversation ID (empty before creation)
-        slug                             → conversation slug (empty if none)
-        model                            → model used for this conversation
-        cwd                              → working directory for this conversation
-        created                          → "true" or "false" - whether conversation is created on backend
-        created_at                       → RFC3339 timestamp of when conversation was created locally
-        message_count                    → number of messages in conversation (0 before creation)
       id                                → read-only: Shelley server conversation ID (ENOENT before creation)
       slug                              → read-only: conversation slug (ENOENT before creation or if no slug)
+      fuse_id                           → read-only: local FUSE conversation ID (8-character hex)
+      created                           → read-only: "true" or "false" - whether conversation is created on backend
+      created_at                        → read-only: RFC3339 timestamp of when conversation was created locally
+      message_count                     → read-only: number of messages in conversation (0 before creation)
+      model                             → symlink to ../../models/{model-id} (only if model is set)
+      cwd                               → symlink to working directory (only if cwd is set)
       all.json                          → full conversation as JSON
       all.md                            → full conversation as Markdown
       {N}.json                          → specific message by sequence number (virtual, not in listings)

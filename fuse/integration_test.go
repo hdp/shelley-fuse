@@ -270,11 +270,11 @@ func TestPlan9Flow(t *testing.T) {
 		}
 	})
 
-	// 6. Read status/created before conversation is created
+	// 6. Read created before conversation is created
 	t.Run("StatusBeforeCreate", func(t *testing.T) {
-		data, err := ioutil.ReadFile(filepath.Join(mountPoint, "conversation", convID, "status", "created"))
+		data, err := ioutil.ReadFile(filepath.Join(mountPoint, "conversation", convID, "created"))
 		if err != nil {
-			t.Fatalf("Failed to read status/created: %v", err)
+			t.Fatalf("Failed to read created: %v", err)
 		}
 		content := strings.TrimSpace(string(data))
 		if content != "false" {
@@ -291,24 +291,24 @@ func TestPlan9Flow(t *testing.T) {
 		}
 	})
 
-	// 8. Read status/ after conversation is created
+	// 8. Read created after conversation is created
 	t.Run("StatusAfterCreate", func(t *testing.T) {
 		// Check created status
-		data, err := ioutil.ReadFile(filepath.Join(mountPoint, "conversation", convID, "status", "created"))
+		data, err := ioutil.ReadFile(filepath.Join(mountPoint, "conversation", convID, "created"))
 		if err != nil {
-			t.Fatalf("Failed to read status/created: %v", err)
+			t.Fatalf("Failed to read created: %v", err)
 		}
 		if strings.TrimSpace(string(data)) != "true" {
 			t.Errorf("Expected created=true, got %q", string(data))
 		}
 
-		// Check shelley_id exists
-		data, err = ioutil.ReadFile(filepath.Join(mountPoint, "conversation", convID, "status", "shelley_id"))
+		// Check id exists (was shelley_id in status/)
+		data, err = ioutil.ReadFile(filepath.Join(mountPoint, "conversation", convID, "id"))
 		if err != nil {
-			t.Fatalf("Failed to read status/shelley_id: %v", err)
+			t.Fatalf("Failed to read id: %v", err)
 		}
 		if strings.TrimSpace(string(data)) == "" {
-			t.Error("Expected non-empty shelley_id")
+			t.Error("Expected non-empty id")
 		}
 	})
 
@@ -561,10 +561,9 @@ func TestPlan9Flow(t *testing.T) {
 			"all.md":   false,
 		}
 		expectedDirs := map[string]bool{
-			"status": false,
-			"last":   false,
-			"since":  false,
-			"from":   false,
+			"last":  false,
+			"since": false,
+			"from":  false,
 		}
 
 		for _, e := range entries {
@@ -594,25 +593,22 @@ func TestPlan9Flow(t *testing.T) {
 		}
 	})
 
-	// 24. Verify status directory listing
-	t.Run("StatusDirectoryListing", func(t *testing.T) {
-		entries, err := ioutil.ReadDir(filepath.Join(mountPoint, "conversation", convID, "status"))
+	// 24. Verify status fields are at conversation root (flattened from status/)
+	t.Run("StatusFieldsAtRoot", func(t *testing.T) {
+		entries, err := ioutil.ReadDir(filepath.Join(mountPoint, "conversation", convID))
 		if err != nil {
-			t.Fatalf("Failed to read status directory: %v", err)
+			t.Fatalf("Failed to read conversation directory: %v", err)
 		}
 
-		// Files that should be regular files
-		expectedFiles := map[string]bool{
-			"local_id":      false,
-			"shelley_id":    false,
-			"slug":          false,
-			"model":         false,
+		// Status files that should be at conversation root
+		statusFiles := map[string]bool{
+			"fuse_id":       false,
 			"created":       false,
 			"created_at":    false,
 			"message_count": false,
 		}
 
-		// cwd should be a symlink
+		// cwd should be a symlink at root
 		cwdFound := false
 
 		for _, e := range entries {
@@ -621,77 +617,77 @@ func TestPlan9Flow(t *testing.T) {
 				if e.Mode()&os.ModeSymlink == 0 {
 					t.Errorf("Expected 'cwd' to be a symlink, got mode %v", e.Mode())
 				}
-			} else if _, ok := expectedFiles[e.Name()]; ok {
-				expectedFiles[e.Name()] = true
+			} else if _, ok := statusFiles[e.Name()]; ok {
+				statusFiles[e.Name()] = true
 				if e.IsDir() {
 					t.Errorf("Expected %q to be a file, not a directory", e.Name())
 				}
 			}
 		}
 
-		for name, found := range expectedFiles {
+		for name, found := range statusFiles {
 			if !found {
-				t.Errorf("Expected file %q in status directory", name)
+				t.Errorf("Expected file %q in conversation directory", name)
 			}
 		}
 		if !cwdFound {
-			t.Errorf("Expected symlink 'cwd' in status directory")
+			t.Errorf("Expected symlink 'cwd' in conversation directory")
 		}
 	})
 
-	// 25. Verify status field values
+	// 25. Verify status field values (now at conversation root)
 	t.Run("StatusFieldValues", func(t *testing.T) {
-		statusDir := filepath.Join(mountPoint, "conversation", convID, "status")
+		convDir := filepath.Join(mountPoint, "conversation", convID)
 
-		// Check local_id
-		data, err := ioutil.ReadFile(filepath.Join(statusDir, "local_id"))
+		// Check fuse_id (was local_id in status/)
+		data, err := ioutil.ReadFile(filepath.Join(convDir, "fuse_id"))
 		if err != nil {
-			t.Fatalf("Failed to read status/local_id: %v", err)
+			t.Fatalf("Failed to read fuse_id: %v", err)
 		}
 		if strings.TrimSpace(string(data)) != convID {
-			t.Errorf("Expected local_id=%q, got %q", convID, strings.TrimSpace(string(data)))
+			t.Errorf("Expected fuse_id=%q, got %q", convID, strings.TrimSpace(string(data)))
 		}
 
-		// Check shelley_id matches what we got from id file
-		data, err = ioutil.ReadFile(filepath.Join(statusDir, "shelley_id"))
+		// Check id matches what we got from id file (was shelley_id in status/)
+		data, err = ioutil.ReadFile(filepath.Join(convDir, "id"))
 		if err != nil {
-			t.Fatalf("Failed to read status/shelley_id: %v", err)
+			t.Fatalf("Failed to read id: %v", err)
 		}
 		if strings.TrimSpace(string(data)) != shelleyConvID {
-			t.Errorf("Expected shelley_id=%q, got %q", shelleyConvID, strings.TrimSpace(string(data)))
+			t.Errorf("Expected id=%q, got %q", shelleyConvID, strings.TrimSpace(string(data)))
 		}
 
-		// Check model
-		data, err = ioutil.ReadFile(filepath.Join(statusDir, "model"))
+		// Check model symlink (was status/model file, now symlink at root)
+		modelTarget, err := os.Readlink(filepath.Join(convDir, "model"))
 		if err != nil {
-			t.Fatalf("Failed to read status/model: %v", err)
+			t.Fatalf("Failed to readlink model: %v", err)
 		}
-		if strings.TrimSpace(string(data)) != "predictable" {
-			t.Errorf("Expected model=predictable, got %q", strings.TrimSpace(string(data)))
+		if !strings.Contains(modelTarget, "predictable") {
+			t.Errorf("Expected model symlink to contain 'predictable', got %q", modelTarget)
 		}
 
-		// Check cwd (symlink to the working directory)
-		cwdTarget, err := os.Readlink(filepath.Join(statusDir, "cwd"))
+		// Check cwd symlink (was in status/, now at root)
+		cwdTarget, err := os.Readlink(filepath.Join(convDir, "cwd"))
 		if err != nil {
-			t.Fatalf("Failed to readlink status/cwd: %v", err)
+			t.Fatalf("Failed to readlink cwd: %v", err)
 		}
 		if cwdTarget != "/tmp" {
 			t.Errorf("Expected cwd symlink target=/tmp, got %q", cwdTarget)
 		}
 
 		// Check created (should be "true" after conversation is created)
-		data, err = ioutil.ReadFile(filepath.Join(statusDir, "created"))
+		data, err = ioutil.ReadFile(filepath.Join(convDir, "created"))
 		if err != nil {
-			t.Fatalf("Failed to read status/created: %v", err)
+			t.Fatalf("Failed to read created: %v", err)
 		}
 		if strings.TrimSpace(string(data)) != "true" {
 			t.Errorf("Expected created=true, got %q", strings.TrimSpace(string(data)))
 		}
 
 		// Check created_at is a valid RFC3339 timestamp
-		data, err = ioutil.ReadFile(filepath.Join(statusDir, "created_at"))
+		data, err = ioutil.ReadFile(filepath.Join(convDir, "created_at"))
 		if err != nil {
-			t.Fatalf("Failed to read status/created_at: %v", err)
+			t.Fatalf("Failed to read created_at: %v", err)
 		}
 		createdAtStr := strings.TrimSpace(string(data))
 		if _, err := time.Parse(time.RFC3339, createdAtStr); err != nil {
@@ -699,9 +695,9 @@ func TestPlan9Flow(t *testing.T) {
 		}
 
 		// Check message_count is a non-zero number
-		data, err = ioutil.ReadFile(filepath.Join(statusDir, "message_count"))
+		data, err = ioutil.ReadFile(filepath.Join(convDir, "message_count"))
 		if err != nil {
-			t.Fatalf("Failed to read status/message_count: %v", err)
+			t.Fatalf("Failed to read message_count: %v", err)
 		}
 		msgCount := strings.TrimSpace(string(data))
 		if msgCount == "0" {
@@ -1000,22 +996,22 @@ func TestSymlinkAccess(t *testing.T) {
 	})
 
 	t.Run("ReadStatusThroughSymlink", func(t *testing.T) {
-		// Read local_id through symlink
-		data, err := ioutil.ReadFile(filepath.Join(mountPoint, "conversation", serverID, "status", "local_id"))
+		// Read fuse_id through symlink (was status/local_id)
+		data, err := ioutil.ReadFile(filepath.Join(mountPoint, "conversation", serverID, "fuse_id"))
 		if err != nil {
-			t.Fatalf("Failed to read status/local_id through symlink: %v", err)
+			t.Fatalf("Failed to read fuse_id through symlink: %v", err)
 		}
 		if strings.TrimSpace(string(data)) != localID {
-			t.Errorf("status/local_id = %q, want %s", string(data), localID)
+			t.Errorf("fuse_id = %q, want %s", string(data), localID)
 		}
 
-		// Read shelley_id through symlink
-		data, err = ioutil.ReadFile(filepath.Join(mountPoint, "conversation", serverID, "status", "shelley_id"))
+		// Read id through symlink (was status/shelley_id)
+		data, err = ioutil.ReadFile(filepath.Join(mountPoint, "conversation", serverID, "id"))
 		if err != nil {
-			t.Fatalf("Failed to read status/shelley_id through symlink: %v", err)
+			t.Fatalf("Failed to read id through symlink: %v", err)
 		}
 		if strings.TrimSpace(string(data)) != serverID {
-			t.Errorf("status/shelley_id = %q, want %s", string(data), serverID)
+			t.Errorf("id = %q, want %s", string(data), serverID)
 		}
 	})
 
@@ -1025,7 +1021,7 @@ func TestSymlinkAccess(t *testing.T) {
 			t.Fatalf("Failed to list dir through symlink: %v", err)
 		}
 
-		expected := map[string]bool{"ctl": false, "new": false, "status": false, "all.json": false}
+		expected := map[string]bool{"ctl": false, "new": false, "fuse_id": false, "all.json": false}
 		for _, e := range entries {
 			if _, ok := expected[e.Name()]; ok {
 				expected[e.Name()] = true
@@ -1218,8 +1214,8 @@ func TestSymlinkEdgeCases(t *testing.T) {
 	})
 }
 
-// TestStatusDirectory tests the status/ directory feature.
-func TestStatusDirectory(t *testing.T) {
+// TestStatusFields tests the status fields (now at conversation root).
+func TestStatusFields(t *testing.T) {
 	skipIfNoFusermount(t)
 	skipIfNoShelley(t)
 
@@ -1236,26 +1232,26 @@ func TestStatusDirectory(t *testing.T) {
 		uncreatedID = strings.TrimSpace(string(data))
 		t.Logf("Uncreated conversation ID: %s", uncreatedID)
 
-		// Status directory should still be listable
-		entries, err := ioutil.ReadDir(filepath.Join(mountPoint, "conversation", uncreatedID, "status"))
+		// Conversation directory should be listable with status fields
+		entries, err := ioutil.ReadDir(filepath.Join(mountPoint, "conversation", uncreatedID))
 		if err != nil {
-			t.Fatalf("Failed to read status directory: %v", err)
+			t.Fatalf("Failed to read conversation directory: %v", err)
 		}
 		if len(entries) == 0 {
-			t.Error("Expected status directory to contain files")
+			t.Error("Expected conversation directory to contain files")
 		}
 
-		// Check local_id is set
-		data, err = ioutil.ReadFile(filepath.Join(mountPoint, "conversation", uncreatedID, "status", "local_id"))
+		// Check fuse_id is set (was local_id in status/)
+		data, err = ioutil.ReadFile(filepath.Join(mountPoint, "conversation", uncreatedID, "fuse_id"))
 		if err != nil {
-			t.Fatalf("Failed to read local_id: %v", err)
+			t.Fatalf("Failed to read fuse_id: %v", err)
 		}
 		if strings.TrimSpace(string(data)) != uncreatedID {
-			t.Errorf("Expected local_id=%q, got %q", uncreatedID, strings.TrimSpace(string(data)))
+			t.Errorf("Expected fuse_id=%q, got %q", uncreatedID, strings.TrimSpace(string(data)))
 		}
 
 		// Check created is "false"
-		data, err = ioutil.ReadFile(filepath.Join(mountPoint, "conversation", uncreatedID, "status", "created"))
+		data, err = ioutil.ReadFile(filepath.Join(mountPoint, "conversation", uncreatedID, "created"))
 		if err != nil {
 			t.Fatalf("Failed to read created: %v", err)
 		}
@@ -1263,17 +1259,14 @@ func TestStatusDirectory(t *testing.T) {
 			t.Errorf("Expected created=false, got %q", strings.TrimSpace(string(data)))
 		}
 
-		// Check shelley_id is empty (just newline)
-		data, err = ioutil.ReadFile(filepath.Join(mountPoint, "conversation", uncreatedID, "status", "shelley_id"))
-		if err != nil {
-			t.Fatalf("Failed to read shelley_id: %v", err)
-		}
-		if strings.TrimSpace(string(data)) != "" {
-			t.Errorf("Expected empty shelley_id for uncreated conversation, got %q", strings.TrimSpace(string(data)))
+		// Check id returns ENOENT for uncreated conversation
+		_, err = ioutil.ReadFile(filepath.Join(mountPoint, "conversation", uncreatedID, "id"))
+		if err == nil {
+			t.Error("Expected ENOENT reading id for uncreated conversation")
 		}
 
 		// Check message_count is 0 for uncreated conversation
-		data, err = ioutil.ReadFile(filepath.Join(mountPoint, "conversation", uncreatedID, "status", "message_count"))
+		data, err = ioutil.ReadFile(filepath.Join(mountPoint, "conversation", uncreatedID, "message_count"))
 		if err != nil {
 			t.Fatalf("Failed to read message_count: %v", err)
 		}
@@ -1300,29 +1293,29 @@ func TestStatusDirectory(t *testing.T) {
 			t.Fatalf("Failed to send message: %v", err)
 		}
 
-		// Get the server ID
-		data, err = ioutil.ReadFile(filepath.Join(mountPoint, "conversation", localID, "status", "shelley_id"))
+		// Get the server ID (now via id file at conversation root)
+		data, err = ioutil.ReadFile(filepath.Join(mountPoint, "conversation", localID, "id"))
 		if err != nil {
-			t.Fatalf("Failed to read shelley_id: %v", err)
+			t.Fatalf("Failed to read id: %v", err)
 		}
 		serverID := strings.TrimSpace(string(data))
 		if serverID == "" {
-			t.Fatal("Expected non-empty shelley_id")
+			t.Fatal("Expected non-empty id")
 		}
 
 		// Access status fields via symlink
-		data, err = ioutil.ReadFile(filepath.Join(mountPoint, "conversation", serverID, "status", "local_id"))
+		data, err = ioutil.ReadFile(filepath.Join(mountPoint, "conversation", serverID, "fuse_id"))
 		if err != nil {
-			t.Fatalf("Failed to read status/local_id via symlink: %v", err)
+			t.Fatalf("Failed to read fuse_id via symlink: %v", err)
 		}
 		if strings.TrimSpace(string(data)) != localID {
-			t.Errorf("Expected local_id=%q via symlink, got %q", localID, strings.TrimSpace(string(data)))
+			t.Errorf("Expected fuse_id=%q via symlink, got %q", localID, strings.TrimSpace(string(data)))
 		}
 
 		// Verify message_count > 0
-		data, err = ioutil.ReadFile(filepath.Join(mountPoint, "conversation", serverID, "status", "message_count"))
+		data, err = ioutil.ReadFile(filepath.Join(mountPoint, "conversation", serverID, "message_count"))
 		if err != nil {
-			t.Fatalf("Failed to read status/message_count via symlink: %v", err)
+			t.Fatalf("Failed to read message_count via symlink: %v", err)
 		}
 		if strings.TrimSpace(string(data)) == "0" {
 			t.Errorf("Expected message_count > 0 via symlink")

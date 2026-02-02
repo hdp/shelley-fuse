@@ -1873,19 +1873,19 @@ func TestTimestamps_ConversationNodesUseCreatedAt(t *testing.T) {
 		}
 	})
 
-	// Test status directory timestamp
-	t.Run("StatusDir", func(t *testing.T) {
-		info, err := os.Stat(filepath.Join(tmpDir, "conversation", convID, "status"))
+	// Test fuse_id file timestamp (status fields are now at conversation root)
+	t.Run("FuseIdFile", func(t *testing.T) {
+		info, err := os.Stat(filepath.Join(tmpDir, "conversation", convID, "fuse_id"))
 		if err != nil {
-			t.Fatalf("Failed to stat status: %v", err)
+			t.Fatalf("Failed to stat fuse_id: %v", err)
 		}
 		mtime := info.ModTime()
 		diff := mtime.Sub(convTime)
 		if diff < -time.Second || diff > time.Second {
-			t.Errorf("Status mtime %v differs from convTime %v by %v", mtime, convTime, diff)
+			t.Errorf("fuse_id mtime %v differs from convTime %v by %v", mtime, convTime, diff)
 		}
 		if mtime.Unix() == 0 {
-			t.Error("Status mtime is zero (1970)")
+			t.Error("fuse_id mtime is zero (1970)")
 		}
 	})
 
@@ -2112,7 +2112,8 @@ func TestTimestamps_NeverZero(t *testing.T) {
 		filepath.Join(tmpDir, "conversation", convID),     // conversation dir
 		filepath.Join(tmpDir, "conversation", convID, "ctl"),
 		filepath.Join(tmpDir, "conversation", convID, "new"),
-		filepath.Join(tmpDir, "conversation", convID, "status"),
+		filepath.Join(tmpDir, "conversation", convID, "fuse_id"),
+		filepath.Join(tmpDir, "conversation", convID, "created"),
 		filepath.Join(tmpDir, "conversation", convID, "last"),
 		filepath.Join(tmpDir, "conversation", convID, "since"),
 		filepath.Join(tmpDir, "conversation", convID, "from"),
