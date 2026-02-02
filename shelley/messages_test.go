@@ -2,6 +2,7 @@ package shelley
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -328,5 +329,191 @@ func TestMessageContentEmptyString(t *testing.T) {
 	content := messageContent(msg)
 	if content != "" {
 		t.Errorf("expected empty content for empty string, got %q", content)
+	}
+}
+
+// Test data for tool messages
+func makeToolUseMessage(toolUseID, toolName string) *Message {
+	content := fmt.Sprintf(`{"Content": [{"Type": 5, "ToolUseID": %q, "ToolName": %q}]}`, toolUseID, toolName)
+	return &Message{
+		MessageID:      "m-tool-use",
+		ConversationID: "c1",
+		SequenceID:     1,
+		Type:           "shelley",
+		LLMData:        strPtr(content),
+	}
+}
+
+func makeToolResultMessage(toolUseID string) *Message {
+	content := fmt.Sprintf(`{"Content": [{"Type": 6, "ToolUseID": %q}]}`, toolUseID)
+	return &Message{
+		MessageID:      "m-tool-result",
+		ConversationID: "c1",
+		SequenceID:     2,
+		Type:           "user",
+		UserData:       strPtr(content),
+	}
+}
+
+func TestBuildToolNameMap(t *testing.T) {
+	messages := []*Message{
+		makeToolUseMessage("tu_123", "bash"),
+		makeToolResultMessage("tu_123"),
+		makeToolUseMessage("tu_456", "patch"),
+	}
+
+	toolMap := BuildToolNameMap(messages)
+
+	if len(toolMap) != 2 {
+		t.Fatalf("expected 2 entries in tool map, got %d", len(toolMap))
+	}
+
+	if toolMap["tu_123"] != "bash" {
+		t.Errorf("expected toolMap['tu_123']='bash', got %q", toolMap["tu_123"])
+	}
+
+	if toolMap["tu_456"] != "patch" {
+		t.Errorf("expected toolMap['tu_456']='patch', got %q", toolMap["tu_456"])
+	}
+}
+
+func TestBuildToolNameMapEmpty(t *testing.T) {
+	toolMap := BuildToolNameMap([]*Message{})
+	if len(toolMap) != 0 {
+		t.Errorf("expected empty tool map, got %d entries", len(toolMap))
+	}
+}
+
+func TestBuildToolNameMapNilMessages(t *testing.T) {
+	toolMap := BuildToolNameMap([]*Message{nil, nil})
+	if len(toolMap) != 0 {
+		t.Errorf("expected empty tool map for nil messages, got %d entries", len(toolMap))
+	}
+}
+
+func TestMessageSlugToolUse(t *testing.T) {
+	msg := makeToolUseMessage("tu_123", "bash")
+	slug := MessageSlug(msg, nil)
+
+	if slug != "bash-tool" {
+		t.Errorf("expected 'bash-tool', got %q", slug)
+	}
+}
+
+func TestMessageSlugToolUsePatch(t *testing.T) {
+	msg := makeToolUseMessage("tu_456", "Patch")
+	slug := MessageSlug(msg, nil)
+
+	// Should be lowercased
+	if slug != "patch-tool" {
+		t.Errorf("expected 'patch-tool', got %q", slug)
+	}
+}
+
+func TestMessageSlugToolResult(t *testing.T) {
+	messages := []*Message{
+		makeToolUseMessage("tu_123", "bash"),
+		makeToolResultMessage("tu_123"),
+	}
+
+	toolMap := BuildToolNameMap(messages)
+	slug := MessageSlug(messages[1], toolMap)
+
+	if slug != "bash-result" {
+		t.Errorf("expected 'bash-result', got %q", slug)
+	}
+}
+
+func TestMessageSlugToolResultUnknown(t *testing.T) {
+	// Tool result with no matching tool_use in the map
+	msg := makeToolResultMessage("tu_unknown")
+	slug := MessageSlug(msg, map[string]string{})
+
+	// Should fall back to generic "tool-result"
+	if slug != "tool-result" {
+		t.Errorf("expected 'tool-result', got %q", slug)
+	}
+}
+
+func TestMessageSlugRegularUser(t *testing.T) {
+	msg := &Message{
+		MessageID:      "m1",
+		ConversationID: "c1",
+		SequenceID:     1,
+		Type:           "user",
+		UserData:       strPtr("Hello!"),
+	}
+
+	slug := MessageSlug(msg, nil)
+	if slug != "user" {
+		t.Errorf("expected 'user', got %q", slug)
+	}
+}
+
+func TestMessageSlugRegularShelley(t *testing.T) {
+	msg := &Message{
+		MessageID:      "m1",
+		ConversationID: "c1",
+		SequenceID:     1,
+		Type:           "shelley",
+		LLMData:        strPtr("Hello!"),
+	}
+
+	slug := MessageSlug(msg, nil)
+	if slug != "shelley" {
+		t.Errorf("expected 'shelley', got %q", slug)
+	}
+}
+
+func TestMessageSlugRegularAssistant(t *testing.T) {
+	msg := &Message{
+		MessageID:      "m1",
+		ConversationID: "c1",
+		SequenceID:     1,
+		Type:           "Assistant",
+		LLMData:        strPtr("Hello!"),
+	}
+
+	slug := MessageSlug(msg, nil)
+	// Should be lowercased
+	if slug != "assistant" {
+		t.Errorf("expected 'assistant', got %q", slug)
+	}
+}
+
+func TestMessageSlugNilMessage(t *testing.T) {
+	slug := MessageSlug(nil, nil)
+	if slug != "unknown" {
+		t.Errorf("expected 'unknown', got %q", slug)
+	}
+}
+
+func TestMessageSlugEmptyContent(t *testing.T) {
+	msg := &Message{
+		MessageID:      "m1",
+		ConversationID: "c1",
+		SequenceID:     1,
+		Type:           "system",
+	}
+
+	slug := MessageSlug(msg, nil)
+	if slug != "system" {
+		t.Errorf("expected 'system', got %q", slug)
+	}
+}
+
+func TestMessageSlugInvalidJSON(t *testing.T) {
+	msg := &Message{
+		MessageID:      "m1",
+		ConversationID: "c1",
+		SequenceID:     1,
+		Type:           "user",
+		UserData:       strPtr("not valid json"),
+	}
+
+	slug := MessageSlug(msg, nil)
+	// Should fall back to message type
+	if slug != "user" {
+		t.Errorf("expected 'user', got %q", slug)
 	}
 }

@@ -226,3 +226,104 @@ func extractFromContentField(content interface{}) string {
 		return fmt.Sprintf("%v", content)
 	}
 }
+
+// ContentType represents the type of a content item in a message.
+// These values match the Shelley API content types.
+const (
+	ContentTypeText       = 0
+	ContentTypeToolUse    = 5
+	ContentTypeToolResult = 6
+)
+
+// ContentItem represents a single content item in a message's Content array.
+// This is used for parsing the JSON content to detect tool calls and results.
+type ContentItem struct {
+	Type      int    `json:"Type"`
+	ToolName  string `json:"ToolName,omitempty"`
+	ToolUseID string `json:"ToolUseID,omitempty"`
+}
+
+// MessageContent represents the parsed content from LLMData or UserData.
+type MessageContent struct {
+	Content []ContentItem `json:"Content"`
+}
+
+// BuildToolNameMap iterates through all messages and builds a map from ToolUseID to ToolName.
+// This enables looking up the tool name for tool_result messages.
+func BuildToolNameMap(messages []*Message) map[string]string {
+	toolMap := make(map[string]string)
+	for _, msg := range messages {
+		if msg == nil {
+			continue
+		}
+		// Parse content from either LLMData or UserData
+		var data string
+		if msg.LLMData != nil {
+			data = *msg.LLMData
+		} else if msg.UserData != nil {
+			data = *msg.UserData
+		}
+		if data == "" {
+			continue
+		}
+
+		var content MessageContent
+		if err := json.Unmarshal([]byte(data), &content); err != nil {
+			continue
+		}
+
+		for _, item := range content.Content {
+			if item.Type == ContentTypeToolUse && item.ToolUseID != "" && item.ToolName != "" {
+				toolMap[item.ToolUseID] = item.ToolName
+			}
+		}
+	}
+	return toolMap
+}
+
+// MessageSlug determines the slug for a message based on its content.
+// For tool_use messages: returns "{toolname}-tool" (e.g., "bash-tool")
+// For tool_result messages: returns "{toolname}-result" (e.g., "bash-result")
+// For regular messages: returns lowercased Type field (e.g., "user", "assistant")
+//
+// The toolMap parameter should be built using BuildToolNameMap() to enable
+// looking up tool names for tool_result messages.
+func MessageSlug(msg *Message, toolMap map[string]string) string {
+	if msg == nil {
+		return "unknown"
+	}
+
+	// Parse content from either LLMData or UserData
+	var data string
+	if msg.LLMData != nil {
+		data = *msg.LLMData
+	} else if msg.UserData != nil {
+		data = *msg.UserData
+	}
+
+	if data != "" {
+		var content MessageContent
+		if err := json.Unmarshal([]byte(data), &content); err == nil {
+			// Check for tool_use or tool_result content
+			for _, item := range content.Content {
+				switch item.Type {
+				case ContentTypeToolUse:
+					if item.ToolName != "" {
+						return strings.ToLower(item.ToolName) + "-tool"
+					}
+				case ContentTypeToolResult:
+					if item.ToolUseID != "" && toolMap != nil {
+						if toolName, ok := toolMap[item.ToolUseID]; ok {
+							return strings.ToLower(toolName) + "-result"
+						}
+					}
+					// If we can't find the tool name, fall back to generic result
+					return "tool-result"
+				}
+			}
+		}
+	}
+
+	// Fall back to lowercased message type
+	return strings.ToLower(msg.Type)
+}

@@ -1,6 +1,6 @@
 ---
 id: sf-fbwg
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-02-02T14:29:36Z
