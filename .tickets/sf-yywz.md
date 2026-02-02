@@ -1,6 +1,6 @@
 ---
 id: sf-yywz
-status: open
+status: closed
 deps: [sf-fbwg]
 links: []
 created: 2026-02-02T14:29:57Z
@@ -16,3 +16,18 @@ Update FormatMarkdown in shelley/messages.go to produce better output for tool m
 
 cat messages/100-bash-tool.md shows '## tool call' header with tool name and input. cat messages/101-bash-result.md shows '## tool result' header with output text. Regular user/shelley messages unchanged.
 
+
+## Notes
+
+**2026-02-02T15:10:17Z**
+
+Implemented FormatMarkdown updates: tool calls show '## tool call' with tool name and pretty-printed input; tool results show '## tool result' with extracted output text; regular messages unchanged. Added 5 new tests.
+
+**2026-02-02T15:12:35Z**
+
+Implementation complete and reviewed. All acceptance criteria met:
+- Tool calls show '## tool call' header with tool name and pretty-printed input
+- Tool results show '## tool result' header with output text
+- Regular messages unchanged
+- All 54 tests pass
+- Code review passed with no issues found

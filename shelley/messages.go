@@ -23,19 +23,98 @@ func FormatJSON(messages []Message) ([]byte, error) {
 }
 
 // FormatMarkdown formats messages as Markdown.
+// Tool calls are formatted with "## tool call" header, tool results with "## tool result".
+// Regular messages use their Type field as the header (e.g., "## user", "## shelley").
 func FormatMarkdown(messages []Message) []byte {
+	// Build tool name map for looking up tool names in tool results
+	msgPtrs := make([]*Message, len(messages))
+	for i := range messages {
+		msgPtrs[i] = &messages[i]
+	}
+	toolMap := BuildToolNameMap(msgPtrs)
+
 	var b strings.Builder
 	for _, m := range messages {
+		header, content := formatMessageMarkdown(&m, toolMap)
 		b.WriteString("## ")
-		b.WriteString(m.Type)
+		b.WriteString(header)
 		b.WriteString("\n\n")
-		content := messageContent(m)
 		if content != "" {
 			b.WriteString(content)
 			b.WriteString("\n\n")
 		}
 	}
 	return []byte(b.String())
+}
+
+// formatMessageMarkdown returns the header and content for a message's markdown representation.
+// Returns (header, content) where header is "tool call", "tool result", or the message type.
+func formatMessageMarkdown(m *Message, toolMap map[string]string) (string, string) {
+	if m == nil {
+		return "unknown", ""
+	}
+
+	// Parse content from either LLMData or UserData
+	var data string
+	if m.LLMData != nil {
+		data = *m.LLMData
+	} else if m.UserData != nil {
+		data = *m.UserData
+	}
+
+	if data != "" {
+		var content MessageContent
+		if err := json.Unmarshal([]byte(data), &content); err == nil {
+			// Check for tool_use or tool_result content
+			for _, item := range content.Content {
+				switch item.Type {
+				case ContentTypeToolUse:
+					return "tool call", formatToolCallContent(item)
+				case ContentTypeToolResult:
+					return "tool result", formatToolResultContent(item)
+				}
+			}
+		}
+	}
+
+	// Regular message - use type as header and extract text content
+	return m.Type, messageContent(*m)
+}
+
+// formatToolCallContent formats the body of a tool call message.
+// Shows the tool name and pretty-printed input.
+func formatToolCallContent(item ContentItem) string {
+	var b strings.Builder
+	b.WriteString(item.ToolName)
+	b.WriteString("\n\n")
+
+	if len(item.Input) > 0 {
+		// Pretty-print the input JSON
+		var parsed interface{}
+		if err := json.Unmarshal(item.Input, &parsed); err == nil {
+			if pretty, err := json.MarshalIndent(parsed, "", "  "); err == nil {
+				b.Write(pretty)
+			} else {
+				b.Write(item.Input)
+			}
+		} else {
+			b.Write(item.Input)
+		}
+	}
+
+	return b.String()
+}
+
+// formatToolResultContent formats the body of a tool result message.
+// Extracts and concatenates text from the ToolResult array.
+func formatToolResultContent(item ContentItem) string {
+	var parts []string
+	for _, result := range item.ToolResult {
+		if result.Text != "" {
+			parts = append(parts, result.Text)
+		}
+	}
+	return strings.Join(parts, "")
 }
 
 // GetMessage returns the message at 1-based sequence number, or nil if out of range.
@@ -238,9 +317,16 @@ const (
 // ContentItem represents a single content item in a message's Content array.
 // This is used for parsing the JSON content to detect tool calls and results.
 type ContentItem struct {
-	Type      int    `json:"Type"`
-	ToolName  string `json:"ToolName,omitempty"`
-	ToolUseID string `json:"ToolUseID,omitempty"`
+	Type       int             `json:"Type"`
+	ToolName   string          `json:"ToolName,omitempty"`
+	ToolUseID  string          `json:"ToolUseID,omitempty"`
+	Input      json.RawMessage `json:"Input,omitempty"`
+	ToolResult []ToolResultItem `json:"ToolResult,omitempty"`
+}
+
+// ToolResultItem represents an item in the ToolResult array of a tool_result content.
+type ToolResultItem struct {
+	Text string `json:"Text"`
 }
 
 // MessageContent represents the parsed content from LLMData or UserData.

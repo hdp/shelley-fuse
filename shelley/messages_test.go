@@ -517,3 +517,159 @@ func TestMessageSlugInvalidJSON(t *testing.T) {
 		t.Errorf("expected 'user', got %q", slug)
 	}
 }
+
+// Tests for FormatMarkdown with tool calls and tool results
+
+func makeToolUseMessageWithInput(toolUseID, toolName, input string) *Message {
+	content := fmt.Sprintf(`{"Content": [{"Type": 5, "ToolUseID": %q, "ToolName": %q, "Input": %s}]}`, toolUseID, toolName, input)
+	return &Message{
+		MessageID:      "m-tool-use",
+		ConversationID: "c1",
+		SequenceID:     1,
+		Type:           "shelley",
+		LLMData:        strPtr(content),
+	}
+}
+
+func makeToolResultMessageWithOutput(toolUseID, outputText string) *Message {
+	content := fmt.Sprintf(`{"Content": [{"Type": 6, "ToolUseID": %q, "ToolResult": [{"Text": %q}]}]}`, toolUseID, outputText)
+	return &Message{
+		MessageID:      "m-tool-result",
+		ConversationID: "c1",
+		SequenceID:     2,
+		Type:           "user",
+		UserData:       strPtr(content),
+	}
+}
+
+func TestFormatMarkdownToolCall(t *testing.T) {
+	msg := makeToolUseMessageWithInput("tu_123", "bash", `{"command": "ls -la"}`)
+	messages := []Message{*msg}
+
+	md := string(FormatMarkdown(messages))
+
+	// Should have "## tool call" header
+	if !strings.Contains(md, "## tool call") {
+		t.Error("expected markdown to contain '## tool call'")
+	}
+
+	// Should NOT have the raw message type
+	if strings.Contains(md, "## shelley") {
+		t.Error("tool call should not show '## shelley'")
+	}
+
+	// Should show the tool name
+	if !strings.Contains(md, "bash") {
+		t.Error("expected markdown to contain tool name 'bash'")
+	}
+
+	// Should show the input (pretty-printed)
+	if !strings.Contains(md, "command") {
+		t.Error("expected markdown to contain input field 'command'")
+	}
+	if !strings.Contains(md, "ls -la") {
+		t.Error("expected markdown to contain input value 'ls -la'")
+	}
+}
+
+func TestFormatMarkdownToolResult(t *testing.T) {
+	msg := makeToolResultMessageWithOutput("tu_123", "file1.txt\nfile2.txt\n")
+	messages := []Message{*msg}
+
+	md := string(FormatMarkdown(messages))
+
+	// Should have "## tool result" header
+	if !strings.Contains(md, "## tool result") {
+		t.Error("expected markdown to contain '## tool result'")
+	}
+
+	// Should NOT have the raw message type
+	if strings.Contains(md, "## user") {
+		t.Error("tool result should not show '## user'")
+	}
+
+	// Should show the output text
+	if !strings.Contains(md, "file1.txt") {
+		t.Error("expected markdown to contain output text")
+	}
+}
+
+func TestFormatMarkdownMixedToolAndRegular(t *testing.T) {
+	messages := []Message{
+		{MessageID: "m1", ConversationID: "c1", SequenceID: 1, Type: "user", UserData: strPtr("Run ls")},
+		*makeToolUseMessageWithInput("tu_123", "bash", `{"command": "ls"}`),
+		*makeToolResultMessageWithOutput("tu_123", "output.txt"),
+		{MessageID: "m4", ConversationID: "c1", SequenceID: 4, Type: "shelley", LLMData: strPtr("Here are the files.")},
+	}
+
+	md := string(FormatMarkdown(messages))
+
+	// Check all headers are present
+	if !strings.Contains(md, "## user") {
+		t.Error("expected '## user' header")
+	}
+	if !strings.Contains(md, "## tool call") {
+		t.Error("expected '## tool call' header")
+	}
+	if !strings.Contains(md, "## tool result") {
+		t.Error("expected '## tool result' header")
+	}
+	if !strings.Contains(md, "## shelley") {
+		t.Error("expected '## shelley' header")
+	}
+
+	// Verify content
+	if !strings.Contains(md, "Run ls") {
+		t.Error("expected user message content")
+	}
+	if !strings.Contains(md, "output.txt") {
+		t.Error("expected tool result output")
+	}
+	if !strings.Contains(md, "Here are the files.") {
+		t.Error("expected shelley message content")
+	}
+}
+
+func TestFormatMarkdownToolResultMultipleTexts(t *testing.T) {
+	// Tool result with multiple text entries
+	content := `{"Content": [{"Type": 6, "ToolUseID": "tu_123", "ToolResult": [{"Text": "line1\n"}, {"Text": "line2\n"}]}]}`
+	msg := Message{
+		MessageID:      "m1",
+		ConversationID: "c1",
+		SequenceID:     1,
+		Type:           "user",
+		UserData:       strPtr(content),
+	}
+
+	md := string(FormatMarkdown([]Message{msg}))
+
+	if !strings.Contains(md, "line1") {
+		t.Error("expected first text")
+	}
+	if !strings.Contains(md, "line2") {
+		t.Error("expected second text")
+	}
+}
+
+func TestFormatMarkdownRegularMessagesUnchanged(t *testing.T) {
+	// Verify regular messages still work as before
+	messages := []Message{
+		{MessageID: "m1", ConversationID: "c1", SequenceID: 1, Type: "user", UserData: strPtr("Hello")},
+		{MessageID: "m2", ConversationID: "c1", SequenceID: 2, Type: "shelley", LLMData: strPtr("Hi there!")},
+	}
+
+	md := string(FormatMarkdown(messages))
+
+	if !strings.Contains(md, "## user") {
+		t.Error("expected '## user' header")
+	}
+	if !strings.Contains(md, "Hello") {
+		t.Error("expected user content")
+	}
+	if !strings.Contains(md, "## shelley") {
+		t.Error("expected '## shelley' header")
+	}
+	if !strings.Contains(md, "Hi there!") {
+		t.Error("expected shelley content")
+	}
+}
