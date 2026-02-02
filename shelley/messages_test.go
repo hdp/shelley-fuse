@@ -334,7 +334,8 @@ func TestMessageContentEmptyString(t *testing.T) {
 
 // Test data for tool messages
 func makeToolUseMessage(toolUseID, toolName string) *Message {
-	content := fmt.Sprintf(`{"Content": [{"Type": 5, "ToolUseID": %q, "ToolName": %q}]}`, toolUseID, toolName)
+	// Note: The Shelley API uses 'ID' field for tool use identifier in tool_use messages
+	content := fmt.Sprintf(`{"Content": [{"Type": 5, "ID": %q, "ToolName": %q}]}`, toolUseID, toolName)
 	return &Message{
 		MessageID:      "m-tool-use",
 		ConversationID: "c1",
@@ -410,6 +411,7 @@ func TestMessageSlugToolUsePatch(t *testing.T) {
 	}
 }
 
+
 func TestMessageSlugToolResult(t *testing.T) {
 	messages := []*Message{
 		makeToolUseMessage("tu_123", "bash"),
@@ -426,12 +428,31 @@ func TestMessageSlugToolResult(t *testing.T) {
 
 func TestMessageSlugToolResultUnknown(t *testing.T) {
 	// Tool result with no matching tool_use in the map
+	// Falls back to message Type ("user") since tool name can't be determined
 	msg := makeToolResultMessage("tu_unknown")
 	slug := MessageSlug(msg, map[string]string{})
 
-	// Should fall back to generic "tool-result"
-	if slug != "tool-result" {
-		t.Errorf("expected 'tool-result', got %q", slug)
+	// Should fall back to message type, not generic "result"
+	if slug != "user" {
+		t.Errorf("expected 'user', got %q", slug)
+	}
+}
+
+func TestMessageSlugToolResultWithDirectToolName(t *testing.T) {
+	// Tool result with ToolName populated directly (fallback when toolMap lookup fails)
+	content := `{"Content": [{"Type": 6, "ToolUseID": "tu_xyz", "ToolName": "patch"}]}`
+	msg := &Message{
+		MessageID:      "m1",
+		ConversationID: "c1",
+		SequenceID:     1,
+		Type:           "user",
+		UserData:       strPtr(content),
+	}
+	// Empty toolMap - will use ToolName from the content item itself
+	slug := MessageSlug(msg, map[string]string{})
+
+	if slug != "patch-result" {
+		t.Errorf("expected 'patch-result', got %q", slug)
 	}
 }
 
@@ -521,7 +542,8 @@ func TestMessageSlugInvalidJSON(t *testing.T) {
 // Tests for FormatMarkdown with tool calls and tool results
 
 func makeToolUseMessageWithInput(toolUseID, toolName, input string) *Message {
-	content := fmt.Sprintf(`{"Content": [{"Type": 5, "ToolUseID": %q, "ToolName": %q, "Input": %s}]}`, toolUseID, toolName, input)
+	// Note: The Shelley API uses 'ID' field for tool use identifier in tool_use messages
+	content := fmt.Sprintf(`{"Content": [{"Type": 5, "ID": %q, "ToolName": %q, "Input": %s}]}`, toolUseID, toolName, input)
 	return &Message{
 		MessageID:      "m-tool-use",
 		ConversationID: "c1",

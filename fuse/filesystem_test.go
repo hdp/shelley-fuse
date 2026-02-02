@@ -2738,7 +2738,7 @@ func TestMessagesDirNodeReaddirWithToolCalls(t *testing.T) {
 	convID := "test-conv-with-tools"
 	msgs := []shelley.Message{
 		{MessageID: "m1", ConversationID: convID, SequenceID: 1, Type: "user", UserData: strPtr("Hello")},
-		{MessageID: "m2", ConversationID: convID, SequenceID: 2, Type: "shelley", LLMData: strPtr(`{"Content": [{"Type": 5, "ToolUseID": "tu_123", "ToolName": "bash"}]}`)},
+		{MessageID: "m2", ConversationID: convID, SequenceID: 2, Type: "shelley", LLMData: strPtr(`{"Content": [{"Type": 5, "ID": "tu_123", "ToolName": "bash"}]}`)},
 		{MessageID: "m3", ConversationID: convID, SequenceID: 3, Type: "user", UserData: strPtr(`{"Content": [{"Type": 6, "ToolUseID": "tu_123"}]}`)},
 		{MessageID: "m4", ConversationID: convID, SequenceID: 4, Type: "shelley", LLMData: strPtr("Done!")},
 	}
@@ -2819,7 +2819,7 @@ func TestMessagesDirNodeLookupWithToolCalls(t *testing.T) {
 	convID := "test-conv-lookup-tools"
 	msgs := []shelley.Message{
 		{MessageID: "m1", ConversationID: convID, SequenceID: 1, Type: "user", UserData: strPtr("Hello")},
-		{MessageID: "m2", ConversationID: convID, SequenceID: 2, Type: "shelley", LLMData: strPtr(`{"Content": [{"Type": 5, "ToolUseID": "tu_456", "ToolName": "patch"}]}`)},
+		{MessageID: "m2", ConversationID: convID, SequenceID: 2, Type: "shelley", LLMData: strPtr(`{"Content": [{"Type": 5, "ID": "tu_456", "ToolName": "patch"}]}`)},
 		{MessageID: "m3", ConversationID: convID, SequenceID: 3, Type: "user", UserData: strPtr(`{"Content": [{"Type": 6, "ToolUseID": "tu_456"}]}`)},
 	}
 
@@ -2910,7 +2910,7 @@ func TestMessagesDirNodeLookupWithToolCalls(t *testing.T) {
 func TestMessagesDirNodeReadToolCallContent(t *testing.T) {
 	convID := "test-conv-read-tools"
 	msgs := []shelley.Message{
-		{MessageID: "m1", ConversationID: convID, SequenceID: 100, Type: "shelley", LLMData: strPtr(`{"Content": [{"Type": 5, "ToolUseID": "tu_789", "ToolName": "bash"}]}`)},
+		{MessageID: "m1", ConversationID: convID, SequenceID: 100, Type: "shelley", LLMData: strPtr(`{"Content": [{"Type": 5, "ID": "tu_789", "ToolName": "bash"}]}`)},
 		{MessageID: "m2", ConversationID: convID, SequenceID: 101, Type: "user", UserData: strPtr(`{"Content": [{"Type": 6, "ToolUseID": "tu_789"}]}`)},
 	}
 

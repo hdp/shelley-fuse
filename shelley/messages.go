@@ -318,8 +318,9 @@ const (
 // This is used for parsing the JSON content to detect tool calls and results.
 type ContentItem struct {
 	Type       int             `json:"Type"`
+	ID         string          `json:"ID,omitempty"`         // Tool use ID for tool_use (Type 5)
 	ToolName   string          `json:"ToolName,omitempty"`
-	ToolUseID  string          `json:"ToolUseID,omitempty"`
+	ToolUseID  string          `json:"ToolUseID,omitempty"` // References tool use ID in tool_result (Type 6)
 	Input      json.RawMessage `json:"Input,omitempty"`
 	ToolResult []ToolResultItem `json:"ToolResult,omitempty"`
 }
@@ -359,8 +360,16 @@ func BuildToolNameMap(messages []*Message) map[string]string {
 		}
 
 		for _, item := range content.Content {
-			if item.Type == ContentTypeToolUse && item.ToolUseID != "" && item.ToolName != "" {
-				toolMap[item.ToolUseID] = item.ToolName
+			if item.Type == ContentTypeToolUse && item.ToolName != "" {
+				// The Shelley API uses 'ID' field for tool use identifier in tool_use messages,
+				// but 'ToolUseID' in tool_result messages to reference it.
+				// We check both for compatibility.
+				if item.ID != "" {
+					toolMap[item.ID] = item.ToolName
+				}
+				if item.ToolUseID != "" {
+					toolMap[item.ToolUseID] = item.ToolName
+				}
 			}
 		}
 	}
@@ -397,14 +406,19 @@ func MessageSlug(msg *Message, toolMap map[string]string) string {
 					if item.ToolName != "" {
 						return strings.ToLower(item.ToolName) + "-tool"
 					}
+					// ToolName empty is unexpected - fall through to msg.Type
 				case ContentTypeToolResult:
+					// Look up the tool name from the toolMap using ToolUseID
 					if item.ToolUseID != "" && toolMap != nil {
 						if toolName, ok := toolMap[item.ToolUseID]; ok {
 							return strings.ToLower(toolName) + "-result"
 						}
 					}
-					// If we can't find the tool name, fall back to generic result
-					return "tool-result"
+					// Fallback: check if ToolName is populated directly on the item
+					if item.ToolName != "" {
+						return strings.ToLower(item.ToolName) + "-result"
+					}
+					// Tool name not found - fall through to msg.Type
 				}
 			}
 		}
