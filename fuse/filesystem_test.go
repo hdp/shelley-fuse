@@ -64,6 +64,7 @@ func TestBasicMount(t *testing.T) {
 		"models":       false,
 		"new":          false,
 		"conversation": false,
+		"README.md":    false,
 	}
 
 	for _, entry := range entries {
@@ -1057,6 +1058,117 @@ func TestModelFieldNode_ReadOffset(t *testing.T) {
 	data, _ = result.Bytes(nil)
 	if len(data) != 0 {
 		t.Errorf("expected empty result for offset beyond content, got %q", string(data))
+	}
+}
+
+// --- Tests for ReadmeNode ---
+
+func TestReadmeNode_Read(t *testing.T) {
+	node := &ReadmeNode{}
+	dest := make([]byte, 8192)
+	result, errno := node.Read(context.Background(), nil, dest, 0)
+	if errno != 0 {
+		t.Fatalf("Read failed with errno %d", errno)
+	}
+	data, _ := result.Bytes(nil)
+	if string(data) != readmeContent {
+		t.Errorf("README content mismatch: got %d bytes, expected %d bytes", len(data), len(readmeContent))
+	}
+}
+
+func TestReadmeNode_ReadOffset(t *testing.T) {
+	node := &ReadmeNode{}
+
+	// Read from offset 10
+	dest := make([]byte, 20)
+	result, errno := node.Read(context.Background(), nil, dest, 10)
+	if errno != 0 {
+		t.Fatalf("Read failed with errno %d", errno)
+	}
+	data, _ := result.Bytes(nil)
+	expected := readmeContent[10:30]
+	if string(data) != expected {
+		t.Errorf("expected %q, got %q", expected, string(data))
+	}
+
+	// Read from offset beyond content
+	result, errno = node.Read(context.Background(), nil, dest, int64(len(readmeContent)+100))
+	if errno != 0 {
+		t.Fatalf("Read failed with errno %d", errno)
+	}
+	data, _ = result.Bytes(nil)
+	if len(data) != 0 {
+		t.Errorf("expected empty result for offset beyond content, got %q", string(data))
+	}
+}
+
+func TestReadmeNode_Getattr(t *testing.T) {
+	node := &ReadmeNode{}
+	var out fuse.AttrOut
+	errno := node.Getattr(context.Background(), nil, &out)
+	if errno != 0 {
+		t.Fatalf("Getattr failed with errno %d", errno)
+	}
+
+	// Check mode is read-only (0444)
+	expectedMode := uint32(fuse.S_IFREG | 0444)
+	if out.Mode != expectedMode {
+		t.Errorf("expected mode %o, got %o", expectedMode, out.Mode)
+	}
+
+	// Check size matches readmeContent
+	if out.Size != uint64(len(readmeContent)) {
+		t.Errorf("expected size %d, got %d", len(readmeContent), out.Size)
+	}
+}
+
+func TestReadmeNode_MountedRead(t *testing.T) {
+	mockClient := shelley.NewClient("http://localhost:11002")
+	store := testStore(t)
+	shelleyFS := NewFS(mockClient, store, time.Hour)
+
+	tmpDir, err := ioutil.TempDir("", "shelley-fuse-readme-test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	opts := &fs.Options{}
+	entryTimeout := time.Duration(0)
+	attrTimeout := time.Duration(0)
+	negativeTimeout := time.Duration(0)
+	opts.EntryTimeout = &entryTimeout
+	opts.AttrTimeout = &attrTimeout
+	opts.NegativeTimeout = &negativeTimeout
+
+	fssrv, err := fs.Mount(tmpDir, shelleyFS, opts)
+	if err != nil {
+		t.Fatalf("Mount failed: %v", err)
+	}
+	defer fssrv.Unmount()
+
+	// Read README.md content
+	readmePath := filepath.Join(tmpDir, "README.md")
+	data, err := ioutil.ReadFile(readmePath)
+	if err != nil {
+		t.Fatalf("Failed to read README.md: %v", err)
+	}
+	if string(data) != readmeContent {
+		t.Errorf("README.md content mismatch: got %d bytes, expected %d bytes", len(data), len(readmeContent))
+	}
+
+	// Check file attributes
+	info, err := os.Stat(readmePath)
+	if err != nil {
+		t.Fatalf("Failed to stat README.md: %v", err)
+	}
+	if info.Size() != int64(len(readmeContent)) {
+		t.Errorf("expected size %d, got %d", len(readmeContent), info.Size())
+	}
+	// Check read-only permission (0444)
+	perm := info.Mode().Perm()
+	if perm != 0444 {
+		t.Errorf("expected permission 0444, got %o", perm)
 	}
 }
 

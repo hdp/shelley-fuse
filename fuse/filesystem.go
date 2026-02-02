@@ -71,12 +71,15 @@ func (f *FS) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.I
 		return f.NewInode(ctx, &NewDirNode{state: f.state, startTime: f.startTime}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
 	case "conversation":
 		return f.NewInode(ctx, &ConversationListNode{client: f.client, state: f.state, cloneTimeout: f.cloneTimeout, startTime: f.startTime}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
+	case "README.md":
+		return f.NewInode(ctx, &ReadmeNode{startTime: f.startTime}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
 	}
 	return nil, syscall.ENOENT
 }
 
 func (f *FS) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
 	return fs.NewListDirStream([]fuse.DirEntry{
+		{Name: "README.md", Mode: fuse.S_IFREG},
 		{Name: "models", Mode: fuse.S_IFDIR},
 		{Name: "new", Mode: fuse.S_IFDIR},
 		{Name: "conversation", Mode: fuse.S_IFDIR},
@@ -86,6 +89,103 @@ func (f *FS) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
 func (f *FS) Getattr(ctx context.Context, fh fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
 	out.Mode = fuse.S_IFDIR | 0755
 	setTimestamps(&out.Attr, f.startTime)
+	return 0
+}
+
+// --- ReadmeNode: /README.md file with usage documentation ---
+
+// readmeContent contains the embedded documentation for the FUSE filesystem.
+// This makes the filesystem self-documenting — users can `cat /shelley/README.md`.
+const readmeContent = `# Shelley FUSE
+
+A FUSE filesystem that exposes the Shelley API, allowing shell tools to interact with Shelley conversations.
+
+## Quick Start
+
+` + "```" + `bash
+# Allocate a new conversation
+ID=$(cat new/clone)
+
+# Configure model and working directory (optional)
+echo "model=claude-sonnet-4.5 cwd=$PWD" > conversation/$ID/ctl
+
+# Send first message (creates conversation on backend)
+echo "Hello, Shelley!" > conversation/$ID/new
+
+# Read the response
+cat conversation/$ID/all.md
+
+# Send follow-up
+echo "Thanks!" > conversation/$ID/new
+` + "```" + `
+
+## Filesystem Layout
+
+` + "```" + `
+/
+  README.md              → this file
+  models/                → available models
+    default              → symlink to default model
+    {model-id}/          → directory per model
+      id                 → model ID
+      ready              → "true" or "false"
+  new/
+    clone                → read to allocate a new conversation ID
+  conversation/          → all conversations
+    {id}/                → directory per conversation
+      ctl                → read/write config; read-only after first message
+      new                → write here to send messages
+      id                 → Shelley server conversation ID
+      slug               → conversation slug (if set)
+      all.json           → full conversation as JSON
+      all.md             → full conversation as Markdown
+      last/{N}.md        → last N messages
+      since/{person}/{N}.md → messages since Nth from person
+      from/{person}/{N}.md  → Nth message from person
+` + "```" + `
+
+## Common Operations
+
+` + "```" + `bash
+# List available models
+ls models/
+
+# Check default model
+readlink models/default
+
+# List conversations
+ls conversation/
+
+# Read last 5 messages
+cat conversation/$ID/last/5.md
+
+# Read messages since your last message
+cat conversation/$ID/since/me/1.md
+` + "```" + `
+`
+
+type ReadmeNode struct {
+	fs.Inode
+	startTime time.Time
+}
+
+var _ = (fs.NodeOpener)((*ReadmeNode)(nil))
+var _ = (fs.NodeReader)((*ReadmeNode)(nil))
+var _ = (fs.NodeGetattrer)((*ReadmeNode)(nil))
+
+func (r *ReadmeNode) Open(ctx context.Context, flags uint32) (fs.FileHandle, uint32, syscall.Errno) {
+	return nil, fuse.FOPEN_DIRECT_IO, 0
+}
+
+func (r *ReadmeNode) Read(ctx context.Context, f fs.FileHandle, dest []byte, off int64) (fuse.ReadResult, syscall.Errno) {
+	data := []byte(readmeContent)
+	return fuse.ReadResultData(readAt(data, dest, off)), 0
+}
+
+func (r *ReadmeNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
+	out.Mode = fuse.S_IFREG | 0444
+	out.Size = uint64(len(readmeContent))
+	setTimestamps(&out.Attr, r.startTime)
 	return 0
 }
 
