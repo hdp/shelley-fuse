@@ -95,3 +95,78 @@ Commit message is clear and includes ticket reference.
 - Removed NodeWriter interface assertion (correct since Write moved to handle)
 
 Reviewed by: subagent
+
+**2026-02-02T15:59:52Z**
+
+## Fix Implemented
+
+Moved `h.flushed = true` to AFTER the empty buffer check in `ConvNewFileHandle.Flush()`.
+
+### Changes:
+1. **fuse/filesystem.go**: One-line fix - moved `h.flushed = true` after the empty message check
+2. **fuse/integration_test.go**: Added `TestShellRedirectToNew` that simulates shell redirect behavior (open/dup/close/write/close)
+
+### Tests:
+- All unit tests pass: `just test`
+- All integration tests pass: `just test-integration`
+- New test specifically validates the shell redirect pattern that was failing
+
+### Root cause confirmed:
+The `flushed` flag was set before checking if the buffer was empty. When bash does a shell redirect like `echo msg > file`, it:
+1. Opens the file
+2. Dups the fd
+3. Closes the original (triggers empty Flush, set flushed=true)
+4. Writes to dup'd fd
+5. Closes dup'd fd (Flush skipped because flushed was already true)
+
+Now the flag is only set when there's actual data to send.
+
+**2026-02-02T16:01:41Z**
+
+## Code Review - PASS
+
+### Root Cause Analysis: CORRECT
+The bug was that `h.flushed = true` was set BEFORE the empty buffer check. When bash does shell redirect:
+1. open fd 3
+2. dup2(3, 1) 
+3. close(3) → triggers Flush with empty buffer, sets `flushed = true`
+4. echo writes to fd 1
+5. close(1) → Flush called but returns early because `flushed` is true
+
+Moving `h.flushed = true` to AFTER the empty check fixes this. Empty flushes no longer "consume" the flag.
+
+### Test Coverage: ADEQUATE
+`TestShellRedirectToNew` precisely replicates the shell redirect pattern using syscall.Open/Dup/Close/Write/Close. It validates:
+- The open/dup/close sequence (empty flush)
+- Write to dup'd fd
+- Close dup'd fd (should send message)
+- Message actually arrives at server
+
+### Edge Case Analysis:
+
+1. **Multiple empty Flush calls?** Safe - each returns 0 without setting `flushed`. No infinite loop possible since Flush is kernel-triggered on close.
+
+2. **Empty flush → data → flush → more data → flush?** 
+   - Empty flush: returns 0, `flushed` stays false ✓
+   - Write data
+   - Flush: sends, sets `flushed = true` ✓
+   - More writes
+   - Flush: returns early (flushed=true), NO double-send ✓
+   This is correct for `/new` semantics - one message per file handle.
+
+3. **Concurrent access?** Protected by `h.mu` mutex.
+
+### Code Quality: EXCELLENT
+- Minimal change (one line moved)
+- Clear comments explaining why
+- Diff is easy to review
+
+### Tests: ALL PASS
+```
+go test ./... -count=1
+ok  shelley-fuse/fuse    2.804s
+ok  shelley-fuse/shelley 0.158s
+ok  shelley-fuse/state   0.011s
+```
+
+Reviewed by: code-review-subagent

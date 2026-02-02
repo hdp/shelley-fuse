@@ -969,7 +969,6 @@ func (h *ConvNewFileHandle) Flush(ctx context.Context) syscall.Errno {
 	if h.flushed {
 		return 0
 	}
-	h.flushed = true
 
 	cs := h.node.state.Get(h.node.localID)
 	if cs == nil {
@@ -978,8 +977,10 @@ func (h *ConvNewFileHandle) Flush(ctx context.Context) syscall.Errno {
 
 	message := strings.TrimRight(string(h.buffer), "\n")
 	if message == "" {
-		return 0
+		return 0 // Don't set flushed for empty buffers - allow retry
 	}
+
+	h.flushed = true // Only set when we actually have data to send
 
 	if !cs.Created {
 		// First write: create the conversation on the Shelley backend

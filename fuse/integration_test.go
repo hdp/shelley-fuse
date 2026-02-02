@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -1013,5 +1014,92 @@ func TestMultilineWriteToNew(t *testing.T) {
 			!strings.Contains(content, "Line 3") {
 			t.Errorf("Expected multiline message with all 3 lines, got: %q", content)
 		}
+	}
+}
+
+// TestShellRedirectToNew tests the shell redirect pattern where bash does:
+//   1. open file -> fd 3
+//   2. dup2(3, 1) -> fd 1 now points to file
+//   3. close(3) -> triggers Flush with EMPTY buffer (no data written yet!)
+//   4. echo writes to fd 1 -> data goes in buffer
+//   5. process exits, fd 1 closed -> triggers Flush again
+//
+// The bug (sf-bksa): flushed flag was set on step 3, so step 5 was a no-op.
+// The fix: only set flushed when there's actual data to send.
+func TestShellRedirectToNew(t *testing.T) {
+	skipIfNoFusermount(t)
+	skipIfNoShelley(t)
+
+	serverURL := startShelleyServer(t)
+	mountPoint := mountTestFS(t, serverURL)
+
+	localID, _ := createConversation(t, mountPoint, "Initial message")
+
+	newPath := filepath.Join(mountPoint, "conversation", localID, "new")
+
+	// Simulate shell redirect behavior:
+	// 1. Open the file (fd 3)
+	fd1, err := syscall.Open(newPath, syscall.O_WRONLY, 0644)
+	if err != nil {
+		t.Fatalf("Failed to open new: %v", err)
+	}
+
+	// 2. Dup to a new fd (simulating dup2 to redirect stdout)
+	fd2, err := syscall.Dup(fd1)
+	if err != nil {
+		syscall.Close(fd1)
+		t.Fatalf("Failed to dup: %v", err)
+	}
+
+	// 3. Close the original fd - this triggers Flush with EMPTY buffer!
+	//    The bug was that this set flushed=true even though nothing was written.
+	if err := syscall.Close(fd1); err != nil {
+		syscall.Close(fd2)
+		t.Fatalf("Failed to close fd1: %v", err)
+	}
+
+	// 4. Write data to the dup'd fd (like echo would)
+	msg := "Shell redirect test message"
+	if _, err := syscall.Write(fd2, []byte(msg)); err != nil {
+		syscall.Close(fd2)
+		t.Fatalf("Failed to write: %v", err)
+	}
+
+	// 5. Close the dup'd fd - this should trigger Flush with the actual data
+	if err := syscall.Close(fd2); err != nil {
+		t.Fatalf("Failed to close fd2: %v", err)
+	}
+
+	// Verify the message was sent
+	data, err := ioutil.ReadFile(filepath.Join(mountPoint, "conversation", localID, "messages", "all.json"))
+	if err != nil {
+		t.Fatalf("Failed to read all.json: %v", err)
+	}
+
+	var msgs []shelley.Message
+	if err := json.Unmarshal(data, &msgs); err != nil {
+		t.Fatalf("Failed to parse all.json: %v", err)
+	}
+
+	// Find user messages
+	var userMsgs []shelley.Message
+	for _, m := range msgs {
+		if m.Type == "user" {
+			userMsgs = append(userMsgs, m)
+		}
+	}
+
+	// Should have exactly 2 user messages: initial + shell redirect message
+	if len(userMsgs) != 2 {
+		t.Fatalf("Expected 2 user messages, got %d (shell redirect message not sent!)", len(userMsgs))
+	}
+
+	// Verify the second message contains our text
+	var content string
+	if userMsgs[1].LLMData != nil {
+		content = *userMsgs[1].LLMData
+	}
+	if !strings.Contains(content, "Shell redirect test") {
+		t.Errorf("Expected shell redirect message, got: %q", content)
 	}
 }
