@@ -1,6 +1,6 @@
 ---
 id: sf-bz2m
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-02-02T14:30:28Z
@@ -15,4 +15,14 @@ Remove the from/ subdirectory from messages/. Since filenames now encode the mes
 ## Acceptance Criteria
 
 ls messages/ no longer shows 'from' directory. Accessing messages/from/ returns ENOENT. All tests pass.
+
+
+## Notes
+
+**2026-02-03T00:52:55Z**
+
+Decision: Keep FilterFrom in shelley/messages.go for library use (not removing it entirely). The function remains available for programmatic use but is not exposed through FUSE. Implementation complete in commit 6fc67585.
+
+**2026-02-03T01:05:23Z**
+
 

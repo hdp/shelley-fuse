@@ -372,14 +372,6 @@ func TestConversationFlow(t *testing.T) {
 		t.Error("Expected messages in since/user/1.json")
 	}
 
-	// Read from/user/1
-	data, err = ioutil.ReadFile(filepath.Join(mountPoint, "conversation", convID, "messages", "from", "user", "1.json"))
-	if err != nil {
-		t.Fatalf("Failed to read from/user/1.json: %v", err)
-	}
-	if err := json.Unmarshal(data, &msgs); err != nil || len(msgs) != 1 {
-		t.Errorf("Expected 1 message in from/user/1.json")
-	}
 
 	// Verify conversation in listing
 	entries, err := ioutil.ReadDir(filepath.Join(mountPoint, "conversation"))

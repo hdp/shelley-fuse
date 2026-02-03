@@ -1,6 +1,6 @@
 ---
 id: sf-t6ct
-status: open
+status: closed
 deps: [sf-t2kq, sf-yywz, sf-ueu9, sf-q2x4, sf-bz2m, sf-cyfb]
 links: []
 created: 2026-02-02T14:30:51Z

@@ -1,6 +1,6 @@
 ---
 id: sf-cyfb
-status: open
+status: closed
 deps: [sf-fbwg, sf-bz2m]
 links: []
 created: 2026-02-02T14:30:38Z

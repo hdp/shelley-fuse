@@ -1,6 +1,6 @@
 ---
 id: sf-q2x4
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-02-02T14:30:19Z

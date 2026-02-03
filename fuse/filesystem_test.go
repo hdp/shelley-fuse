@@ -2035,21 +2035,7 @@ func TestTimestamps_ConversationNodesUseCreatedAt(t *testing.T) {
 		}
 	})
 
-	// Test from directory timestamp
-	t.Run("FromDirectory", func(t *testing.T) {
-		info, err := os.Stat(filepath.Join(tmpDir, "conversation", convID, "messages", "from"))
-		if err != nil {
-			t.Fatalf("Failed to stat from: %v", err)
-		}
-		mtime := info.ModTime()
-		diff := mtime.Sub(convTime)
-		if diff < -time.Second || diff > time.Second {
-			t.Errorf("From mtime %v differs from convTime %v by %v", mtime, convTime, diff)
-		}
-		if mtime.Unix() == 0 {
-			t.Error("From mtime is zero (1970)")
-		}
-	})
+
 }
 
 func TestTimestamps_DoNotConstantlyUpdate(t *testing.T) {
@@ -2231,7 +2217,7 @@ func TestTimestamps_NeverZero(t *testing.T) {
 		filepath.Join(tmpDir, "conversation", convID, "messages"),
 		filepath.Join(tmpDir, "conversation", convID, "messages", "last"),
 		filepath.Join(tmpDir, "conversation", convID, "messages", "since"),
-		filepath.Join(tmpDir, "conversation", convID, "messages", "from"),
+
 	}
 
 	for _, path := range pathsToCheck {
@@ -2379,7 +2365,7 @@ func TestTimestamps_MultipleConversationsHaveDifferentTimes(t *testing.T) {
 }
 
 func TestTimestamps_NestedQueryDirsUseConversationTime(t *testing.T) {
-	// Test that nested query directories (since/user/, from/user/) use conversation time
+	// Test that nested query directories (since/user/) use conversation time
 	server := mockConversationsServer(t, []shelley.Conversation{})
 	defer server.Close()
 
@@ -2433,18 +2419,7 @@ func TestTimestamps_NestedQueryDirsUseConversationTime(t *testing.T) {
 		}
 	})
 
-	// Test from/assistant directory (nested QueryDirNode)
-	t.Run("FromAssistantDirectory", func(t *testing.T) {
-		info, err := os.Stat(filepath.Join(tmpDir, "conversation", convID, "messages", "from", "assistant"))
-		if err != nil {
-			t.Fatalf("Failed to stat from/assistant: %v", err)
-		}
-		mtime := info.ModTime()
-		diff := mtime.Sub(convTime)
-		if diff < -time.Second || diff > time.Second {
-			t.Errorf("from/assistant mtime %v differs from convTime %v by %v", mtime, convTime, diff)
-		}
-	})
+
 }
 
 func TestTimestamps_StateCreatedAtIsPersisted(t *testing.T) {
@@ -2895,13 +2870,13 @@ func TestMessagesDirNodeReaddirWithToolCalls(t *testing.T) {
 	}
 
 	// Expected files:
-	// - Static: all.json, all.md, last, since, from
+	// - Static: all.json, all.md, last, since
 	// - Message 1 (user): 001-user.json, 001-user.md
 	// - Message 2 (bash-tool): 002-bash-tool.json, 002-bash-tool.md
 	// - Message 3 (bash-result): 003-bash-result.json, 003-bash-result.md
 	// - Message 4 (shelley): 004-shelley.json, 004-shelley.md
 	expected := []string{
-		"all.json", "all.md", "last", "since", "from",
+		"all.json", "all.md", "last", "since",
 		"001-user.json", "001-user.md",
 		"002-bash-tool.json", "002-bash-tool.md",
 		"003-bash-result.json", "003-bash-result.md",

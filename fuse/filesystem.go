@@ -145,7 +145,7 @@ echo "Thanks!" > conversation/$ID/new
         001-user.json    → specific message (named by type)
         last/{N}.md      → last N messages
         since/{person}/{N}.md → messages since Nth from person
-        from/{person}/{N}.md  → Nth message from person
+
 ` + "```" + `
 
 ## Common Operations
@@ -725,8 +725,7 @@ func (m *MessagesDirNode) Lookup(ctx context.Context, name string, out *fuse.Ent
 		return m.NewInode(ctx, &QueryDirNode{localID: m.localID, client: m.client, state: m.state, kind: queryLast, startTime: m.startTime}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
 	case "since":
 		return m.NewInode(ctx, &QueryDirNode{localID: m.localID, client: m.client, state: m.state, kind: querySince, startTime: m.startTime}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
-	case "from":
-		return m.NewInode(ctx, &QueryDirNode{localID: m.localID, client: m.client, state: m.state, kind: queryFrom, startTime: m.startTime}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
+
 	}
 
 	// all.json, all.md
@@ -797,7 +796,6 @@ func (m *MessagesDirNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Er
 		{Name: "all.md", Mode: fuse.S_IFREG},
 		{Name: "last", Mode: fuse.S_IFDIR},
 		{Name: "since", Mode: fuse.S_IFDIR},
-		{Name: "from", Mode: fuse.S_IFDIR},
 	}
 
 	// List individual messages with named files (001-user.json, 100-bash-tool.md, ...)
@@ -1194,7 +1192,7 @@ const (
 	queryBySeq           // {N}.json
 	queryLast            // last/{N}
 	querySince           // since/{person}/{N}
-	queryFrom            // from/{person}/{N}
+
 )
 
 type contentFormat int
@@ -1288,12 +1286,7 @@ func (c *ConvContentNode) formatResult(msgs []shelley.Message) ([]byte, syscall.
 		if filtered == nil {
 			return nil, syscall.ENOENT
 		}
-	case queryFrom:
-		m := shelley.FilterFrom(msgs, c.query.person, c.query.n)
-		if m == nil {
-			return nil, syscall.ENOENT
-		}
-		filtered = []shelley.Message{*m}
+
 	}
 
 	switch c.query.format {
@@ -1326,15 +1319,15 @@ func (c *ConvContentNode) Getattr(ctx context.Context, f fs.FileHandle, out *fus
 	return 0
 }
 
-// --- QueryDirNode: handles last/, since/, from/ and since/{person}/, from/{person}/ ---
+// --- QueryDirNode: handles last/, since/ and since/{person}/ ---
 
 type QueryDirNode struct {
 	fs.Inode
 	localID   string
 	client    *shelley.Client
 	state     *state.Store
-	kind      queryKind // queryLast, querySince, or queryFrom
-	person    string    // set for since/{person}/ and from/{person}/
+	kind      queryKind // queryLast or querySince
+	person    string    // set for since/{person}/
 	startTime time.Time // fallback if conversation has no CreatedAt
 }
 
@@ -1343,8 +1336,8 @@ var _ = (fs.NodeReaddirer)((*QueryDirNode)(nil))
 var _ = (fs.NodeGetattrer)((*QueryDirNode)(nil))
 
 func (q *QueryDirNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
-	// If this is since/ or from/ (no person set), the child is a person directory
-	if (q.kind == querySince || q.kind == queryFrom) && q.person == "" {
+	// If this is since/ (no person set), the child is a person directory
+	if q.kind == querySince && q.person == "" {
 		return q.NewInode(ctx, &QueryDirNode{
 			localID: q.localID, client: q.client, state: q.state,
 			kind: q.kind, person: name, startTime: q.startTime,
