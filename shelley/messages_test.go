@@ -748,3 +748,108 @@ func TestParseMessageTime(t *testing.T) {
 		})
 	}
 }
+
+// Tests for slug-based filtering (FilterSince and FilterFrom should use MessageSlug)
+
+func TestFilterSinceSlugBased(t *testing.T) {
+	// Create messages including tool use and result
+	// Tool use has Type="shelley", tool result has Type="user" but slug should be "bash-result"
+	messages := []Message{
+		{MessageID: "m1", ConversationID: "c1", SequenceID: 1, Type: "user", UserData: strPtr("Hello")},
+		{MessageID: "m2", ConversationID: "c1", SequenceID: 2, Type: "shelley", LLMData: strPtr("Hi!")},
+		{MessageID: "m3", ConversationID: "c1", SequenceID: 3, Type: "user", UserData: strPtr("Run ls")},
+		// Tool use (Type=shelley, slug=bash-tool)
+		{MessageID: "m4", ConversationID: "c1", SequenceID: 4, Type: "shelley", LLMData: strPtr(`{"Content": [{"Type": 5, "ID": "tu_123", "ToolName": "bash"}]}`)},
+		// Tool result - Type=user but slug=bash-result, should NOT match "user"
+		{MessageID: "m5", ConversationID: "c1", SequenceID: 5, Type: "user", UserData: strPtr(`{"Content": [{"Type": 6, "ToolUseID": "tu_123"}]}`)},
+		{MessageID: "m6", ConversationID: "c1", SequenceID: 6, Type: "shelley", LLMData: strPtr("Done")},
+		{MessageID: "m7", ConversationID: "c1", SequenceID: 7, Type: "user", UserData: strPtr("Goodbye")},
+	}
+
+	// Test: since/user/1 should skip tool result (m5) and find m7 (the last real user message)
+	result := FilterSince(messages, "user", 1)
+	if len(result) != 1 {
+		t.Fatalf("since/user/1: expected 1 message (seq 7), got %d", len(result))
+	}
+	if result[0].SequenceID != 7 {
+		t.Errorf("since/user/1: expected first message seq=7, got %d", result[0].SequenceID)
+	}
+
+	// Test: since/user/2 should skip tool result (m5) and find m3 (the 2nd-to-last real user message)
+	result = FilterSince(messages, "user", 2)
+	if len(result) != 5 { // m3,m4,m5,m6,m7 = 5 messages starting from m3
+		t.Fatalf("since/user/2: expected 5 messages (seq 3-7), got %d", len(result))
+	}
+	if result[0].SequenceID != 3 {
+		t.Errorf("since/user/2: expected first message seq=3, got %d", result[0].SequenceID)
+	}
+
+	// Test: since/bash-result/1 should find the tool result (m5)
+	result = FilterSince(messages, "bash-result", 1)
+	if len(result) != 3 { // m5,m6,m7 = 3 messages
+		t.Fatalf("since/bash-result/1: expected 3 messages (seq 5-7), got %d", len(result))
+	}
+	if result[0].SequenceID != 5 {
+		t.Errorf("since/bash-result/1: expected first message seq=5, got %d", result[0].SequenceID)
+	}
+
+	// Test: since/bash-tool/1 should find the tool use (m4)
+	result = FilterSince(messages, "bash-tool", 1)
+	if len(result) != 4 { // m4,m5,m6,m7 = 4 messages
+		t.Fatalf("since/bash-tool/1: expected 4 messages (seq 4-7), got %d", len(result))
+	}
+	if result[0].SequenceID != 4 {
+		t.Errorf("since/bash-tool/1: expected first message seq=4, got %d", result[0].SequenceID)
+	}
+}
+
+func TestFilterFromSlugBased(t *testing.T) {
+	// Same message set as TestFilterSinceSlugBased
+	messages := []Message{
+		{MessageID: "m1", ConversationID: "c1", SequenceID: 1, Type: "user", UserData: strPtr("Hello")},
+		{MessageID: "m2", ConversationID: "c1", SequenceID: 2, Type: "shelley", LLMData: strPtr("Hi!")},
+		{MessageID: "m3", ConversationID: "c1", SequenceID: 3, Type: "user", UserData: strPtr("Run ls")},
+		// Tool use (Type=shelley, slug=bash-tool)
+		{MessageID: "m4", ConversationID: "c1", SequenceID: 4, Type: "shelley", LLMData: strPtr(`{"Content": [{"Type": 5, "ID": "tu_123", "ToolName": "bash"}]}`)},
+		// Tool result - Type=user but slug=bash-result
+		{MessageID: "m5", ConversationID: "c1", SequenceID: 5, Type: "user", UserData: strPtr(`{"Content": [{"Type": 6, "ToolUseID": "tu_123"}]}`)},
+		{MessageID: "m6", ConversationID: "c1", SequenceID: 6, Type: "shelley", LLMData: strPtr("Done")},
+		{MessageID: "m7", ConversationID: "c1", SequenceID: 7, Type: "user", UserData: strPtr("Goodbye")},
+	}
+
+	// Test: from/user/1 should skip tool result and find m7
+	m := FilterFrom(messages, "user", 1)
+	if m == nil {
+		t.Fatal("from/user/1: expected a message")
+	}
+	if m.SequenceID != 7 {
+		t.Errorf("from/user/1: expected seq=7, got %d", m.SequenceID)
+	}
+
+	// Test: from/user/2 should skip tool result and find m3
+	m = FilterFrom(messages, "user", 2)
+	if m == nil {
+		t.Fatal("from/user/2: expected a message")
+	}
+	if m.SequenceID != 3 {
+		t.Errorf("from/user/2: expected seq=3, got %d", m.SequenceID)
+	}
+
+	// Test: from/bash-result/1 should find the tool result (m5)
+	m = FilterFrom(messages, "bash-result", 1)
+	if m == nil {
+		t.Fatal("from/bash-result/1: expected a message")
+	}
+	if m.SequenceID != 5 {
+		t.Errorf("from/bash-result/1: expected seq=5, got %d", m.SequenceID)
+	}
+
+	// Test: from/bash-tool/1 should find the tool use (m4)
+	m = FilterFrom(messages, "bash-tool", 1)
+	if m == nil {
+		t.Fatal("from/bash-tool/1: expected a message")
+	}
+	if m.SequenceID != 4 {
+		t.Errorf("from/bash-tool/1: expected seq=4, got %d", m.SequenceID)
+	}
+}

@@ -140,7 +140,8 @@ func FilterLast(messages []Message, n int) []Message {
 }
 
 // FilterSince returns messages since the nth-to-last message from the given person.
-// Person matching is case-insensitive against the message Type field.
+// Person matching is case-insensitive against the message slug (computed by MessageSlug).
+// This means "user" matches actual user messages but not tool results (which have slug like "bash-result").
 // n=1 means since the last message from that person, n=2 means since the second-to-last, etc.
 func FilterSince(messages []Message, person string, n int) []Message {
 	if n <= 0 {
@@ -148,10 +149,14 @@ func FilterSince(messages []Message, person string, n int) []Message {
 	}
 	person = strings.ToLower(person)
 
+	// Build tool map for slug computation
+	toolMap := buildToolMapFromSlice(messages)
+
 	// Find the nth-to-last message from this person
 	count := 0
 	for i := len(messages) - 1; i >= 0; i-- {
-		if matchPerson(messages[i].Type, person) {
+		slug := MessageSlug(&messages[i], toolMap)
+		if slug == person {
 			count++
 			if count == n {
 				return messages[i:]
@@ -162,7 +167,8 @@ func FilterSince(messages []Message, person string, n int) []Message {
 }
 
 // FilterFrom returns the nth message from the given person (1-based, counting from the end).
-// Person matching is case-insensitive against the message Type field.
+// Person matching is case-insensitive against the message slug (computed by MessageSlug).
+// This means "user" matches actual user messages but not tool results (which have slug like "bash-result").
 // n=1 means the most recent message from that person.
 func FilterFrom(messages []Message, person string, n int) *Message {
 	if n <= 0 {
@@ -170,9 +176,13 @@ func FilterFrom(messages []Message, person string, n int) *Message {
 	}
 	person = strings.ToLower(person)
 
+	// Build tool map for slug computation
+	toolMap := buildToolMapFromSlice(messages)
+
 	count := 0
 	for i := len(messages) - 1; i >= 0; i-- {
-		if matchPerson(messages[i].Type, person) {
+		slug := MessageSlug(&messages[i], toolMap)
+		if slug == person {
 			count++
 			if count == n {
 				return &messages[i]
@@ -182,8 +192,14 @@ func FilterFrom(messages []Message, person string, n int) *Message {
 	return nil
 }
 
-func matchPerson(msgType, person string) bool {
-	return strings.ToLower(msgType) == person
+// buildToolMapFromSlice builds a tool name map from a slice of Message values.
+// This is a convenience wrapper around BuildToolNameMap for use with []Message.
+func buildToolMapFromSlice(messages []Message) map[string]string {
+	msgPtrs := make([]*Message, len(messages))
+	for i := range messages {
+		msgPtrs[i] = &messages[i]
+	}
+	return BuildToolNameMap(msgPtrs)
 }
 
 func messageContent(m Message) string {
