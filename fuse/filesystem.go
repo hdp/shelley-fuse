@@ -43,7 +43,7 @@ func (s *SymlinkNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.At
 // FS is the root inode of the Shelley FUSE filesystem.
 type FS struct {
 	fs.Inode
-	client       *shelley.Client
+	client       shelley.ShelleyClient
 	state        *state.Store
 	cloneTimeout time.Duration
 	startTime    time.Time
@@ -51,7 +51,7 @@ type FS struct {
 
 // NewFS creates a new Shelley FUSE filesystem.
 // cloneTimeout specifies how long to wait before cleaning up unconversed clone IDs.
-func NewFS(client *shelley.Client, store *state.Store, cloneTimeout time.Duration) *FS {
+func NewFS(client shelley.ShelleyClient, store *state.Store, cloneTimeout time.Duration) *FS {
 	return &FS{client: client, state: store, cloneTimeout: cloneTimeout, startTime: time.Now()}
 }
 
@@ -197,7 +197,7 @@ func (r *ReadmeNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.Att
 
 type ModelsDirNode struct {
 	fs.Inode
-	client    *shelley.Client
+	client    shelley.ShelleyClient
 	startTime time.Time
 }
 
@@ -391,7 +391,7 @@ func (h *CloneFileHandle) Read(ctx context.Context, dest []byte, off int64) (fus
 
 type ConversationListNode struct {
 	fs.Inode
-	client       *shelley.Client
+	client       shelley.ShelleyClient
 	state        *state.Store
 	cloneTimeout time.Duration
 	startTime    time.Time
@@ -605,7 +605,7 @@ func (c *ConversationListNode) Getattr(ctx context.Context, f fs.FileHandle, out
 type ConversationNode struct {
 	fs.Inode
 	localID   string
-	client    *shelley.Client
+	client    shelley.ShelleyClient
 	state     *state.Store
 	startTime time.Time // FS start time, used as fallback
 }
@@ -699,7 +699,7 @@ func (c *ConversationNode) Getattr(ctx context.Context, f fs.FileHandle, out *fu
 type MessagesDirNode struct {
 	fs.Inode
 	localID   string
-	client    *shelley.Client
+	client    shelley.ShelleyClient
 	state     *state.Store
 	startTime time.Time
 }
@@ -835,7 +835,7 @@ func (m *MessagesDirNode) Getattr(ctx context.Context, f fs.FileHandle, out *fus
 type MessageCountNode struct {
 	fs.Inode
 	localID   string
-	client    *shelley.Client
+	client    shelley.ShelleyClient
 	state     *state.Store
 	startTime time.Time
 }
@@ -966,7 +966,7 @@ func (c *CtlNode) Setattr(ctx context.Context, f fs.FileHandle, in *fuse.SetAttr
 type ConvNewNode struct {
 	fs.Inode
 	localID   string
-	client    *shelley.Client
+	client    shelley.ShelleyClient
 	state     *state.Store
 	startTime time.Time // fallback if conversation has no CreatedAt
 }
@@ -1069,7 +1069,7 @@ func (n *ConvNewNode) Setattr(ctx context.Context, f fs.FileHandle, in *fuse.Set
 type ConvStatusFieldNode struct {
 	fs.Inode
 	localID   string
-	client    *shelley.Client
+	client    shelley.ShelleyClient
 	state     *state.Store
 	field     string
 	startTime time.Time
@@ -1246,7 +1246,7 @@ type contentQuery struct {
 type ConvContentNode struct {
 	fs.Inode
 	localID     string
-	client      *shelley.Client
+	client      shelley.ShelleyClient
 	state       *state.Store
 	query       contentQuery
 	startTime   time.Time // fallback if conversation has no CreatedAt
@@ -1355,7 +1355,7 @@ func (c *ConvContentNode) Getattr(ctx context.Context, f fs.FileHandle, out *fus
 type QueryDirNode struct {
 	fs.Inode
 	localID   string
-	client    *shelley.Client
+	client    shelley.ShelleyClient
 	state     *state.Store
 	kind      queryKind // queryLast or querySince
 	person    string    // set for since/{person}/

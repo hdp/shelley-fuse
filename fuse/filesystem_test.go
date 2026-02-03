@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -3077,5 +3078,157 @@ func TestMessagesDirNodeReadToolCallContent(t *testing.T) {
 	}
 	if readMsgs[0].SequenceID != 101 {
 		t.Errorf("Expected SequenceID=101, got %d", readMsgs[0].SequenceID)
+	}
+}
+
+// TestCachingReducesFetches verifies that using CachingClient reduces backend fetches
+// when reading the same conversation multiple times in quick succession.
+func TestCachingReducesFetches(t *testing.T) {
+	var fetchCount int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/conversation/server-conv-123" {
+			atomic.AddInt32(&fetchCount, 1)
+			w.Write([]byte(`{"messages":[{"message_id":"m1","conversation_id":"server-conv-123","sequence_id":1,"type":"user","user_data":"Hello"}]}`))
+			return
+		}
+		if r.URL.Path == "/api/conversations" {
+			data, _ := json.Marshal([]shelley.Conversation{{ConversationID: "server-conv-123"}})
+			w.Write(data)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	// Use caching client with 5-second TTL
+	baseClient := shelley.NewClient(server.URL)
+	cachingClient := shelley.NewCachingClient(baseClient, 5*time.Second)
+	store := testStore(t)
+
+	// Adopt the server conversation
+	localID, _ := store.AdoptWithSlug("server-conv-123", "")
+
+	node := &MessagesDirNode{localID: localID, client: cachingClient, state: store, startTime: time.Now()}
+
+	// First call should fetch from backend
+	ctx := context.Background()
+	_, errno := node.Readdir(ctx)
+	if errno != 0 {
+		t.Fatalf("First Readdir failed: %v", errno)
+	}
+	if atomic.LoadInt32(&fetchCount) != 1 {
+		t.Errorf("Expected 1 fetch after first Readdir, got %d", fetchCount)
+	}
+
+	// Second call should use cache (within TTL)
+	_, errno = node.Readdir(ctx)
+	if errno != 0 {
+		t.Fatalf("Second Readdir failed: %v", errno)
+	}
+	if atomic.LoadInt32(&fetchCount) != 1 {
+		t.Errorf("Expected still 1 fetch after second Readdir (cached), got %d", fetchCount)
+	}
+
+	// Third call should also use cache
+	_, errno = node.Readdir(ctx)
+	if errno != 0 {
+		t.Fatalf("Third Readdir failed: %v", errno)
+	}
+	if atomic.LoadInt32(&fetchCount) != 1 {
+		t.Errorf("Expected still 1 fetch after third Readdir (cached), got %d", fetchCount)
+	}
+}
+
+// TestCachingInvalidatedByWrite verifies that cache is invalidated when a message is sent.
+func TestCachingInvalidatedByWrite(t *testing.T) {
+	var fetchCount int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/conversation/server-conv-456" && r.Method == "GET" {
+			atomic.AddInt32(&fetchCount, 1)
+			w.Write([]byte(`{"messages":[{"message_id":"m1","conversation_id":"server-conv-456","sequence_id":1,"type":"user","user_data":"Hello"}]}`))
+			return
+		}
+		if r.URL.Path == "/api/conversation/server-conv-456/chat" && r.Method == "POST" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		if r.URL.Path == "/api/conversations" {
+			data, _ := json.Marshal([]shelley.Conversation{{ConversationID: "server-conv-456"}})
+			w.Write(data)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	baseClient := shelley.NewClient(server.URL)
+	cachingClient := shelley.NewCachingClient(baseClient, 5*time.Second)
+	store := testStore(t)
+
+	localID, _ := store.AdoptWithSlug("server-conv-456", "")
+
+	node := &MessagesDirNode{localID: localID, client: cachingClient, state: store, startTime: time.Now()}
+	ctx := context.Background()
+
+	// First fetch
+	_, _ = node.Readdir(ctx)
+	if atomic.LoadInt32(&fetchCount) != 1 {
+		t.Errorf("Expected 1 fetch after first Readdir, got %d", fetchCount)
+	}
+
+	// Second fetch should use cache
+	_, _ = node.Readdir(ctx)
+	if atomic.LoadInt32(&fetchCount) != 1 {
+		t.Errorf("Expected still 1 fetch after cached Readdir, got %d", fetchCount)
+	}
+
+	// Send a message - this should invalidate the cache
+	err := cachingClient.SendMessage("server-conv-456", "test message", "")
+	if err != nil {
+		t.Fatalf("SendMessage failed: %v", err)
+	}
+
+	// Next fetch should hit backend again (cache invalidated)
+	_, _ = node.Readdir(ctx)
+	if atomic.LoadInt32(&fetchCount) != 2 {
+		t.Errorf("Expected 2 fetches after cache invalidation, got %d", fetchCount)
+	}
+}
+
+// TestNoCachingWithZeroTTL verifies that caching is disabled when TTL is 0.
+func TestNoCachingWithZeroTTL(t *testing.T) {
+	var fetchCount int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/conversation/server-conv-789" {
+			atomic.AddInt32(&fetchCount, 1)
+			w.Write([]byte(`{"messages":[{"message_id":"m1","conversation_id":"server-conv-789","sequence_id":1,"type":"user","user_data":"Hello"}]}`))
+			return
+		}
+		if r.URL.Path == "/api/conversations" {
+			data, _ := json.Marshal([]shelley.Conversation{{ConversationID: "server-conv-789"}})
+			w.Write(data)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	baseClient := shelley.NewClient(server.URL)
+	// Zero TTL = no caching
+	cachingClient := shelley.NewCachingClient(baseClient, 0)
+	store := testStore(t)
+
+	localID, _ := store.AdoptWithSlug("server-conv-789", "")
+
+	node := &MessagesDirNode{localID: localID, client: cachingClient, state: store, startTime: time.Now()}
+	ctx := context.Background()
+
+	// Each call should fetch from backend (no caching)
+	for i := 0; i < 3; i++ {
+		_, _ = node.Readdir(ctx)
+		expectedCount := int32(i + 1)
+		if atomic.LoadInt32(&fetchCount) != expectedCount {
+			t.Errorf("Call %d: Expected %d fetches (no caching), got %d", i+1, expectedCount, fetchCount)
+		}
 	}
 }

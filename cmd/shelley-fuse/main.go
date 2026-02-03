@@ -18,6 +18,7 @@ import (
 func main() {
 	debug := flag.Bool("debug", false, "enable debug output")
 	cloneTimeout := flag.Duration("clone-timeout", time.Hour, "duration after which unconversed clone IDs are cleaned up")
+	cacheTTL := flag.Duration("cache-ttl", 3*time.Second, "cache TTL for backend responses (0 to disable caching)")
 	flag.Parse()
 
 	if flag.NArg() < 2 {
@@ -30,8 +31,14 @@ func main() {
 	mountpoint := flag.Arg(0)
 	url := flag.Arg(1)
 
-	// Create Shelley client
-	client := shelley.NewClient(url)
+	// Create Shelley client with optional caching
+	baseClient := shelley.NewClient(url)
+	var client shelley.ShelleyClient
+	if *cacheTTL > 0 {
+		client = shelley.NewCachingClient(baseClient, *cacheTTL)
+	} else {
+		client = baseClient
+	}
 
 	// Create state store
 	store, err := state.NewStore("")
