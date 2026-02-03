@@ -18,6 +18,82 @@ import (
 	"shelley-fuse/state"
 )
 
+// ParsedMessageCache caches parsed messages and toolMaps at the conversation level.
+// This avoids re-parsing the same conversation data for every file lookup in messages/.
+// The cache is invalidated when a message is sent to a conversation.
+type ParsedMessageCache struct {
+	mu      sync.RWMutex
+	entries map[string]*parsedCacheEntry
+	ttl     time.Duration
+}
+
+type parsedCacheEntry struct {
+	messages  []shelley.Message
+	toolMap   map[string]string
+	expiresAt time.Time
+}
+
+// NewParsedMessageCache creates a new cache with the given TTL.
+// A TTL of 0 disables caching.
+func NewParsedMessageCache(ttl time.Duration) *ParsedMessageCache {
+	return &ParsedMessageCache{
+		entries: make(map[string]*parsedCacheEntry),
+		ttl:     ttl,
+	}
+}
+
+// GetOrParse returns cached messages and toolMap for a conversation, or parses the data and caches it.
+// The rawData is the JSON response from GetConversation.
+// If c is nil or caching is disabled (ttl=0), it parses without caching.
+func (c *ParsedMessageCache) GetOrParse(conversationID string, rawData []byte) ([]shelley.Message, map[string]string, error) {
+	if c != nil && c.ttl > 0 {
+		c.mu.RLock()
+		entry := c.entries[conversationID]
+		c.mu.RUnlock()
+
+		if entry != nil && time.Now().Before(entry.expiresAt) {
+			return entry.messages, entry.toolMap, nil
+		}
+	}
+
+	// Parse the conversation data
+	msgs, err := shelley.ParseMessages(rawData)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// Build the tool name map
+	msgPtrs := make([]*shelley.Message, len(msgs))
+	for i := range msgs {
+		msgPtrs[i] = &msgs[i]
+	}
+	toolMap := shelley.BuildToolNameMap(msgPtrs)
+
+	// Cache the result
+	if c != nil && c.ttl > 0 {
+		c.mu.Lock()
+		c.entries[conversationID] = &parsedCacheEntry{
+			messages:  msgs,
+			toolMap:   toolMap,
+			expiresAt: time.Now().Add(c.ttl),
+		}
+		c.mu.Unlock()
+	}
+
+	return msgs, toolMap, nil
+}
+
+// Invalidate removes the cached entry for a conversation.
+// Invalidate removes the cached entry for a conversation.
+// Safe to call on nil receiver.
+func (c *ParsedMessageCache) Invalidate(conversationID string) {
+	if c != nil && c.ttl > 0 {
+		c.mu.Lock()
+		delete(c.entries, conversationID)
+		c.mu.Unlock()
+	}
+}
+
 // --- SymlinkNode: a symlink pointing to a target path ---
 
 type SymlinkNode struct {
@@ -47,12 +123,30 @@ type FS struct {
 	state        *state.Store
 	cloneTimeout time.Duration
 	startTime    time.Time
+	parsedCache  *ParsedMessageCache // caches parsed messages and toolMaps
 }
 
 // NewFS creates a new Shelley FUSE filesystem.
 // cloneTimeout specifies how long to wait before cleaning up unconversed clone IDs.
 func NewFS(client shelley.ShelleyClient, store *state.Store, cloneTimeout time.Duration) *FS {
-	return &FS{client: client, state: store, cloneTimeout: cloneTimeout, startTime: time.Now()}
+	return &FS{
+		client:       client,
+		state:        store,
+		cloneTimeout: cloneTimeout,
+		startTime:    time.Now(),
+		parsedCache:  NewParsedMessageCache(5 * time.Second), // same as typical HTTP cache TTL
+	}
+}
+
+// NewFSWithCacheTTL creates a new Shelley FUSE filesystem with a custom cache TTL.
+func NewFSWithCacheTTL(client shelley.ShelleyClient, store *state.Store, cloneTimeout, cacheTTL time.Duration) *FS {
+	return &FS{
+		client:       client,
+		state:        store,
+		cloneTimeout: cloneTimeout,
+		startTime:    time.Now(),
+		parsedCache:  NewParsedMessageCache(cacheTTL),
+	}
 }
 
 // StartTime returns the time when the FUSE filesystem was created.
@@ -72,7 +166,7 @@ func (f *FS) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.I
 	case "new":
 		return f.NewInode(ctx, &NewDirNode{state: f.state, startTime: f.startTime}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
 	case "conversation":
-		return f.NewInode(ctx, &ConversationListNode{client: f.client, state: f.state, cloneTimeout: f.cloneTimeout, startTime: f.startTime}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
+		return f.NewInode(ctx, &ConversationListNode{client: f.client, state: f.state, cloneTimeout: f.cloneTimeout, startTime: f.startTime, parsedCache: f.parsedCache}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
 	case "README.md":
 		return f.NewInode(ctx, &ReadmeNode{startTime: f.startTime}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
 	}
@@ -405,6 +499,7 @@ type ConversationListNode struct {
 	state        *state.Store
 	cloneTimeout time.Duration
 	startTime    time.Time
+	parsedCache  *ParsedMessageCache
 }
 
 var _ = (fs.NodeLookuper)((*ConversationListNode)(nil))
@@ -416,10 +511,11 @@ func (c *ConversationListNode) Lookup(ctx context.Context, name string, out *fus
 	cs := c.state.Get(name)
 	if cs != nil {
 		return c.NewInode(ctx, &ConversationNode{
-			localID:   name,
-			client:    c.client,
-			state:     c.state,
-			startTime: c.startTime,
+			localID:     name,
+			client:      c.client,
+			state:       c.state,
+			startTime:   c.startTime,
+			parsedCache: c.parsedCache,
 		}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
 	}
 
@@ -614,10 +710,11 @@ func (c *ConversationListNode) Getattr(ctx context.Context, f fs.FileHandle, out
 
 type ConversationNode struct {
 	fs.Inode
-	localID   string
-	client    shelley.ShelleyClient
-	state     *state.Store
-	startTime time.Time // FS start time, used as fallback
+	localID     string
+	client      shelley.ShelleyClient
+	state       *state.Store
+	startTime   time.Time // FS start time, used as fallback
+	parsedCache *ParsedMessageCache
 }
 
 var _ = (fs.NodeLookuper)((*ConversationNode)(nil))
@@ -639,9 +736,9 @@ func (c *ConversationNode) Lookup(ctx context.Context, name string, out *fuse.En
 	case "ctl":
 		return c.NewInode(ctx, &CtlNode{localID: c.localID, state: c.state, startTime: c.startTime}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
 	case "new":
-		return c.NewInode(ctx, &ConvNewNode{localID: c.localID, client: c.client, state: c.state, startTime: c.startTime}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
+		return c.NewInode(ctx, &ConvNewNode{localID: c.localID, client: c.client, state: c.state, startTime: c.startTime, parsedCache: c.parsedCache}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
 	case "messages":
-		return c.NewInode(ctx, &MessagesDirNode{localID: c.localID, client: c.client, state: c.state, startTime: c.startTime}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
+		return c.NewInode(ctx, &MessagesDirNode{localID: c.localID, client: c.client, state: c.state, startTime: c.startTime, parsedCache: c.parsedCache}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
 	case "id":
 		return c.NewInode(ctx, &ConvMetaFieldNode{localID: c.localID, state: c.state, field: "id", startTime: c.startTime}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
 	case "slug":
@@ -708,10 +805,11 @@ func (c *ConversationNode) Getattr(ctx context.Context, f fs.FileHandle, out *fu
 
 type MessagesDirNode struct {
 	fs.Inode
-	localID   string
-	client    shelley.ShelleyClient
-	state     *state.Store
-	startTime time.Time
+	localID     string
+	client      shelley.ShelleyClient
+	state       *state.Store
+	startTime   time.Time
+	parsedCache *ParsedMessageCache
 }
 
 var _ = (fs.NodeLookuper)((*MessagesDirNode)(nil))
@@ -762,7 +860,8 @@ func (m *MessagesDirNode) Lookup(ctx context.Context, name string, out *fuse.Ent
 			return nil, syscall.EIO
 		}
 
-		msgs, err := shelley.ParseMessages(convData)
+		// Use the parsed message cache for efficient repeated lookups
+		msgs, toolMap, err := m.parsedCache.GetOrParse(cs.ShelleyConversationID, convData)
 		if err != nil {
 			return nil, syscall.EIO
 		}
@@ -773,12 +872,7 @@ func (m *MessagesDirNode) Lookup(ctx context.Context, name string, out *fuse.Ent
 			return nil, syscall.ENOENT
 		}
 
-		// Build tool map and compute expected slug
-		msgPtrs := make([]*shelley.Message, len(msgs))
-		for i := range msgs {
-			msgPtrs[i] = &msgs[i]
-		}
-		toolMap := shelley.BuildToolNameMap(msgPtrs)
+		// Compute expected slug using the cached toolMap
 		expectedSlug := shelley.MessageSlug(msg, toolMap)
 		expectedBase := messageFileBase(seqNum, expectedSlug)
 
@@ -812,15 +906,9 @@ func (m *MessagesDirNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Er
 	if cs != nil && cs.Created && cs.ShelleyConversationID != "" {
 		convData, err := m.client.GetConversation(cs.ShelleyConversationID)
 		if err == nil {
-			msgs, err := shelley.ParseMessages(convData)
+			// Use the parsed message cache for efficiency
+			msgs, toolMap, err := m.parsedCache.GetOrParse(cs.ShelleyConversationID, convData)
 			if err == nil {
-				// Build tool name map for proper tool_result naming
-				msgPtrs := make([]*shelley.Message, len(msgs))
-				for i := range msgs {
-					msgPtrs[i] = &msgs[i]
-				}
-				toolMap := shelley.BuildToolNameMap(msgPtrs)
-
 				for i := range msgs {
 					slug := shelley.MessageSlug(&msgs[i], toolMap)
 					base := messageFileBase(msgs[i].SequenceID, slug)
@@ -975,10 +1063,11 @@ func (c *CtlNode) Setattr(ctx context.Context, f fs.FileHandle, in *fuse.SetAttr
 
 type ConvNewNode struct {
 	fs.Inode
-	localID   string
-	client    shelley.ShelleyClient
-	state     *state.Store
-	startTime time.Time // fallback if conversation has no CreatedAt
+	localID     string
+	client      shelley.ShelleyClient
+	state       *state.Store
+	startTime   time.Time // fallback if conversation has no CreatedAt
+	parsedCache *ParsedMessageCache
 }
 
 var _ = (fs.NodeOpener)((*ConvNewNode)(nil))
@@ -1045,6 +1134,8 @@ func (h *ConvNewFileHandle) Flush(ctx context.Context) syscall.Errno {
 		if err := h.node.state.MarkCreated(h.node.localID, result.ConversationID, result.Slug); err != nil {
 			return syscall.EIO
 		}
+		// Invalidate the parsed message cache since the conversation was just created
+		h.node.parsedCache.Invalidate(result.ConversationID)
 	} else {
 		// Subsequent writes: send message to existing conversation
 		// Pass the model from state to ensure we use the same model as the conversation
@@ -1052,6 +1143,8 @@ func (h *ConvNewFileHandle) Flush(ctx context.Context) syscall.Errno {
 			log.Printf("SendMessage failed for conversation %s: %v", cs.ShelleyConversationID, err)
 			return syscall.EIO
 		}
+		// Invalidate the parsed message cache since the conversation was modified
+		h.node.parsedCache.Invalidate(cs.ShelleyConversationID)
 	}
 
 	return 0

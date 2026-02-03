@@ -3232,3 +3232,103 @@ func TestNoCachingWithZeroTTL(t *testing.T) {
 		}
 	}
 }
+
+// TestParsedMessageCacheReducesParsing verifies that ParsedMessageCache caches
+// parsed messages and toolMap, avoiding repeated parsing on Lookup operations.
+func TestParsedMessageCacheReducesParsing(t *testing.T) {
+	// Create a conversation with multiple messages including tool calls
+	convData := []byte(`{"messages":[
+		{"message_id":"m1","sequence_id":1,"type":"user","user_data":"{\"Content\":[{\"Type\":0,\"Text\":\"Hello\"}]}"},
+		{"message_id":"m2","sequence_id":2,"type":"shelley","llm_data":"{\"Content\":[{\"Type\":5,\"ID\":\"tool1\",\"ToolName\":\"bash\",\"Input\":{}}]}"},
+		{"message_id":"m3","sequence_id":3,"type":"user","user_data":"{\"Content\":[{\"Type\":6,\"ToolUseID\":\"tool1\",\"ToolResult\":[{\"Text\":\"output\"}]}]}"}
+	]}`)
+
+	// Test with caching enabled
+	cache := NewParsedMessageCache(5 * time.Second)
+
+	// First call should parse
+	msgs1, toolMap1, err := cache.GetOrParse("conv-123", convData)
+	if err != nil {
+		t.Fatalf("GetOrParse failed: %v", err)
+	}
+	if len(msgs1) != 3 {
+		t.Errorf("Expected 3 messages, got %d", len(msgs1))
+	}
+	if len(toolMap1) != 1 {
+		t.Errorf("Expected toolMap with 1 entry, got %d", len(toolMap1))
+	}
+	if toolMap1["tool1"] != "bash" {
+		t.Errorf("Expected toolMap[tool1]=bash, got %q", toolMap1["tool1"])
+	}
+
+	// Second call should return cached data (same pointers)
+	msgs2, toolMap2, err := cache.GetOrParse("conv-123", convData)
+	if err != nil {
+		t.Fatalf("Second GetOrParse failed: %v", err)
+	}
+	// Verify we got the same slice back (cached)
+	if &msgs1[0] != &msgs2[0] {
+		t.Error("Expected cached messages slice to be returned")
+	}
+	if toolMap2["tool1"] != "bash" {
+		t.Errorf("Expected cached toolMap[tool1]=bash, got %q", toolMap2["tool1"])
+	}
+
+	// Invalidate and verify next call re-parses
+	cache.Invalidate("conv-123")
+
+	msgs3, _, err := cache.GetOrParse("conv-123", convData)
+	if err != nil {
+		t.Fatalf("Third GetOrParse failed: %v", err)
+	}
+	// Should be a new slice after invalidation
+	if &msgs1[0] == &msgs3[0] {
+		t.Error("Expected fresh parse after invalidation, but got same slice")
+	}
+}
+
+// TestParsedMessageCacheNilSafe verifies that ParsedMessageCache methods are safe to call on nil.
+func TestParsedMessageCacheNilSafe(t *testing.T) {
+	var cache *ParsedMessageCache = nil
+
+	convData := []byte(`{"messages":[{"message_id":"m1","sequence_id":1,"type":"user","user_data":"Hello"}]}`)
+
+	// GetOrParse on nil should still work (just parses without caching)
+	msgs, toolMap, err := cache.GetOrParse("conv-123", convData)
+	if err != nil {
+		t.Fatalf("GetOrParse on nil cache failed: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Errorf("Expected 1 message, got %d", len(msgs))
+	}
+	if toolMap == nil {
+		t.Error("Expected non-nil toolMap")
+	}
+
+	// Invalidate on nil should not panic
+	cache.Invalidate("conv-123") // Should not panic
+}
+
+// TestParsedMessageCacheZeroTTL verifies that caching is disabled with zero TTL.
+func TestParsedMessageCacheZeroTTL(t *testing.T) {
+	cache := NewParsedMessageCache(0)
+
+	convData := []byte(`{"messages":[{"message_id":"m1","sequence_id":1,"type":"user","user_data":"Hello"}]}`)
+
+	// First call
+	msgs1, _, err := cache.GetOrParse("conv-123", convData)
+	if err != nil {
+		t.Fatalf("GetOrParse failed: %v", err)
+	}
+
+	// Second call should return a new slice (not cached)
+	msgs2, _, err := cache.GetOrParse("conv-123", convData)
+	if err != nil {
+		t.Fatalf("Second GetOrParse failed: %v", err)
+	}
+
+	// With zero TTL, we should get fresh parses each time
+	if &msgs1[0] == &msgs2[0] {
+		t.Error("Expected fresh parse with zero TTL, but got same slice")
+	}
+}
