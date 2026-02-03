@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 )
 
 // ParseMessages extracts the messages array from a conversation JSON response.
@@ -426,4 +427,17 @@ func MessageSlug(msg *Message, toolMap map[string]string) string {
 
 	// Fall back to lowercased message type
 	return strings.ToLower(msg.Type)
+}
+
+// ParseMessageTime parses the CreatedAt field of a message into a time.Time.
+// Returns the zero time if parsing fails or the field is empty.
+func ParseMessageTime(m *Message) time.Time {
+	if m == nil || m.CreatedAt == "" {
+		return time.Time{}
+	}
+	t, err := time.Parse(time.RFC3339, m.CreatedAt)
+	if err != nil {
+		return time.Time{}
+	}
+	return t
 }

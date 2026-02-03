@@ -784,6 +784,7 @@ func (m *MessagesDirNode) Lookup(ctx context.Context, name string, out *fuse.Ent
 		return m.NewInode(ctx, &ConvContentNode{
 			localID: m.localID, client: m.client, state: m.state,
 			query: contentQuery{kind: queryBySeq, seqNum: seqNum, format: fmt}, startTime: m.startTime,
+			messageTime: shelley.ParseMessageTime(msg),
 		}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
 	}
 
@@ -1215,11 +1216,12 @@ type contentQuery struct {
 
 type ConvContentNode struct {
 	fs.Inode
-	localID   string
-	client    *shelley.Client
-	state     *state.Store
-	query     contentQuery
-	startTime time.Time // fallback if conversation has no CreatedAt
+	localID     string
+	client      *shelley.Client
+	state       *state.Store
+	query       contentQuery
+	startTime   time.Time // fallback if conversation has no CreatedAt
+	messageTime time.Time // timestamp of specific message (for queryBySeq)
 }
 
 var _ = (fs.NodeOpener)((*ConvContentNode)(nil))
@@ -1309,6 +1311,11 @@ func (c *ConvContentNode) formatResult(msgs []shelley.Message) ([]byte, syscall.
 
 func (c *ConvContentNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
 	out.Mode = fuse.S_IFREG | 0444
+	// For individual message files, use the message's timestamp
+	if !c.messageTime.IsZero() {
+		setTimestamps(&out.Attr, c.messageTime)
+		return 0
+	}
 	// Use conversation creation time if available, otherwise fall back to FS start time
 	cs := c.state.Get(c.localID)
 	if cs != nil && !cs.CreatedAt.IsZero() {

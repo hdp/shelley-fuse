@@ -2491,6 +2491,118 @@ func TestTimestamps_StateCreatedAtIsPersisted(t *testing.T) {
 	}
 }
 
+// TestTimestamps_MessageFilesUseMessageTime verifies that individual message files
+// (like 001-user.md) use the message's CreatedAt timestamp, not the conversation's.
+func TestTimestamps_MessageFilesUseMessageTime(t *testing.T) {
+	// Create messages with different timestamps
+	convID := "test-conv-msg-timestamps"
+	msg1Time := time.Date(2026, 1, 15, 10, 0, 0, 0, time.UTC)
+	msg2Time := time.Date(2026, 1, 15, 10, 5, 0, 0, time.UTC) // 5 minutes later
+	msg3Time := time.Date(2026, 1, 15, 10, 10, 0, 0, time.UTC) // 10 minutes later
+
+	msgs := []shelley.Message{
+		{MessageID: "m1", ConversationID: convID, SequenceID: 1, Type: "user", UserData: strPtr("Hello"), CreatedAt: msg1Time.Format(time.RFC3339)},
+		{MessageID: "m2", ConversationID: convID, SequenceID: 2, Type: "shelley", LLMData: strPtr("Hi there!"), CreatedAt: msg2Time.Format(time.RFC3339)},
+		{MessageID: "m3", ConversationID: convID, SequenceID: 3, Type: "user", UserData: strPtr("Thanks"), CreatedAt: msg3Time.Format(time.RFC3339)},
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/conversation/"+convID {
+			data, _ := json.Marshal(struct {
+				Messages []shelley.Message `json:"messages"`
+			}{Messages: msgs})
+			w.Write(data)
+			return
+		}
+		if r.URL.Path == "/api/conversations" {
+			data, _ := json.Marshal([]shelley.Conversation{{ConversationID: convID}})
+			w.Write(data)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	client := shelley.NewClient(server.URL)
+	store := testStore(t)
+
+	localID, _ := store.Clone()
+	store.MarkCreated(localID, convID, "")
+
+	shelleyFS := NewFS(client, store, 0)
+
+	tmpDir, err := ioutil.TempDir("", "shelley-fuse-msg-timestamp-test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	opts := &fs.Options{}
+	entryTimeout := time.Duration(0)
+	attrTimeout := time.Duration(0)
+	negativeTimeout := time.Duration(0)
+	opts.EntryTimeout = &entryTimeout
+	opts.AttrTimeout = &attrTimeout
+	opts.NegativeTimeout = &negativeTimeout
+
+	fssrv, err := fs.Mount(tmpDir, shelleyFS, opts)
+	if err != nil {
+		t.Fatalf("Mount failed: %v", err)
+	}
+	defer fssrv.Unmount()
+
+	testCases := []struct {
+		name         string
+		filename     string
+		expectedTime time.Time
+	}{
+		{"Message1_JSON", "001-user.json", msg1Time},
+		{"Message1_MD", "001-user.md", msg1Time},
+		{"Message2_JSON", "002-shelley.json", msg2Time},
+		{"Message2_MD", "002-shelley.md", msg2Time},
+		{"Message3_JSON", "003-user.json", msg3Time},
+		{"Message3_MD", "003-user.md", msg3Time},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(tmpDir, "conversation", localID, "messages", tc.filename)
+			info, err := os.Stat(path)
+			if err != nil {
+				t.Fatalf("Failed to stat %s: %v", tc.filename, err)
+			}
+			mtime := info.ModTime()
+			diff := mtime.Sub(tc.expectedTime)
+			if diff < -time.Second || diff > time.Second {
+				t.Errorf("File %s mtime %v differs from expected %v by %v", tc.filename, mtime, tc.expectedTime, diff)
+			}
+		})
+	}
+
+	// Also verify that all.json/all.md still use conversation time (not message time)
+	t.Run("AllJsonUsesConvTime", func(t *testing.T) {
+		cs := store.Get(localID)
+		if cs == nil {
+			t.Fatal("Conversation not found")
+		}
+		convTime := cs.CreatedAt
+
+		info, err := os.Stat(filepath.Join(tmpDir, "conversation", localID, "messages", "all.json"))
+		if err != nil {
+			t.Fatalf("Failed to stat all.json: %v", err)
+		}
+		mtime := info.ModTime()
+		diff := mtime.Sub(convTime)
+		if diff < -time.Second || diff > time.Second {
+			t.Errorf("all.json mtime %v differs from convTime %v by %v", mtime, convTime, diff)
+		}
+		// Verify it's NOT using message time
+		if mtime.Equal(msg1Time) || mtime.Equal(msg2Time) || mtime.Equal(msg3Time) {
+			t.Errorf("all.json should use conversation time, not message time: mtime=%v", mtime)
+		}
+	})
+}
+
 // --- Model Symlink Tests ---
 
 func TestConversationNode_ModelSymlink_NoModel(t *testing.T) {

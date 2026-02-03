@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 )
 
 func strPtr(s string) *string { return &s }
@@ -693,5 +694,57 @@ func TestFormatMarkdownRegularMessagesUnchanged(t *testing.T) {
 	}
 	if !strings.Contains(md, "Hi there!") {
 		t.Error("expected shelley content")
+	}
+}
+
+func TestParseMessageTime(t *testing.T) {
+	tests := []struct {
+		name     string
+		msg      *Message
+		wantZero bool
+		wantTime time.Time
+	}{
+		{
+			name:     "nil message",
+			msg:      nil,
+			wantZero: true,
+		},
+		{
+			name:     "empty CreatedAt",
+			msg:      &Message{MessageID: "m1", CreatedAt: ""},
+			wantZero: true,
+		},
+		{
+			name:     "invalid CreatedAt",
+			msg:      &Message{MessageID: "m1", CreatedAt: "not-a-timestamp"},
+			wantZero: true,
+		},
+		{
+			name:     "valid RFC3339 timestamp",
+			msg:      &Message{MessageID: "m1", CreatedAt: "2026-01-15T10:30:00Z"},
+			wantZero: false,
+			wantTime: time.Date(2026, 1, 15, 10, 30, 0, 0, time.UTC),
+		},
+		{
+			name:     "valid RFC3339 with timezone",
+			msg:      &Message{MessageID: "m1", CreatedAt: "2026-01-15T10:30:00-05:00"},
+			wantZero: false,
+			wantTime: time.Date(2026, 1, 15, 10, 30, 0, 0, time.FixedZone("", -5*60*60)),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ParseMessageTime(tt.msg)
+			if tt.wantZero {
+				if !got.IsZero() {
+					t.Errorf("ParseMessageTime() = %v, want zero time", got)
+				}
+			} else {
+				if !got.Equal(tt.wantTime) {
+					t.Errorf("ParseMessageTime() = %v, want %v", got, tt.wantTime)
+				}
+			}
+		})
 	}
 }
