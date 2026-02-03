@@ -49,7 +49,7 @@ The filesystem follows a Plan 9-inspired control file model. There are no host d
   models/                               → directory of available models (GET /, parse HTML for model list)
     {model-id}/                         → directory for each model
       id                                → read-only file: model ID
-      ready                             → read-only file: "true" or "false"
+      ready                             → present only if model is ready (presence semantics)
   new/
     clone                               → read to allocate a new local conversation ID
   conversation/                           → lists local IDs + server conversations (merged via GET /api/conversations)
@@ -59,22 +59,19 @@ The filesystem follows a Plan 9-inspired control file model. There are no host d
       id                                → read-only: Shelley server conversation ID (ENOENT before creation)
       slug                              → read-only: conversation slug (ENOENT before creation or if no slug)
       fuse_id                           → read-only: local FUSE conversation ID (8-character hex)
-      created                           → read-only: "true" or "false" - whether conversation is created on backend
-      created_at                        → read-only: RFC3339 timestamp of when conversation was created locally
-      message_count                     → read-only: number of messages in conversation (0 before creation)
+      created                           → present only when created on backend (presence semantics, mtime = creation time)
       model                             → symlink to ../../models/{model-id} (only if model is set)
       cwd                               → symlink to working directory (only if cwd is set)
       messages/                         → all message content
         all.json                        → full conversation as JSON
         all.md                          → full conversation as Markdown
-        {NNN}-{type}.json                → specific message (e.g. 001-user.json, 002-shelley.json)
-        {NNN}-{type}.md                 → specific message as Markdown
+        count                           → number of messages in conversation (0 before creation)
+        {NNN}-{slug}.json               → specific message (e.g. 001-user.json, 100-bash-tool.json, 101-bash-result.json)
+        {NNN}-{slug}.md                 → specific message as Markdown (tool calls: ## tool call, results: ## tool result)
         last/{N}.json                   → last N messages as JSON
         last/{N}.md                     → last N messages as Markdown
-        since/{person}/{N}.json         → messages since Nth-to-last message from {person}
-        since/{person}/{N}.md           → same, as Markdown
-        from/{person}/{N}.json          → Nth message from {person} (counting from end)
-        from/{person}/{N}.md            → same, as Markdown
+        since/{slug}/{N}.json           → messages since Nth-to-last message matching {slug}
+        since/{slug}/{N}.md             → same, as Markdown
     {server-id}                         → symlink to local-id: allows access via Shelley server ID
     {slug}                              → symlink to local-id: allows access via conversation slug
 ```

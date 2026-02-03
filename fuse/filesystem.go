@@ -130,7 +130,7 @@ echo "Thanks!" > conversation/$ID/new
     default              → symlink to default model
     {model-id}/          → directory per model
       id                 → model ID
-      ready              → "true" or "false"
+      ready              → present if model is ready (absence = not ready)
   new/
     clone                → read to allocate a new conversation ID
   conversation/          → all conversations
@@ -139,12 +139,16 @@ echo "Thanks!" > conversation/$ID/new
       new                → write here to send messages
       id                 → Shelley server conversation ID
       slug               → conversation slug (if set)
+      created            → present if created on backend (absence = not created)
       messages/          → all message content
         all.json         → full conversation as JSON
         all.md           → full conversation as Markdown
-        001-user.json    → specific message (named by type)
+        count            → number of messages
+        001-user.json    → specific message (named by slug)
+        100-bash-tool.md → tool call (## tool call header)
+        101-bash-result.md → tool result (## tool result header)
         last/{N}.md      → last N messages
-        since/{person}/{N}.md → messages since Nth from person
+        since/{slug}/{N}.md → messages since Nth matching {slug}
 
 ` + "```" + `
 
@@ -164,7 +168,13 @@ ls conversation/
 cat conversation/$ID/messages/last/5.md
 
 # Read messages since your last message
-cat conversation/$ID/messages/since/me/1.md
+cat conversation/$ID/messages/since/user/1.md
+
+# Get message count
+cat conversation/$ID/messages/count
+
+# Check if conversation is created
+test -e conversation/$ID/created && echo created
 ` + "```" + `
 `
 
