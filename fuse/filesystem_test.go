@@ -2870,13 +2870,13 @@ func TestMessagesDirNodeReaddirWithToolCalls(t *testing.T) {
 	}
 
 	// Expected files:
-	// - Static: all.json, all.md, last, since
+	// - Static: all.json, all.md, count, last, since
 	// - Message 1 (user): 001-user.json, 001-user.md
 	// - Message 2 (bash-tool): 002-bash-tool.json, 002-bash-tool.md
 	// - Message 3 (bash-result): 003-bash-result.json, 003-bash-result.md
 	// - Message 4 (shelley): 004-shelley.json, 004-shelley.md
 	expected := []string{
-		"all.json", "all.md", "last", "since",
+		"all.json", "all.md", "count", "last", "since",
 		"001-user.json", "001-user.md",
 		"002-bash-tool.json", "002-bash-tool.md",
 		"003-bash-result.json", "003-bash-result.md",

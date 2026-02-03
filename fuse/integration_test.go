@@ -405,7 +405,7 @@ func TestConversationDirectoryStructure(t *testing.T) {
 
 	expectedFiles := map[string]bool{
 		"ctl": false, "new": false, "id": false, "slug": false,
-		"fuse_id": false, "created": false, "created_at": false, "message_count": false,
+		"fuse_id": false, "created": false, "created_at": false,
 	}
 	expectedDirs := map[string]bool{"messages": false}
 
@@ -452,9 +452,9 @@ func TestConversationDirectoryStructure(t *testing.T) {
 		t.Errorf("created_at not RFC3339: %v", err)
 	}
 
-	data, _ = ioutil.ReadFile(filepath.Join(convDir, "message_count"))
+	data, _ = ioutil.ReadFile(filepath.Join(convDir, "messages", "count"))
 	if strings.TrimSpace(string(data)) == "0" {
-		t.Errorf("message_count should be > 0")
+		t.Errorf("messages/count should be > 0")
 	}
 
 	// Symlinks
@@ -741,10 +741,10 @@ func TestUncreatedConversationStatus(t *testing.T) {
 		t.Error("Expected ENOENT for id")
 	}
 
-	// message_count is 0
-	data, _ = ioutil.ReadFile(filepath.Join(mountPoint, "conversation", uncreatedID, "message_count"))
+	// messages/count is 0
+	data, _ = ioutil.ReadFile(filepath.Join(mountPoint, "conversation", uncreatedID, "messages", "count"))
 	if strings.TrimSpace(string(data)) != "0" {
-		t.Errorf("message_count should be 0")
+		t.Errorf("messages/count should be 0")
 	}
 }
 

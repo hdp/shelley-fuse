@@ -642,8 +642,6 @@ func (c *ConversationNode) Lookup(ctx context.Context, name string, out *fuse.En
 		return c.NewInode(ctx, &ConvStatusFieldNode{localID: c.localID, client: c.client, state: c.state, field: "created", startTime: c.startTime}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
 	case "created_at":
 		return c.NewInode(ctx, &ConvStatusFieldNode{localID: c.localID, client: c.client, state: c.state, field: "created_at", startTime: c.startTime}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
-	case "message_count":
-		return c.NewInode(ctx, &ConvStatusFieldNode{localID: c.localID, client: c.client, state: c.state, field: "message_count", startTime: c.startTime}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
 	case "model":
 		cs := c.state.Get(c.localID)
 		if cs == nil || cs.Model == "" {
@@ -676,7 +674,6 @@ func (c *ConversationNode) Readdir(ctx context.Context) (fs.DirStream, syscall.E
 		{Name: "fuse_id", Mode: fuse.S_IFREG},
 		{Name: "created", Mode: fuse.S_IFREG},
 		{Name: "created_at", Mode: fuse.S_IFREG},
-		{Name: "message_count", Mode: fuse.S_IFREG},
 	}
 
 	// Include model and cwd symlinks only if set
@@ -725,7 +722,8 @@ func (m *MessagesDirNode) Lookup(ctx context.Context, name string, out *fuse.Ent
 		return m.NewInode(ctx, &QueryDirNode{localID: m.localID, client: m.client, state: m.state, kind: queryLast, startTime: m.startTime}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
 	case "since":
 		return m.NewInode(ctx, &QueryDirNode{localID: m.localID, client: m.client, state: m.state, kind: querySince, startTime: m.startTime}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
-
+	case "count":
+		return m.NewInode(ctx, &MessageCountNode{localID: m.localID, client: m.client, state: m.state, startTime: m.startTime}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
 	}
 
 	// all.json, all.md
@@ -794,6 +792,7 @@ func (m *MessagesDirNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Er
 	entries := []fuse.DirEntry{
 		{Name: "all.json", Mode: fuse.S_IFREG},
 		{Name: "all.md", Mode: fuse.S_IFREG},
+		{Name: "count", Mode: fuse.S_IFREG},
 		{Name: "last", Mode: fuse.S_IFDIR},
 		{Name: "since", Mode: fuse.S_IFDIR},
 	}
@@ -828,6 +827,51 @@ func (m *MessagesDirNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Er
 func (m *MessagesDirNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
 	out.Mode = fuse.S_IFDIR | 0755
 	setTimestamps(&out.Attr, m.getConversationTime())
+	return 0
+}
+
+// --- MessageCountNode: /conversation/{id}/messages/count ---
+
+type MessageCountNode struct {
+	fs.Inode
+	localID   string
+	client    *shelley.Client
+	state     *state.Store
+	startTime time.Time
+}
+
+var _ = (fs.NodeOpener)((*MessageCountNode)(nil))
+var _ = (fs.NodeReader)((*MessageCountNode)(nil))
+var _ = (fs.NodeGetattrer)((*MessageCountNode)(nil))
+
+func (m *MessageCountNode) Open(ctx context.Context, flags uint32) (fs.FileHandle, uint32, syscall.Errno) {
+	return nil, fuse.FOPEN_DIRECT_IO, 0
+}
+
+func (m *MessageCountNode) Read(ctx context.Context, f fs.FileHandle, dest []byte, off int64) (fuse.ReadResult, syscall.Errno) {
+	cs := m.state.Get(m.localID)
+	value := "0"
+	if cs != nil && cs.Created && cs.ShelleyConversationID != "" {
+		convData, err := m.client.GetConversation(cs.ShelleyConversationID)
+		if err == nil {
+			msgs, err := shelley.ParseMessages(convData)
+			if err == nil {
+				value = strconv.Itoa(len(msgs))
+			}
+		}
+	}
+	data := []byte(value + "\n")
+	return fuse.ReadResultData(readAt(data, dest, off)), 0
+}
+
+func (m *MessageCountNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
+	out.Mode = fuse.S_IFREG | 0444
+	cs := m.state.Get(m.localID)
+	if cs != nil && !cs.CreatedAt.IsZero() {
+		setTimestamps(&out.Attr, cs.CreatedAt)
+	} else {
+		setTimestamps(&out.Attr, m.startTime)
+	}
 	return 0
 }
 
@@ -1058,19 +1102,6 @@ func (f *ConvStatusFieldNode) Read(ctx context.Context, fh fs.FileHandle, dest [
 	case "created_at":
 		if !cs.CreatedAt.IsZero() {
 			value = cs.CreatedAt.Format(time.RFC3339)
-		}
-	case "message_count":
-		if cs.Created && cs.ShelleyConversationID != "" {
-			convData, err := f.client.GetConversation(cs.ShelleyConversationID)
-			if err == nil {
-				msgs, err := shelley.ParseMessages(convData)
-				if err == nil {
-					value = strconv.Itoa(len(msgs))
-				}
-			}
-		}
-		if value == "" {
-			value = "0"
 		}
 	default:
 		return nil, syscall.ENOENT
