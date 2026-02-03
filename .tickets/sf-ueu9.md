@@ -21,8 +21,12 @@ stat conversation/{id}/created succeeds after creation with correct mtime. stat 
 
 **2026-02-03T03:51:45Z**
 
-Confirmed: created_at file still exists in fuse/filesystem.go and is still being tested in fuse/integration_test.go. The ticket was marked closed but the work is incomplete:
-- created_at file is still handled in ConversationNode.Lookup (line with 'created_at': return...)
-- created_at is still listed in Readdir results
-- Tests still reference created_at
-Per acceptance criteria: 'created_at file no longer exists' — this needs to be done.
+Confirmed: The work was never actually implemented. Commit `1683a75` marked the ticket closed but only updated the `.tickets/` file — no code changes to `fuse/filesystem.go` or tests were made. Later commit `wplkymtv` (sf-t6ct) updated docs to describe what "should" have been done, creating false impression work was complete.
+
+Current state:
+- `created_at` file still exists in fuse/filesystem.go and integration_test.go
+- Case "created_at" in ConversationNode.Lookup returns ConvStatusFieldNode
+- created_at listed in Readdir results
+- Tests still reference and validate created_at
+
+Need to implement the actual changes described in this ticket.
