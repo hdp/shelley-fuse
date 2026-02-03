@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -535,4 +536,347 @@ func TestCachingClient_ConcurrentAccess(t *testing.T) {
 		<-done
 	}
 	// If we get here without panics/races, the test passes
+}
+
+// TestCachingClient_Singleflight_CoalescesConcurrentSameConversation verifies that
+// singleflight coalesces multiple concurrent requests for the same conversation
+// into a single HTTP call.
+func TestCachingClient_Singleflight_CoalescesConcurrentSameConversation(t *testing.T) {
+	var callCount int32
+	var mu sync.Mutex
+	var inFlight int32
+	var maxInFlight int32
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/conversation/conv-123" {
+			// Track concurrent requests
+			mu.Lock()
+			atomic.AddInt32(&callCount, 1)
+			current := atomic.AddInt32(&inFlight, 1)
+			if current > atomic.LoadInt32(&maxInFlight) {
+				atomic.StoreInt32(&maxInFlight, current)
+			}
+			mu.Unlock()
+
+			// Simulate slow backend
+			time.Sleep(50 * time.Millisecond)
+
+			atomic.AddInt32(&inFlight, -1)
+			w.Write([]byte(`{"messages":[]}`))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL)
+	caching := NewCachingClient(client, 5*time.Second)
+
+	// Spawn 10 goroutines all requesting the same conversation simultaneously
+	const numGoroutines = 10
+	var wg sync.WaitGroup
+	results := make([][]byte, numGoroutines)
+	errors := make([]error, numGoroutines)
+
+	wg.Add(numGoroutines)
+	for i := 0; i < numGoroutines; i++ {
+		i := i
+		go func() {
+			defer wg.Done()
+			results[i], errors[i] = caching.GetConversation("conv-123")
+		}()
+	}
+	wg.Wait()
+
+	// Verify all goroutines got results without error
+	for i := 0; i < numGoroutines; i++ {
+		if errors[i] != nil {
+			t.Errorf("Goroutine %d got error: %v", i, errors[i])
+		}
+		if len(results[i]) == 0 {
+			t.Errorf("Goroutine %d got empty result", i)
+		}
+	}
+
+	// Verify only 1 HTTP call was made (not 10)
+	if count := atomic.LoadInt32(&callCount); count != 1 {
+		t.Errorf("Expected 1 HTTP call due to singleflight, got %d", count)
+	}
+
+	// Verify only 1 request was in flight at a time
+	if max := atomic.LoadInt32(&maxInFlight); max != 1 {
+		t.Errorf("Expected max 1 concurrent request, got %d", max)
+	}
+}
+
+// TestCachingClient_Singleflight_DifferentConversationsNotBlocked verifies that
+// requests for different conversations can proceed independently without blocking
+// each other.
+func TestCachingClient_Singleflight_DifferentConversationsNotBlocked(t *testing.T) {
+	var convAStarted, convBStarted, convBFinished int32
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/conversation/conv-A":
+			atomic.StoreInt32(&convAStarted, 1)
+			// Slow response for conversation A
+			time.Sleep(200 * time.Millisecond)
+			w.Write([]byte(`{"messages":[{"id":"A"}]}`))
+		case "/api/conversation/conv-B":
+			atomic.StoreInt32(&convBStarted, 1)
+			// Fast response for conversation B
+			w.Write([]byte(`{"messages":[{"id":"B"}]}`))
+			atomic.StoreInt32(&convBFinished, 1)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL)
+	caching := NewCachingClient(client, 5*time.Second)
+
+	var wg sync.WaitGroup
+	var convAResult, convBResult []byte
+	var convAErr, convBErr error
+
+	// Start slow request for conversation A
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		convAResult, convAErr = caching.GetConversation("conv-A")
+	}()
+
+	// Wait for A to start
+	for atomic.LoadInt32(&convAStarted) == 0 {
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	// Now request conversation B while A is still in progress
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		convBResult, convBErr = caching.GetConversation("conv-B")
+	}()
+
+	// Wait for B to complete (should be fast)
+	for atomic.LoadInt32(&convBFinished) == 0 {
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	// At this point, B should have finished while A is still in progress
+	// (A has 200ms delay, B has none)
+	wg.Wait()
+
+	// Verify both completed successfully
+	if convAErr != nil {
+		t.Errorf("Conversation A failed: %v", convAErr)
+	}
+	if convBErr != nil {
+		t.Errorf("Conversation B failed: %v", convBErr)
+	}
+	if len(convAResult) == 0 {
+		t.Error("Conversation A got empty result")
+	}
+	if len(convBResult) == 0 {
+		t.Error("Conversation B got empty result")
+	}
+
+	// Verify B started and finished (proving it wasn't blocked by A)
+	if atomic.LoadInt32(&convBStarted) != 1 {
+		t.Error("Conversation B never started")
+	}
+	if atomic.LoadInt32(&convBFinished) != 1 {
+		t.Error("Conversation B never finished")
+	}
+}
+
+// TestCachingClient_Singleflight_ReadDirPlusAndFlushDontBlock simulates the
+// original FUSE deadlock scenario with concurrent ListConversations and
+// StartConversation calls.
+func TestCachingClient_Singleflight_ReadDirPlusAndFlushDontBlock(t *testing.T) {
+	var listCallCount, startCallCount int32
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/conversations":
+			atomic.AddInt32(&listCallCount, 1)
+			// Simulate slow ListConversations (like ReadDirPlus)
+			time.Sleep(50 * time.Millisecond)
+			w.Write([]byte(`[]`))
+		case "/api/conversations/new":
+			atomic.AddInt32(&startCallCount, 1)
+			// StartConversation (like Flush)
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"conversation_id":"new-conv","slug":"test"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL)
+	caching := NewCachingClient(client, 5*time.Second)
+
+	const numReaders = 5
+	const numWriters = 5
+
+	var wg sync.WaitGroup
+	done := make(chan struct{})
+
+	// Track completion
+	var readersCompleted, writersCompleted int32
+
+	// Simulate multiple ReadDirPlus operations (calling ListConversations)
+	for i := 0; i < numReaders; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := caching.ListConversations()
+			if err != nil {
+				t.Errorf("ListConversations failed: %v", err)
+			}
+			atomic.AddInt32(&readersCompleted, 1)
+		}()
+	}
+
+	// Simulate multiple Flush operations (calling StartConversation)
+	for i := 0; i < numWriters; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := caching.StartConversation("test message", "model", "/tmp")
+			if err != nil {
+				t.Errorf("StartConversation failed: %v", err)
+			}
+			atomic.AddInt32(&writersCompleted, 1)
+		}()
+	}
+
+	// Use a timeout to detect deadlocks
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// All operations completed successfully
+	case <-time.After(5 * time.Second):
+		t.Fatal("Deadlock detected: operations did not complete within timeout")
+	}
+
+	// Verify all operations completed
+	if r := atomic.LoadInt32(&readersCompleted); r != numReaders {
+		t.Errorf("Expected %d readers completed, got %d", numReaders, r)
+	}
+	if w := atomic.LoadInt32(&writersCompleted); w != numWriters {
+		t.Errorf("Expected %d writers completed, got %d", numWriters, w)
+	}
+
+	// Verify singleflight coalesced the ListConversations calls
+	// (should be 1 call, not 5, since they're concurrent on the same key)
+	if count := atomic.LoadInt32(&listCallCount); count != 1 {
+		t.Errorf("Expected 1 ListConversations call (coalesced), got %d", count)
+	}
+
+	// Each StartConversation should make its own call (no caching for writes)
+	if count := atomic.LoadInt32(&startCallCount); count != numWriters {
+		t.Errorf("Expected %d StartConversation calls, got %d", numWriters, count)
+	}
+}
+
+// TestCachingClient_Singleflight_ListConversationsCoalesced verifies that
+// concurrent ListConversations calls are coalesced into a single HTTP call.
+func TestCachingClient_Singleflight_ListConversationsCoalesced(t *testing.T) {
+	var callCount int32
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/conversations" {
+			atomic.AddInt32(&callCount, 1)
+			// Simulate slow backend
+			time.Sleep(50 * time.Millisecond)
+			w.Write([]byte(`[]`))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL)
+	caching := NewCachingClient(client, 5*time.Second)
+
+	const numGoroutines = 10
+	var wg sync.WaitGroup
+	errors := make([]error, numGoroutines)
+
+	wg.Add(numGoroutines)
+	for i := 0; i < numGoroutines; i++ {
+		i := i
+		go func() {
+			defer wg.Done()
+			_, errors[i] = caching.ListConversations()
+		}()
+	}
+	wg.Wait()
+
+	// Verify all succeeded
+	for i, err := range errors {
+		if err != nil {
+			t.Errorf("Goroutine %d failed: %v", i, err)
+		}
+	}
+
+	// Verify only 1 HTTP call was made
+	if count := atomic.LoadInt32(&callCount); count != 1 {
+		t.Errorf("Expected 1 HTTP call due to singleflight, got %d", count)
+	}
+}
+
+// TestCachingClient_Singleflight_ListModelsCoalesced verifies that
+// concurrent ListModels calls are coalesced into a single HTTP call.
+func TestCachingClient_Singleflight_ListModelsCoalesced(t *testing.T) {
+	var callCount int32
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" {
+			atomic.AddInt32(&callCount, 1)
+			// Simulate slow backend
+			time.Sleep(50 * time.Millisecond)
+			// Return HTML with embedded JSON (like real Shelley server)
+			w.Write([]byte(`<html><script>window.__SHELLEY_INIT__ = {"models":[{"id":"test","ready":true}],"default_model":"test"};</script></html>`))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL)
+	caching := NewCachingClient(client, 5*time.Second)
+
+	const numGoroutines = 10
+	var wg sync.WaitGroup
+	errors := make([]error, numGoroutines)
+
+	wg.Add(numGoroutines)
+	for i := 0; i < numGoroutines; i++ {
+		i := i
+		go func() {
+			defer wg.Done()
+			_, errors[i] = caching.ListModels()
+		}()
+	}
+	wg.Wait()
+
+	// Verify all succeeded
+	for i, err := range errors {
+		if err != nil {
+			t.Errorf("Goroutine %d failed: %v", i, err)
+		}
+	}
+
+	// Verify only 1 HTTP call was made
+	if count := atomic.LoadInt32(&callCount); count != 1 {
+		t.Errorf("Expected 1 HTTP call due to singleflight, got %d", count)
+	}
 }

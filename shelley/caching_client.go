@@ -3,16 +3,24 @@ package shelley
 import (
 	"sync"
 	"time"
+
+	"golang.org/x/sync/singleflight"
 )
 
 // CachingClient wraps a Client and adds caching for read operations.
 // Cache entries are invalidated on writes to the corresponding conversation.
 // A cacheTTL of 0 disables caching entirely.
+//
+// Uses singleflight to coalesce duplicate requests, preventing thundering herd
+// on cache miss without holding locks during HTTP calls.
 type CachingClient struct {
 	client   *Client
 	cacheTTL time.Duration
 
 	mu sync.RWMutex
+
+	// Singleflight for coalescing duplicate requests
+	sf singleflight.Group
 
 	// Per-conversation cache for GetConversation results
 	conversationCache map[string]*cacheEntry
@@ -45,8 +53,9 @@ func (e *cacheEntry) isValid() bool {
 }
 
 // GetConversation retrieves a conversation, using cache if available.
+// Uses singleflight to coalesce duplicate requests without holding locks during HTTP calls.
 func (c *CachingClient) GetConversation(conversationID string) ([]byte, error) {
-	// Check cache first (if caching is enabled)
+	// Fast path: check cache with read lock
 	if c.cacheTTL > 0 {
 		c.mu.RLock()
 		entry := c.conversationCache[conversationID]
@@ -60,28 +69,37 @@ func (c *CachingClient) GetConversation(conversationID string) ([]byte, error) {
 		}
 	}
 
-	// Fetch from backend
-	data, err := c.client.GetConversation(conversationID)
+	// Slow path: use singleflight to coalesce duplicate requests
+	// This ensures only one HTTP call is made even if multiple goroutines
+	// experience a cache miss simultaneously, without holding locks during HTTP.
+	result, err, _ := c.sf.Do("conversation:"+conversationID, func() (interface{}, error) {
+		data, err := c.client.GetConversation(conversationID)
+		if err != nil {
+			return nil, err
+		}
+
+		if c.cacheTTL > 0 {
+			c.mu.Lock()
+			c.conversationCache[conversationID] = &cacheEntry{
+				data:      data,
+				expiresAt: time.Now().Add(c.cacheTTL),
+			}
+			c.mu.Unlock()
+		}
+
+		return data, nil
+	})
+
 	if err != nil {
 		return nil, err
 	}
-
-	// Store in cache (if caching is enabled)
-	if c.cacheTTL > 0 {
-		c.mu.Lock()
-		c.conversationCache[conversationID] = &cacheEntry{
-			data:      data,
-			expiresAt: time.Now().Add(c.cacheTTL),
-		}
-		c.mu.Unlock()
-	}
-
-	return data, nil
+	return result.([]byte), nil
 }
 
 // ListConversations lists all conversations, using cache if available.
+// Uses singleflight to coalesce duplicate requests without holding locks during HTTP calls.
 func (c *CachingClient) ListConversations() ([]byte, error) {
-	// Check cache first (if caching is enabled)
+	// Fast path: check cache with read lock
 	if c.cacheTTL > 0 {
 		c.mu.RLock()
 		entry := c.conversationsListCache
@@ -95,28 +113,37 @@ func (c *CachingClient) ListConversations() ([]byte, error) {
 		}
 	}
 
-	// Fetch from backend
-	data, err := c.client.ListConversations()
+	// Slow path: use singleflight to coalesce duplicate requests
+	// This ensures only one HTTP call is made even if multiple goroutines
+	// experience a cache miss simultaneously, without holding locks during HTTP.
+	result, err, _ := c.sf.Do("conversations:list", func() (interface{}, error) {
+		data, err := c.client.ListConversations()
+		if err != nil {
+			return nil, err
+		}
+
+		if c.cacheTTL > 0 {
+			c.mu.Lock()
+			c.conversationsListCache = &cacheEntry{
+				data:      data,
+				expiresAt: time.Now().Add(c.cacheTTL),
+			}
+			c.mu.Unlock()
+		}
+
+		return data, nil
+	})
+
 	if err != nil {
 		return nil, err
 	}
-
-	// Store in cache (if caching is enabled)
-	if c.cacheTTL > 0 {
-		c.mu.Lock()
-		c.conversationsListCache = &cacheEntry{
-			data:      data,
-			expiresAt: time.Now().Add(c.cacheTTL),
-		}
-		c.mu.Unlock()
-	}
-
-	return data, nil
+	return result.([]byte), nil
 }
 
 // ListModels lists available models, using cache if available.
+// Uses singleflight to coalesce duplicate requests without holding locks during HTTP calls.
 func (c *CachingClient) ListModels() (ModelsResult, error) {
-	// Check cache first (if caching is enabled)
+	// Fast path: check cache with read lock
 	if c.cacheTTL > 0 {
 		c.mu.RLock()
 		entry := c.modelsCache
@@ -127,23 +154,31 @@ func (c *CachingClient) ListModels() (ModelsResult, error) {
 		}
 	}
 
-	// Fetch from backend
-	result, err := c.client.ListModels()
+	// Slow path: use singleflight to coalesce duplicate requests
+	// This ensures only one HTTP call is made even if multiple goroutines
+	// experience a cache miss simultaneously, without holding locks during HTTP.
+	result, err, _ := c.sf.Do("models:list", func() (interface{}, error) {
+		modelsResult, err := c.client.ListModels()
+		if err != nil {
+			return ModelsResult{}, err
+		}
+
+		if c.cacheTTL > 0 {
+			c.mu.Lock()
+			c.modelsCache = &cacheEntry{
+				result:    &modelsResult,
+				expiresAt: time.Now().Add(c.cacheTTL),
+			}
+			c.mu.Unlock()
+		}
+
+		return modelsResult, nil
+	})
+
 	if err != nil {
 		return ModelsResult{}, err
 	}
-
-	// Store in cache (if caching is enabled)
-	if c.cacheTTL > 0 {
-		c.mu.Lock()
-		c.modelsCache = &cacheEntry{
-			result:    &result,
-			expiresAt: time.Now().Add(c.cacheTTL),
-		}
-		c.mu.Unlock()
-	}
-
-	return result, nil
+	return result.(ModelsResult), nil
 }
 
 // StartConversation starts a new conversation and invalidates the conversations list cache.
