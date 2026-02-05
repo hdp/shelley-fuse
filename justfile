@@ -7,7 +7,7 @@ list:
 # Begin work on a ticket
 start-work ticket:
     tk start {{ticket}} && git commit -m "Start ticket {{ticket}}" .tickets/{{ticket}}.md
-    git worktree list | grep -q shelley-fuse-{{ticket}} || git worktree add ~/shelley-fuse-{{ticket}}
+    git worktree list | grep -q {{ticket}} || git worktree add ../worktree/shelley-fuse/{{ticket}}
 
 # Build the FUSE binary
 build:
