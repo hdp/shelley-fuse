@@ -27,6 +27,7 @@ type CachingClient struct {
 
 	// Global caches
 	conversationsListCache *cacheEntry
+	archivedListCache      *cacheEntry
 	modelsCache            *cacheEntry
 }
 
@@ -140,6 +141,48 @@ func (c *CachingClient) ListConversations() ([]byte, error) {
 	return result.([]byte), nil
 }
 
+// ListArchivedConversations lists all archived conversations, using cache if available.
+// Uses singleflight to coalesce duplicate requests without holding locks during HTTP calls.
+func (c *CachingClient) ListArchivedConversations() ([]byte, error) {
+	// Fast path: check cache with read lock
+	if c.cacheTTL > 0 {
+		c.mu.RLock()
+		entry := c.archivedListCache
+		c.mu.RUnlock()
+
+		if entry.isValid() {
+			// Return a copy to prevent mutation
+			result := make([]byte, len(entry.data))
+			copy(result, entry.data)
+			return result, nil
+		}
+	}
+
+	// Slow path: use singleflight to coalesce duplicate requests
+	result, err, _ := c.sf.Do("conversations:archived", func() (interface{}, error) {
+		data, err := c.client.ListArchivedConversations()
+		if err != nil {
+			return nil, err
+		}
+
+		if c.cacheTTL > 0 {
+			c.mu.Lock()
+			c.archivedListCache = &cacheEntry{
+				data:      data,
+				expiresAt: time.Now().Add(c.cacheTTL),
+			}
+			c.mu.Unlock()
+		}
+
+		return data, nil
+	})
+
+	if err != nil {
+		return nil, err
+	}
+	return result.([]byte), nil
+}
+
 // ListModels lists available models, using cache if available.
 // Uses singleflight to coalesce duplicate requests without holding locks during HTTP calls.
 func (c *CachingClient) ListModels() (ModelsResult, error) {
@@ -231,7 +274,50 @@ func (c *CachingClient) InvalidateAll() {
 		c.mu.Lock()
 		c.conversationCache = make(map[string]*cacheEntry)
 		c.conversationsListCache = nil
+		c.archivedListCache = nil
 		c.modelsCache = nil
 		c.mu.Unlock()
 	}
+}
+
+// ArchiveConversation archives a conversation and invalidates the conversations list cache.
+func (c *CachingClient) ArchiveConversation(conversationID string) error {
+	err := c.client.ArchiveConversation(conversationID)
+	if err != nil {
+		return err
+	}
+
+	// Invalidate both list caches since conversation moved between lists
+	if c.cacheTTL > 0 {
+		c.mu.Lock()
+		c.conversationsListCache = nil
+		c.archivedListCache = nil
+		c.mu.Unlock()
+	}
+
+	return nil
+}
+
+// UnarchiveConversation unarchives a conversation and invalidates the conversations list cache.
+func (c *CachingClient) UnarchiveConversation(conversationID string) error {
+	err := c.client.UnarchiveConversation(conversationID)
+	if err != nil {
+		return err
+	}
+
+	// Invalidate both list caches since conversation moved between lists
+	if c.cacheTTL > 0 {
+		c.mu.Lock()
+		c.conversationsListCache = nil
+		c.archivedListCache = nil
+		c.mu.Unlock()
+	}
+
+	return nil
+}
+
+// IsConversationArchived checks if a conversation is archived.
+func (c *CachingClient) IsConversationArchived(conversationID string) (bool, error) {
+	// Don't cache this - it's a read that checks both endpoints
+	return c.client.IsConversationArchived(conversationID)
 }

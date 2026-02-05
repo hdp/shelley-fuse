@@ -62,16 +62,31 @@ The filesystem follows a Plan 9-inspired control file model. There are no host d
       created                           → present only when created on backend (presence semantics, mtime = creation time)
       model                             → symlink to ../../models/{model-id} (only if model is set)
       cwd                               → symlink to working directory (only if cwd is set)
+      meta/                             → conversation metadata as jsonfs directory tree
+        local_id                        → local FUSE conversation ID
+        conversation_id                 → Shelley API conversation ID (only if created)
+        slug                            → conversation slug (only if set)
+        model                           → selected model (only if set)
+        cwd                             → working directory path (only if set)
+        created                         → boolean "true" or "false"
+        local_created_at                → local timestamp when conversation was cloned
+        api_created_at                  → server timestamp (only if created)
+        api_updated_at                  → server timestamp (only if created)
       messages/                         → all message content
         all.json                        → full conversation as JSON
         all.md                          → full conversation as Markdown
         count                           → number of messages in conversation (0 before creation)
-        {NNN}-{slug}.json               → specific message (e.g. 001-user.json, 100-bash-tool.json, 101-bash-result.json)
-        {NNN}-{slug}.md                 → specific message as Markdown (tool calls: ## tool call, results: ## tool result)
-        last/{N}.json                   → last N messages as JSON
-        last/{N}.md                     → last N messages as Markdown
-        since/{slug}/{N}.json           → messages since Nth-to-last message matching {slug}
-        since/{slug}/{N}.md             → same, as Markdown
+        {NNN}-{slug}/                   → message directory (e.g. 001-user/, 100-bash-tool/, 101-bash-result/)
+          message_id                    → message UUID
+          conversation_id               → conversation ID
+          sequence_id                   → sequence number
+          type                          → message type (user, agent, bash-tool, bash-result, etc.)
+          created_at                    → timestamp
+          content.md                    → markdown rendering of the message
+          llm_data/                     → unpacked JSON directory (present only if message has LLM data)
+          usage_data/                   → unpacked JSON directory (present only if message has usage data)
+        last/{N}/                       → directory with symlinks to last N message directories
+        since/{slug}/{N}/               → directory with symlinks to messages after Nth-to-last {slug}
     {server-id}                         → symlink to local-id: allows access via Shelley server ID
     {slug}                              → symlink to local-id: allows access via conversation slug
 ```

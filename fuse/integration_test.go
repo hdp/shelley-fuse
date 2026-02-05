@@ -199,12 +199,10 @@ func TestRootAndModels(t *testing.T) {
 		t.Errorf("Expected id='predictable', got %q", string(idData))
 	}
 
-	readyData, err := ioutil.ReadFile(filepath.Join(mountPoint, "models", "predictable", "ready"))
-	if err != nil {
-		t.Fatalf("Failed to read models/predictable/ready: %v", err)
-	}
-	if strings.TrimSpace(string(readyData)) != "true" {
-		t.Errorf("Expected ready='true', got %q", string(readyData))
+	// Check ready file exists (presence/absence semantics)
+	readyPath := filepath.Join(mountPoint, "models", "predictable", "ready")
+	if _, err := os.Stat(readyPath); err != nil {
+		t.Errorf("Expected models/predictable/ready to exist: %v", err)
 	}
 
 	// Model directory listing
@@ -277,13 +275,10 @@ func TestConversationFlow(t *testing.T) {
 		t.Errorf("ctl content mismatch: %q", content)
 	}
 
-	// Status before create
-	data, err = ioutil.ReadFile(filepath.Join(mountPoint, "conversation", convID, "created"))
-	if err != nil {
-		t.Fatalf("Failed to read created: %v", err)
-	}
-	if strings.TrimSpace(string(data)) != "false" {
-		t.Errorf("Expected created=false before first message")
+	// Status before create - "created" file should NOT exist (presence/absence semantics)
+	createdPath := filepath.Join(mountPoint, "conversation", convID, "created")
+	if _, err := os.Stat(createdPath); !os.IsNotExist(err) {
+		t.Errorf("Expected 'created' to not exist before first message, got: %v", err)
 	}
 
 	// id should not exist before create
@@ -297,13 +292,9 @@ func TestConversationFlow(t *testing.T) {
 		t.Fatalf("Failed to write first message: %v", err)
 	}
 
-	// Status after create
-	data, err = ioutil.ReadFile(filepath.Join(mountPoint, "conversation", convID, "created"))
-	if err != nil {
-		t.Fatalf("Failed to read created: %v", err)
-	}
-	if strings.TrimSpace(string(data)) != "true" {
-		t.Errorf("Expected created=true after first message")
+	// Status after create - "created" file should exist (presence/absence semantics)
+	if _, err := os.Stat(createdPath); err != nil {
+		t.Errorf("Expected 'created' to exist after first message: %v", err)
 	}
 
 	// Read server ID
@@ -343,33 +334,68 @@ func TestConversationFlow(t *testing.T) {
 		t.Error("Expected markdown headers in all.md")
 	}
 
-	// Read specific message via named file
-	// Note: The first message is typically a system message (001-system.json),
-	// so the user message is at sequence 2 (002-user.json)
-	data, err = ioutil.ReadFile(filepath.Join(mountPoint, "conversation", convID, "messages", "002-user.json"))
+	// Read specific message via named directory
+	// Note: The first message is typically a system message (001-system/),
+	// so the user message is at sequence 2 (002-user/)
+	userMsgDir := filepath.Join(mountPoint, "conversation", convID, "messages", "002-user")
+	info, err := os.Stat(userMsgDir)
 	if err != nil {
-		t.Fatalf("Failed to read 002-user.json: %v", err)
+		t.Fatalf("Failed to stat 002-user: %v", err)
 	}
-	if err := json.Unmarshal(data, &msgs); err != nil || len(msgs) != 1 {
-		t.Errorf("Expected 1 message in 002-user.json")
+	if !info.IsDir() {
+		t.Errorf("Expected 002-user to be a directory")
 	}
 
-	// Read last/2
-	data, err = ioutil.ReadFile(filepath.Join(mountPoint, "conversation", convID, "messages", "last", "2.json"))
+	// Verify the message directory contents
+	data, err = ioutil.ReadFile(filepath.Join(userMsgDir, "type"))
 	if err != nil {
-		t.Fatalf("Failed to read last/2.json: %v", err)
+		t.Fatalf("Failed to read 002-user/type: %v", err)
 	}
-	if err := json.Unmarshal(data, &msgs); err != nil || len(msgs) != 2 {
-		t.Errorf("Expected 2 messages in last/2.json, got %d", len(msgs))
+	if strings.TrimSpace(string(data)) != "user" {
+		t.Errorf("Expected type=user, got %q", string(data))
 	}
 
-	// Read since/user/1
-	data, err = ioutil.ReadFile(filepath.Join(mountPoint, "conversation", convID, "messages", "since", "user", "1.json"))
+	// Verify content.md exists
+	data, err = ioutil.ReadFile(filepath.Join(userMsgDir, "content.md"))
 	if err != nil {
-		t.Fatalf("Failed to read since/user/1.json: %v", err)
+		t.Fatalf("Failed to read 002-user/content.md: %v", err)
 	}
-	if err := json.Unmarshal(data, &msgs); err != nil || len(msgs) == 0 {
-		t.Error("Expected messages in since/user/1.json")
+	if !strings.Contains(string(data), "##") {
+		t.Error("Expected markdown headers in content.md")
+	}
+
+	// Read last/2 - now a directory with symlinks to message directories
+	last2Dir := filepath.Join(mountPoint, "conversation", convID, "messages", "last", "2")
+	last2Entries, err := ioutil.ReadDir(last2Dir)
+	if err != nil {
+		t.Fatalf("Failed to read last/2: %v", err)
+	}
+	if len(last2Entries) != 2 {
+		t.Errorf("Expected 2 entries in last/2, got %d", len(last2Entries))
+	}
+	// Verify the entries are symlinks to message directories
+	for _, e := range last2Entries {
+		if e.Mode()&os.ModeSymlink == 0 {
+			t.Errorf("Expected symlink in last/2, got %s with mode %v", e.Name(), e.Mode())
+		}
+		// Verify we can read through the symlink
+		data, err = ioutil.ReadFile(filepath.Join(last2Dir, e.Name(), "type"))
+		if err != nil {
+			t.Errorf("Failed to read type through symlink: %v", err)
+		}
+	}
+
+	// Read since/user/1 - now a directory with symlinks
+	// Since the user's message is the last one in this conversation, we expect an empty directory
+	since1Dir := filepath.Join(mountPoint, "conversation", convID, "messages", "since", "user", "1")
+	since1Entries, err := ioutil.ReadDir(since1Dir)
+	if err != nil {
+		t.Fatalf("Failed to read since/user/1: %v", err)
+	}
+	// With the corrected behavior, since/user/1 excludes the reference message
+	// Since the last user message is the final message, result should be empty
+	if len(since1Entries) != 0 {
+		t.Errorf("Expected 0 entries in since/user/1 (last user msg is final), got %d", len(since1Entries))
 	}
 
 
@@ -405,7 +431,7 @@ func TestConversationDirectoryStructure(t *testing.T) {
 
 	expectedFiles := map[string]bool{
 		"ctl": false, "new": false, "id": false, "slug": false,
-		"fuse_id": false, "created": false, "created_at": false,
+		"fuse_id": false, "created": false,
 	}
 	expectedDirs := map[string]bool{"messages": false}
 
@@ -442,14 +468,16 @@ func TestConversationDirectoryStructure(t *testing.T) {
 		t.Errorf("id mismatch")
 	}
 
-	data, _ = ioutil.ReadFile(filepath.Join(convDir, "created"))
-	if strings.TrimSpace(string(data)) != "true" {
-		t.Errorf("created should be true")
-	}
-
-	data, _ = ioutil.ReadFile(filepath.Join(convDir, "created_at"))
-	if _, err := time.Parse(time.RFC3339, strings.TrimSpace(string(data))); err != nil {
-		t.Errorf("created_at not RFC3339: %v", err)
+	// "created" file should exist (presence/absence semantics) with proper mtime
+	createdPath := filepath.Join(convDir, "created")
+	createdInfo, err := os.Stat(createdPath)
+	if err != nil {
+		t.Errorf("created file should exist: %v", err)
+	} else {
+		// Verify mtime is reasonable (within last hour)
+		if time.Since(createdInfo.ModTime()) > time.Hour {
+			t.Errorf("created mtime should be recent, got %v", createdInfo.ModTime())
+		}
 	}
 
 	data, _ = ioutil.ReadFile(filepath.Join(convDir, "messages", "count"))
@@ -632,13 +660,14 @@ func TestSymlinkAccess(t *testing.T) {
 		}
 	}
 
-	// Nested path through symlink
-	data, err = ioutil.ReadFile(filepath.Join(mountPoint, "conversation", serverID, "messages", "last", "2.json"))
+	// Nested path through symlink - last/2 is now a directory
+	last2Dir := filepath.Join(mountPoint, "conversation", serverID, "messages", "last", "2")
+	last2Entries, err := ioutil.ReadDir(last2Dir)
 	if err != nil {
-		t.Fatalf("Failed to read last/2.json through symlink: %v", err)
+		t.Fatalf("Failed to read last/2 through symlink: %v", err)
 	}
-	if err := json.Unmarshal(data, &msgs); err != nil || len(msgs) != 2 {
-		t.Errorf("Expected 2 messages")
+	if len(last2Entries) != 2 {
+		t.Errorf("Expected 2 entries in last/2, got %d", len(last2Entries))
 	}
 
 	// Both paths return same content
@@ -729,10 +758,10 @@ func TestUncreatedConversationStatus(t *testing.T) {
 		t.Errorf("fuse_id mismatch")
 	}
 
-	// created is false
-	data, _ = ioutil.ReadFile(filepath.Join(mountPoint, "conversation", uncreatedID, "created"))
-	if strings.TrimSpace(string(data)) != "false" {
-		t.Errorf("created should be false")
+	// created file should NOT exist (presence/absence semantics)
+	createdPath := filepath.Join(mountPoint, "conversation", uncreatedID, "created")
+	if _, err := os.Stat(createdPath); !os.IsNotExist(err) {
+		t.Errorf("'created' should not exist for uncreated conversation, got: %v", err)
 	}
 
 	// id returns ENOENT
@@ -1094,4 +1123,178 @@ func TestShellRedirectToNew(t *testing.T) {
 	if !strings.Contains(content, "Shell redirect test") {
 		t.Errorf("Expected shell redirect message, got: %q", content)
 	}
+}
+
+// TestArchivedFile tests the archived file presence/absence semantics.
+// Creating the file archives the conversation, removing it unarchives.
+func TestArchivedFile(t *testing.T) {
+	skipIfNoFusermount(t)
+	skipIfNoShelley(t)
+
+	serverURL := startShelleyServer(t)
+	mountPoint := mountTestFS(t, serverURL)
+	localID, _ := createConversation(t, mountPoint, "Test archiving")
+
+	archivedPath := filepath.Join(mountPoint, "conversation", localID, "archived")
+
+	// Initially, archived should NOT exist
+	_, err := os.Stat(archivedPath)
+	if !os.IsNotExist(err) {
+		t.Errorf("Expected archived to not exist initially, got err: %v", err)
+	}
+
+	// Touch (create) the archived file to archive the conversation
+	f, err := os.Create(archivedPath)
+	if err != nil {
+		t.Fatalf("Failed to create archived file: %v", err)
+	}
+	f.Close()
+
+	// Now archived should exist
+	_, err = os.Stat(archivedPath)
+	if err != nil {
+		t.Errorf("Expected archived to exist after creation, got err: %v", err)
+	}
+
+	// Archived should appear in directory listing
+	entries, err := ioutil.ReadDir(filepath.Join(mountPoint, "conversation", localID))
+	if err != nil {
+		t.Fatalf("Failed to read conversation directory: %v", err)
+	}
+	var foundArchived bool
+	for _, e := range entries {
+		if e.Name() == "archived" {
+			foundArchived = true
+		}
+	}
+	if !foundArchived {
+		t.Error("Expected 'archived' in directory listing after archiving")
+	}
+
+	// Remove the archived file to unarchive
+	err = os.Remove(archivedPath)
+	if err != nil {
+		t.Fatalf("Failed to remove archived file: %v", err)
+	}
+
+	// After removal, archived should NOT exist
+	_, err = os.Stat(archivedPath)
+	if !os.IsNotExist(err) {
+		t.Errorf("Expected archived to not exist after removal, got err: %v", err)
+	}
+}
+
+// TestArchivedFileOnlyAllowsArchived verifies that only 'archived' can be created/removed.
+func TestArchivedFileOnlyAllowsArchived(t *testing.T) {
+	skipIfNoFusermount(t)
+	skipIfNoShelley(t)
+
+	serverURL := startShelleyServer(t)
+	mountPoint := mountTestFS(t, serverURL)
+	localID, _ := createConversation(t, mountPoint, "Test archiving restrictions")
+
+	// Try to create a random file - should fail
+	randomPath := filepath.Join(mountPoint, "conversation", localID, "randomfile")
+	_, err := os.Create(randomPath)
+	if err == nil {
+		t.Error("Expected error creating random file in conversation directory")
+	}
+}
+
+// TestArchivedFileRemoveWhenNotArchived verifies removing archived when not archived returns error.
+func TestArchivedFileRemoveWhenNotArchived(t *testing.T) {
+	skipIfNoFusermount(t)
+	skipIfNoShelley(t)
+
+	serverURL := startShelleyServer(t)
+	mountPoint := mountTestFS(t, serverURL)
+	localID, _ := createConversation(t, mountPoint, "Test remove when not archived")
+
+	archivedPath := filepath.Join(mountPoint, "conversation", localID, "archived")
+
+	// Try to remove archived when not archived - should fail with ENOENT
+	err := os.Remove(archivedPath)
+	if err == nil {
+		t.Error("Expected error removing archived file when not archived")
+	}
+	if !os.IsNotExist(err) {
+		t.Errorf("Expected ENOENT error, got: %v", err)
+	}
+}
+
+// TestArchivedFileTouchSetattr verifies that touch (setting times) on archived file succeeds.
+func TestArchivedFileTouchSetattr(t *testing.T) {
+	skipIfNoFusermount(t)
+	skipIfNoShelley(t)
+
+	serverURL := startShelleyServer(t)
+	mountPoint := mountTestFS(t, serverURL)
+	localID, _ := createConversation(t, mountPoint, "Test touch archived")
+
+	archivedPath := filepath.Join(mountPoint, "conversation", localID, "archived")
+
+	// First archive the conversation by creating the file
+	f, err := os.Create(archivedPath)
+	if err != nil {
+		t.Fatalf("Failed to create archived file: %v", err)
+	}
+	f.Close()
+
+	// Verify it exists
+	_, err = os.Stat(archivedPath)
+	if err != nil {
+		t.Fatalf("Expected archived to exist after creation, got err: %v", err)
+	}
+
+	// Now touch (set times) should succeed - this was previously failing with ENOTSUP
+	newTime := time.Now()
+	err = os.Chtimes(archivedPath, newTime, newTime)
+	if err != nil {
+		t.Errorf("Touch (Chtimes) on archived file should succeed, got error: %v", err)
+	}
+}
+
+// TestArchivedFileTimestamp verifies that the archived file uses UpdatedAt as its timestamp.
+func TestArchivedFileTimestamp(t *testing.T) {
+	skipIfNoFusermount(t)
+	skipIfNoShelley(t)
+
+	serverURL := startShelleyServer(t)
+	mountPoint := mountTestFS(t, serverURL)
+	localID, _ := createConversation(t, mountPoint, "Test archived timestamp")
+
+	archivedPath := filepath.Join(mountPoint, "conversation", localID, "archived")
+
+	// Archive the conversation by creating the file
+	f, err := os.Create(archivedPath)
+	if err != nil {
+		t.Fatalf("Failed to create archived file: %v", err)
+	}
+	f.Close()
+
+	// Get the file info to check the timestamp
+	info, err := os.Stat(archivedPath)
+	if err != nil {
+		t.Fatalf("Failed to stat archived file: %v", err)
+	}
+
+	// The ModTime should be non-zero and reasonably recent (within last hour)
+	// This verifies that the timestamp is being set from conversation.UpdatedAt
+	modTime := info.ModTime()
+	if modTime.IsZero() {
+		t.Error("Expected non-zero modification time on archived file")
+	}
+
+	now := time.Now()
+	if modTime.After(now) {
+		t.Errorf("ModTime %v is in the future (now: %v)", modTime, now)
+	}
+
+	// ModTime should be within last hour (reasonable for a just-created conversation)
+	oneHourAgo := now.Add(-1 * time.Hour)
+	if modTime.Before(oneHourAgo) {
+		t.Errorf("ModTime %v is too old (more than 1 hour ago, now: %v)", modTime, now)
+	}
+
+	t.Logf("Archived file timestamp: %v", modTime)
 }

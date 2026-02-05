@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -14,6 +15,8 @@ import (
 
 	"github.com/hanwen/go-fuse/v2/fs"
 	"github.com/hanwen/go-fuse/v2/fuse"
+	"shelley-fuse/jsonfs"
+	"shelley-fuse/metadata"
 	"shelley-fuse/shelley"
 	"shelley-fuse/state"
 )
@@ -238,11 +241,23 @@ echo "Thanks!" > conversation/$ID/new
         all.json         → full conversation as JSON
         all.md           → full conversation as Markdown
         count            → number of messages
-        001-user.json    → specific message (named by slug)
-        100-bash-tool.md → tool call (## tool call header)
-        101-bash-result.md → tool result (## tool result header)
-        last/{N}.md      → last N messages
-        since/{slug}/{N}.md → messages since Nth matching {slug}
+        001-user/        → message directory (named by slug)
+          message_id     → message UUID
+          conversation_id → conversation ID
+          sequence_id    → sequence number
+          type           → message type (user, agent, etc.)
+          created_at     → timestamp
+          content.md     → markdown rendering
+          llm_data/      → unpacked JSON (if present)
+          usage_data/    → unpacked JSON (if present)
+        last/{N}/        → directory with symlinks to last N messages
+          003-user       → symlink to ../../003-user
+          004-agent      → symlink to ../../004-agent
+          ...
+        since/{slug}/{N}/ → directory with symlinks to messages after Nth {slug}
+          005-agent      → symlink to ../../../005-agent
+          006-user       → symlink to ../../../006-user
+          ...
 
 ` + "```" + `
 
@@ -258,11 +273,17 @@ readlink models/default
 # List conversations
 ls conversation/
 
-# Read last 5 messages
-cat conversation/$ID/messages/last/5.md
+# List last 5 messages (symlinks to message directories)
+ls conversation/$ID/messages/last/5/
 
-# Read messages since your last message
-cat conversation/$ID/messages/since/user/1.md
+# Read content of all last 5 messages
+cat conversation/$ID/messages/last/5/*/content.md
+
+# List messages since your last message
+ls conversation/$ID/messages/since/user/1/
+
+# Read content of messages since your last message
+cat conversation/$ID/messages/since/user/1/*/content.md
 
 # Get message count
 cat conversation/$ID/messages/count
@@ -375,20 +396,24 @@ func (m *ModelNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut)
 	case "id":
 		return m.NewInode(ctx, &ModelFieldNode{value: m.model.ID, startTime: m.startTime}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
 	case "ready":
-		value := "false"
-		if m.model.Ready {
-			value = "true"
+		// Presence/absence semantics: file exists only when model is ready
+		if !m.model.Ready {
+			return nil, syscall.ENOENT
 		}
-		return m.NewInode(ctx, &ModelFieldNode{value: value, startTime: m.startTime}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
+		return m.NewInode(ctx, &ModelReadyNode{startTime: m.startTime}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
 	}
 	return nil, syscall.ENOENT
 }
 
 func (m *ModelNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
-	return fs.NewListDirStream([]fuse.DirEntry{
+	entries := []fuse.DirEntry{
 		{Name: "id", Mode: fuse.S_IFREG},
-		{Name: "ready", Mode: fuse.S_IFREG},
-	}), 0
+	}
+	// Presence/absence semantics: only include "ready" if model is ready
+	if m.model.Ready {
+		entries = append(entries, fuse.DirEntry{Name: "ready", Mode: fuse.S_IFREG})
+	}
+	return fs.NewListDirStream(entries), 0
 }
 
 func (m *ModelNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
@@ -420,6 +445,33 @@ func (m *ModelFieldNode) Read(ctx context.Context, f fs.FileHandle, dest []byte,
 
 func (m *ModelFieldNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
 	out.Mode = fuse.S_IFREG | 0444
+	setTimestamps(&out.Attr, m.startTime)
+	return 0
+}
+
+// --- ModelReadyNode: empty file indicating model is ready (presence/absence semantics) ---
+
+type ModelReadyNode struct {
+	fs.Inode
+	startTime time.Time
+}
+
+var _ = (fs.NodeOpener)((*ModelReadyNode)(nil))
+var _ = (fs.NodeReader)((*ModelReadyNode)(nil))
+var _ = (fs.NodeGetattrer)((*ModelReadyNode)(nil))
+
+func (m *ModelReadyNode) Open(ctx context.Context, flags uint32) (fs.FileHandle, uint32, syscall.Errno) {
+	return nil, fuse.FOPEN_DIRECT_IO, 0
+}
+
+func (m *ModelReadyNode) Read(ctx context.Context, f fs.FileHandle, dest []byte, off int64) (fuse.ReadResult, syscall.Errno) {
+	// Empty file - presence indicates ready
+	return fuse.ReadResultData(nil), 0
+}
+
+func (m *ModelReadyNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
+	out.Mode = fuse.S_IFREG | 0444
+	out.Size = 0
 	setTimestamps(&out.Attr, m.startTime)
 	return 0
 }
@@ -544,44 +596,88 @@ func (c *ConversationListNode) Lookup(ctx context.Context, name string, out *fus
 	// a server ID from another source (e.g., web UI, API, or old scripts)
 	// and wants to access it directly. The conversation will be adopted
 	// and assigned a local ID, then a symlink returned.
+	//
+	// We check both active and archived conversations to support accessing
+	// archived conversations by their server ID or slug.
 	serverConvs, err := c.fetchServerConversations()
 	if err == nil {
-		for _, conv := range serverConvs {
-			if conv.ConversationID == name {
-				// Adopt this server conversation locally
-				slug := ""
-				if conv.Slug != nil {
-					slug = *conv.Slug
-				}
-				localID, err := c.state.AdoptWithSlug(name, slug)
-				if err != nil {
-					return nil, syscall.EIO
-				}
-				// Return symlink to the local ID - use newly adopted conversation's time
-				localCS := c.state.Get(localID)
-				symlinkTime := c.startTime
-				if localCS != nil && !localCS.CreatedAt.IsZero() {
-					symlinkTime = localCS.CreatedAt
-				}
-				return c.NewInode(ctx, &SymlinkNode{target: localID, startTime: symlinkTime}, fs.StableAttr{Mode: syscall.S_IFLNK}), 0
-			}
-			// Also check by slug for not-yet-adopted conversations
-			if conv.Slug != nil && *conv.Slug == name {
-				localID, err := c.state.AdoptWithSlug(conv.ConversationID, *conv.Slug)
-				if err != nil {
-					return nil, syscall.EIO
-				}
-				localCS := c.state.Get(localID)
-				symlinkTime := c.startTime
-				if localCS != nil && !localCS.CreatedAt.IsZero() {
-					symlinkTime = localCS.CreatedAt
-				}
-				return c.NewInode(ctx, &SymlinkNode{target: localID, startTime: symlinkTime}, fs.StableAttr{Mode: syscall.S_IFLNK}), 0
-			}
+		if inode, errno := c.lookupInConversationList(ctx, name, serverConvs); errno == 0 {
+			return inode, 0
+		}
+	}
+
+	// Also check archived conversations
+	archivedConvs, err := c.fetchArchivedConversations()
+	if err == nil {
+		if inode, errno := c.lookupInConversationList(ctx, name, archivedConvs); errno == 0 {
+			return inode, 0
 		}
 	}
 
 	return nil, syscall.ENOENT
+}
+
+// lookupInConversationList searches for a conversation by ID or slug in the given list.
+// If found, it adopts the conversation locally and returns a symlink to the local ID.
+func (c *ConversationListNode) lookupInConversationList(ctx context.Context, name string, convs []shelley.Conversation) (*fs.Inode, syscall.Errno) {
+	for _, conv := range convs {
+		if conv.ConversationID == name {
+			// Adopt this server conversation locally with API metadata
+			slug := ""
+			if conv.Slug != nil {
+				slug = *conv.Slug
+			}
+			localID, err := c.state.AdoptWithMetadata(name, slug, conv.CreatedAt, conv.UpdatedAt)
+			if err != nil {
+				return nil, syscall.EIO
+			}
+			// Return symlink to the local ID - use API timestamp if available
+			symlinkTime := c.getConversationTimestamps(localID).Ctime
+			if symlinkTime.IsZero() {
+				symlinkTime = c.startTime
+			}
+			return c.NewInode(ctx, &SymlinkNode{target: localID, startTime: symlinkTime}, fs.StableAttr{Mode: syscall.S_IFLNK}), 0
+		}
+		// Also check by slug for not-yet-adopted conversations
+		if conv.Slug != nil && *conv.Slug == name {
+			localID, err := c.state.AdoptWithMetadata(conv.ConversationID, *conv.Slug, conv.CreatedAt, conv.UpdatedAt)
+			if err != nil {
+				return nil, syscall.EIO
+			}
+			symlinkTime := c.getConversationTimestamps(localID).Ctime
+			if symlinkTime.IsZero() {
+				symlinkTime = c.startTime
+			}
+			return c.NewInode(ctx, &SymlinkNode{target: localID, startTime: symlinkTime}, fs.StableAttr{Mode: syscall.S_IFLNK}), 0
+		}
+	}
+	return nil, syscall.ENOENT
+}
+
+// getConversationTimestamps returns timestamps for a conversation using the metadata mapping.
+// Falls back to local CreatedAt if API timestamps are not available.
+func (c *ConversationListNode) getConversationTimestamps(localID string) metadata.Timestamps {
+	cs := c.state.Get(localID)
+	if cs == nil {
+		return metadata.Timestamps{}
+	}
+	// Use API timestamps if available
+	if cs.APICreatedAt != "" || cs.APIUpdatedAt != "" {
+		fields := metadata.ConversationFields{
+			CreatedAt: cs.APICreatedAt,
+			UpdatedAt: cs.APIUpdatedAt,
+		}
+		return metadata.ConversationMapping.Apply(fields.ToMap())
+	}
+	// Fall back to local CreatedAt for all timestamps
+	if !cs.CreatedAt.IsZero() {
+		return metadata.Timestamps{
+			Ctime: cs.CreatedAt,
+			Mtime: cs.CreatedAt,
+			Atime: cs.CreatedAt,
+		}
+	}
+	return metadata.Timestamps{}
 }
 
 func (c *ConversationListNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
@@ -600,10 +696,10 @@ func (c *ConversationListNode) Readdir(ctx context.Context) (fs.DirStream, sysca
 			if conv.Slug != nil {
 				slug = *conv.Slug
 			}
-			// AdoptWithSlug handles the case where a conversation is not yet tracked locally
-			// Errors are non-fatal; worst case the conversation won't appear
-			// in this listing but will be adopted on next Lookup
-			_, _ = c.state.AdoptWithSlug(conv.ConversationID, slug)
+			// AdoptWithMetadata handles the case where a conversation is not yet tracked locally
+			// and also updates API timestamps. Errors are non-fatal; worst case the conversation
+			// won't appear in this listing but will be adopted on next Lookup
+			_, _ = c.state.AdoptWithMetadata(conv.ConversationID, slug, conv.CreatedAt, conv.UpdatedAt)
 		}
 	}
 	// Note: if fetchServerConversations fails, we still return local entries
@@ -700,6 +796,20 @@ func (c *ConversationListNode) fetchServerConversations() ([]shelley.Conversatio
 	return convs, nil
 }
 
+// fetchArchivedConversations retrieves the list of archived conversations from the Shelley server.
+func (c *ConversationListNode) fetchArchivedConversations() ([]shelley.Conversation, error) {
+	data, err := c.client.ListArchivedConversations()
+	if err != nil {
+		return nil, err
+	}
+
+	var convs []shelley.Conversation
+	if err := json.Unmarshal(data, &convs); err != nil {
+		return nil, err
+	}
+	return convs, nil
+}
+
 func (c *ConversationListNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
 	out.Mode = fuse.S_IFDIR | 0755
 	setTimestamps(&out.Attr, c.startTime)
@@ -720,13 +830,43 @@ type ConversationNode struct {
 var _ = (fs.NodeLookuper)((*ConversationNode)(nil))
 var _ = (fs.NodeReaddirer)((*ConversationNode)(nil))
 var _ = (fs.NodeGetattrer)((*ConversationNode)(nil))
+var _ = (fs.NodeCreater)((*ConversationNode)(nil))
+var _ = (fs.NodeUnlinker)((*ConversationNode)(nil))
 
 // getConversationTime returns the appropriate timestamp for this conversation.
 // Uses conversation CreatedAt if available, otherwise falls back to FS start time.
-func (c *ConversationNode) getConversationTime() time.Time {
+// getConversationTimestamps returns timestamps for this conversation using the metadata mapping.
+// This provides separate ctime and mtime values based on API metadata (created_at, updated_at).
+func (c *ConversationNode) getConversationTimestamps() metadata.Timestamps {
 	cs := c.state.Get(c.localID)
-	if cs != nil && !cs.CreatedAt.IsZero() {
-		return cs.CreatedAt
+	if cs == nil {
+		return metadata.Timestamps{}
+	}
+	// Use API timestamps if available
+	if cs.APICreatedAt != "" || cs.APIUpdatedAt != "" {
+		fields := metadata.ConversationFields{
+			CreatedAt: cs.APICreatedAt,
+			UpdatedAt: cs.APIUpdatedAt,
+		}
+		return metadata.ConversationMapping.Apply(fields.ToMap())
+	}
+	// Fall back to local CreatedAt for all timestamps
+	if !cs.CreatedAt.IsZero() {
+		return metadata.Timestamps{
+			Ctime: cs.CreatedAt,
+			Mtime: cs.CreatedAt,
+			Atime: cs.CreatedAt,
+		}
+	}
+	return metadata.Timestamps{}
+}
+
+// getConversationTime returns a single timestamp for backwards compatibility.
+// Prefers ctime from API metadata, falls back to local CreatedAt, then startTime.
+func (c *ConversationNode) getConversationTime() time.Time {
+	ts := c.getConversationTimestamps()
+	if !ts.Ctime.IsZero() {
+		return ts.Ctime
 	}
 	return c.startTime
 }
@@ -746,9 +886,12 @@ func (c *ConversationNode) Lookup(ctx context.Context, name string, out *fuse.En
 	case "fuse_id":
 		return c.NewInode(ctx, &ConvStatusFieldNode{localID: c.localID, client: c.client, state: c.state, field: "fuse_id", startTime: c.startTime}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
 	case "created":
-		return c.NewInode(ctx, &ConvStatusFieldNode{localID: c.localID, client: c.client, state: c.state, field: "created", startTime: c.startTime}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
-	case "created_at":
-		return c.NewInode(ctx, &ConvStatusFieldNode{localID: c.localID, client: c.client, state: c.state, field: "created_at", startTime: c.startTime}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
+		// Presence/absence semantics: file exists only when conversation is created on backend
+		cs := c.state.Get(c.localID)
+		if cs == nil || !cs.Created {
+			return nil, syscall.ENOENT
+		}
+		return c.NewInode(ctx, &ConvCreatedNode{localID: c.localID, state: c.state, startTime: c.startTime}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
 	case "model":
 		cs := c.state.Get(c.localID)
 		if cs == nil || cs.Model == "" {
@@ -766,6 +909,29 @@ func (c *ConversationNode) Lookup(ctx context.Context, name string, out *fuse.En
 			state:     c.state,
 			startTime: c.startTime,
 		}, fs.StableAttr{Mode: syscall.S_IFLNK}), 0
+	case "meta":
+		return c.NewInode(ctx, &ConvMetaDirNode{
+			localID:   c.localID,
+			client:    c.client,
+			state:     c.state,
+			startTime: c.startTime,
+		}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
+	case "archived":
+		// Only return the file if the conversation is archived
+		cs := c.state.Get(c.localID)
+		if cs == nil || !cs.Created || cs.ShelleyConversationID == "" {
+			return nil, syscall.ENOENT
+		}
+		archived, err := c.client.IsConversationArchived(cs.ShelleyConversationID)
+		if err != nil || !archived {
+			return nil, syscall.ENOENT
+		}
+		return c.NewInode(ctx, &ArchivedNode{
+			localID:   c.localID,
+			client:    c.client,
+			state:     c.state,
+			startTime: c.startTime,
+		}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
 	}
 
 	return nil, syscall.ENOENT
@@ -776,15 +942,19 @@ func (c *ConversationNode) Readdir(ctx context.Context) (fs.DirStream, syscall.E
 		{Name: "ctl", Mode: fuse.S_IFREG},
 		{Name: "new", Mode: fuse.S_IFREG},
 		{Name: "messages", Mode: fuse.S_IFDIR},
+		{Name: "meta", Mode: fuse.S_IFDIR},
 		{Name: "id", Mode: fuse.S_IFREG},
 		{Name: "slug", Mode: fuse.S_IFREG},
 		{Name: "fuse_id", Mode: fuse.S_IFREG},
-		{Name: "created", Mode: fuse.S_IFREG},
-		{Name: "created_at", Mode: fuse.S_IFREG},
+	}
+
+	cs := c.state.Get(c.localID)
+	// Presence/absence semantics: only include "created" if conversation is created on backend
+	if cs != nil && cs.Created {
+		entries = append(entries, fuse.DirEntry{Name: "created", Mode: fuse.S_IFREG})
 	}
 
 	// Include model and cwd symlinks only if set
-	cs := c.state.Get(c.localID)
 	if cs != nil && cs.Model != "" {
 		entries = append(entries, fuse.DirEntry{Name: "model", Mode: syscall.S_IFLNK})
 	}
@@ -792,12 +962,78 @@ func (c *ConversationNode) Readdir(ctx context.Context) (fs.DirStream, syscall.E
 		entries = append(entries, fuse.DirEntry{Name: "cwd", Mode: syscall.S_IFLNK})
 	}
 
+	// Include archived file only if the conversation is archived
+	if cs != nil && cs.Created && cs.ShelleyConversationID != "" {
+		archived, err := c.client.IsConversationArchived(cs.ShelleyConversationID)
+		if err == nil && archived {
+			entries = append(entries, fuse.DirEntry{Name: "archived", Mode: fuse.S_IFREG})
+		}
+	}
+
 	return fs.NewListDirStream(entries), 0
 }
 
 func (c *ConversationNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
 	out.Mode = fuse.S_IFDIR | 0755
-	setTimestamps(&out.Attr, c.getConversationTime())
+	c.getConversationTimestamps().ApplyWithFallback(&out.Attr, c.startTime)
+	return 0
+}
+
+// Create handles creating files in the conversation directory.
+// Only "archived" can be created, which archives the conversation.
+func (c *ConversationNode) Create(ctx context.Context, name string, flags uint32, mode uint32, out *fuse.EntryOut) (*fs.Inode, fs.FileHandle, uint32, syscall.Errno) {
+	if name != "archived" {
+		return nil, nil, 0, syscall.EPERM
+	}
+
+	cs := c.state.Get(c.localID)
+	if cs == nil || !cs.Created || cs.ShelleyConversationID == "" {
+		// Can't archive a conversation that doesn't exist on the backend
+		return nil, nil, 0, syscall.ENOENT
+	}
+
+	// Archive the conversation
+	if err := c.client.ArchiveConversation(cs.ShelleyConversationID); err != nil {
+		return nil, nil, 0, syscall.EIO
+	}
+
+	// Return the archived file node
+	inode := c.NewInode(ctx, &ArchivedNode{
+		localID:   c.localID,
+		client:    c.client,
+		state:     c.state,
+		startTime: c.startTime,
+	}, fs.StableAttr{Mode: fuse.S_IFREG})
+
+	return inode, nil, fuse.FOPEN_DIRECT_IO, 0
+}
+
+// Unlink handles removing files from the conversation directory.
+// Only "archived" can be removed, which unarchives the conversation.
+func (c *ConversationNode) Unlink(ctx context.Context, name string) syscall.Errno {
+	if name != "archived" {
+		return syscall.EPERM
+	}
+
+	cs := c.state.Get(c.localID)
+	if cs == nil || !cs.Created || cs.ShelleyConversationID == "" {
+		return syscall.ENOENT
+	}
+
+	// Check if the conversation is actually archived
+	archived, err := c.client.IsConversationArchived(cs.ShelleyConversationID)
+	if err != nil {
+		return syscall.EIO
+	}
+	if !archived {
+		return syscall.ENOENT
+	}
+
+	// Unarchive the conversation
+	if err := c.client.UnarchiveConversation(cs.ShelleyConversationID); err != nil {
+		return syscall.EIO
+	}
+
 	return 0
 }
 
@@ -816,10 +1052,35 @@ var _ = (fs.NodeLookuper)((*MessagesDirNode)(nil))
 var _ = (fs.NodeReaddirer)((*MessagesDirNode)(nil))
 var _ = (fs.NodeGetattrer)((*MessagesDirNode)(nil))
 
-func (m *MessagesDirNode) getConversationTime() time.Time {
+// getConversationTimestamps returns timestamps for the conversation using the metadata mapping.
+func (m *MessagesDirNode) getConversationTimestamps() metadata.Timestamps {
 	cs := m.state.Get(m.localID)
-	if cs != nil && !cs.CreatedAt.IsZero() {
-		return cs.CreatedAt
+	if cs == nil {
+		return metadata.Timestamps{}
+	}
+	// Use API timestamps if available
+	if cs.APICreatedAt != "" || cs.APIUpdatedAt != "" {
+		fields := metadata.ConversationFields{
+			CreatedAt: cs.APICreatedAt,
+			UpdatedAt: cs.APIUpdatedAt,
+		}
+		return metadata.ConversationMapping.Apply(fields.ToMap())
+	}
+	// Fall back to local CreatedAt for all timestamps
+	if !cs.CreatedAt.IsZero() {
+		return metadata.Timestamps{
+			Ctime: cs.CreatedAt,
+			Mtime: cs.CreatedAt,
+			Atime: cs.CreatedAt,
+		}
+	}
+	return metadata.Timestamps{}
+}
+
+func (m *MessagesDirNode) getConversationTime() time.Time {
+	ts := m.getConversationTimestamps()
+	if !ts.Ctime.IsZero() {
+		return ts.Ctime
 	}
 	return m.startTime
 }
@@ -846,10 +1107,10 @@ func (m *MessagesDirNode) Lookup(ctx context.Context, name string, out *fuse.Ent
 		}
 	}
 
-	// Named message files: {NNN}-{slug}.json, {NNN}-{slug}.md
-	// We need to verify the filename matches the expected slug for that message
-	if seqNum, fmt, ok := parseNamedMessageFile(name); ok {
-		// Fetch conversation and verify the filename matches the computed slug
+	// Named message directories: {NNN}-{slug}/
+	// We need to verify the directory name matches the expected slug for that message
+	if seqNum, ok := parseMessageDirName(name); ok {
+		// Fetch conversation and verify the name matches the computed slug
 		cs := m.state.Get(m.localID)
 		if cs == nil || !cs.Created || cs.ShelleyConversationID == "" {
 			return nil, syscall.ENOENT
@@ -874,19 +1135,18 @@ func (m *MessagesDirNode) Lookup(ctx context.Context, name string, out *fuse.Ent
 
 		// Compute expected slug using the cached toolMap
 		expectedSlug := shelley.MessageSlug(msg, toolMap)
-		expectedBase := messageFileBase(seqNum, expectedSlug)
+		expectedName := messageFileBase(seqNum, expectedSlug)
 
-		// Verify the filename matches the expected slug
-		base := strings.TrimSuffix(strings.TrimSuffix(name, ".json"), ".md")
-		if base != expectedBase {
+		// Verify the directory name matches the expected slug
+		if name != expectedName {
 			return nil, syscall.ENOENT
 		}
 
-		return m.NewInode(ctx, &ConvContentNode{
-			localID: m.localID, client: m.client, state: m.state,
-			query: contentQuery{kind: queryBySeq, seqNum: seqNum, format: fmt}, startTime: m.startTime,
-			messageTime: shelley.ParseMessageTime(msg),
-		}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
+		return m.NewInode(ctx, &MessageDirNode{
+			message:   *msg,
+			toolMap:   toolMap,
+			startTime: m.startTime,
+		}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
 	}
 
 	return nil, syscall.ENOENT
@@ -901,7 +1161,7 @@ func (m *MessagesDirNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Er
 		{Name: "since", Mode: fuse.S_IFDIR},
 	}
 
-	// List individual messages with named files (001-user.json, 100-bash-tool.md, ...)
+	// List individual messages as directories (001-user/, 002-agent/, ...)
 	cs := m.state.Get(m.localID)
 	if cs != nil && cs.Created && cs.ShelleyConversationID != "" {
 		convData, err := m.client.GetConversation(cs.ShelleyConversationID)
@@ -912,8 +1172,7 @@ func (m *MessagesDirNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Er
 				for i := range msgs {
 					slug := shelley.MessageSlug(&msgs[i], toolMap)
 					base := messageFileBase(msgs[i].SequenceID, slug)
-					entries = append(entries, fuse.DirEntry{Name: base + ".json", Mode: fuse.S_IFREG})
-					entries = append(entries, fuse.DirEntry{Name: base + ".md", Mode: fuse.S_IFREG})
+					entries = append(entries, fuse.DirEntry{Name: base, Mode: fuse.S_IFDIR})
 				}
 			}
 		}
@@ -924,7 +1183,156 @@ func (m *MessagesDirNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Er
 
 func (m *MessagesDirNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
 	out.Mode = fuse.S_IFDIR | 0755
-	setTimestamps(&out.Attr, m.getConversationTime())
+	m.getConversationTimestamps().ApplyWithFallback(&out.Attr, m.startTime)
+	return 0
+}
+
+// --- MessageDirNode: /conversation/{id}/messages/{NNN}-{slug}/ directory ---
+// Represents a single message as a directory with field files.
+
+type MessageDirNode struct {
+	fs.Inode
+	message   shelley.Message
+	toolMap   map[string]string // for computing markdown content
+	startTime time.Time
+}
+
+var _ = (fs.NodeLookuper)((*MessageDirNode)(nil))
+var _ = (fs.NodeReaddirer)((*MessageDirNode)(nil))
+var _ = (fs.NodeGetattrer)((*MessageDirNode)(nil))
+
+// messageTimestamps returns timestamps for this message using the metadata mapping.
+func (m *MessageDirNode) messageTimestamps() metadata.Timestamps {
+	fields := metadata.MessageFields{
+		CreatedAt: m.message.CreatedAt,
+	}
+	return metadata.MessageMapping.Apply(fields.ToMap())
+}
+
+// messageTime returns a single timestamp for backwards compatibility.
+func (m *MessageDirNode) messageTime() time.Time {
+	ts := m.messageTimestamps()
+	if !ts.Ctime.IsZero() {
+		return ts.Ctime
+	}
+	return m.startTime
+}
+
+func (m *MessageDirNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
+	t := m.messageTime()
+	switch name {
+	case "message_id":
+		return m.NewInode(ctx, &MessageFieldNode{value: m.message.MessageID, startTime: t}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
+	case "conversation_id":
+		return m.NewInode(ctx, &MessageFieldNode{value: m.message.ConversationID, startTime: t}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
+	case "sequence_id":
+		return m.NewInode(ctx, &MessageFieldNode{value: strconv.Itoa(m.message.SequenceID), startTime: t}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
+	case "type":
+		return m.NewInode(ctx, &MessageFieldNode{value: m.message.Type, startTime: t}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
+	case "created_at":
+		return m.NewInode(ctx, &MessageFieldNode{value: m.message.CreatedAt, startTime: t}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
+	case "llm_data":
+		if m.message.LLMData == nil || *m.message.LLMData == "" {
+			return nil, syscall.ENOENT
+		}
+		config := &jsonfs.Config{StartTime: t}
+		node, err := jsonfs.NewNodeFromJSON([]byte(*m.message.LLMData), config)
+		if err != nil {
+			// If JSON parsing fails, return as a file
+			return m.NewInode(ctx, &MessageFieldNode{value: *m.message.LLMData, startTime: t}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
+		}
+		return m.NewInode(ctx, node, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
+	case "usage_data":
+		if m.message.UsageData == nil || *m.message.UsageData == "" {
+			return nil, syscall.ENOENT
+		}
+		config := &jsonfs.Config{StartTime: t}
+		node, err := jsonfs.NewNodeFromJSON([]byte(*m.message.UsageData), config)
+		if err != nil {
+			// If JSON parsing fails, return as a file
+			return m.NewInode(ctx, &MessageFieldNode{value: *m.message.UsageData, startTime: t}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
+		}
+		return m.NewInode(ctx, node, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
+	case "content.md":
+		// Generate markdown rendering of this single message
+		content := shelley.FormatMarkdown([]shelley.Message{m.message})
+		return m.NewInode(ctx, &MessageFieldNode{value: string(content), startTime: t, noNewline: true}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
+	}
+	return nil, syscall.ENOENT
+}
+
+func (m *MessageDirNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
+	entries := []fuse.DirEntry{
+		{Name: "message_id", Mode: fuse.S_IFREG},
+		{Name: "conversation_id", Mode: fuse.S_IFREG},
+		{Name: "sequence_id", Mode: fuse.S_IFREG},
+		{Name: "type", Mode: fuse.S_IFREG},
+		{Name: "created_at", Mode: fuse.S_IFREG},
+		{Name: "content.md", Mode: fuse.S_IFREG},
+	}
+	// Only include llm_data if present
+	if m.message.LLMData != nil && *m.message.LLMData != "" {
+		// Check if it's valid JSON object/array
+		trimmed := strings.TrimSpace(*m.message.LLMData)
+		if (strings.HasPrefix(trimmed, "{") && strings.HasSuffix(trimmed, "}")) ||
+			(strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]")) {
+			entries = append(entries, fuse.DirEntry{Name: "llm_data", Mode: fuse.S_IFDIR})
+		} else {
+			entries = append(entries, fuse.DirEntry{Name: "llm_data", Mode: fuse.S_IFREG})
+		}
+	}
+	// Only include usage_data if present
+	if m.message.UsageData != nil && *m.message.UsageData != "" {
+		trimmed := strings.TrimSpace(*m.message.UsageData)
+		if (strings.HasPrefix(trimmed, "{") && strings.HasSuffix(trimmed, "}")) ||
+			(strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]")) {
+			entries = append(entries, fuse.DirEntry{Name: "usage_data", Mode: fuse.S_IFDIR})
+		} else {
+			entries = append(entries, fuse.DirEntry{Name: "usage_data", Mode: fuse.S_IFREG})
+		}
+	}
+	return fs.NewListDirStream(entries), 0
+}
+
+func (m *MessageDirNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
+	out.Mode = fuse.S_IFDIR | 0755
+	m.messageTimestamps().ApplyWithFallback(&out.Attr, m.startTime)
+	return 0
+}
+
+// --- MessageFieldNode: read-only file for message field values ---
+
+type MessageFieldNode struct {
+	fs.Inode
+	value     string
+	startTime time.Time
+	noNewline bool // if true, don't add trailing newline
+}
+
+var _ = (fs.NodeOpener)((*MessageFieldNode)(nil))
+var _ = (fs.NodeReader)((*MessageFieldNode)(nil))
+var _ = (fs.NodeGetattrer)((*MessageFieldNode)(nil))
+
+func (m *MessageFieldNode) Open(ctx context.Context, flags uint32) (fs.FileHandle, uint32, syscall.Errno) {
+	return nil, fuse.FOPEN_DIRECT_IO, 0
+}
+
+func (m *MessageFieldNode) Read(ctx context.Context, f fs.FileHandle, dest []byte, off int64) (fuse.ReadResult, syscall.Errno) {
+	data := []byte(m.value)
+	if !m.noNewline {
+		data = append(data, '\n')
+	}
+	return fuse.ReadResultData(readAt(data, dest, off)), 0
+}
+
+func (m *MessageFieldNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
+	out.Mode = fuse.S_IFREG | 0444
+	size := len(m.value)
+	if !m.noNewline {
+		size++
+	}
+	out.Size = uint64(size)
+	setTimestamps(&out.Attr, m.startTime)
 	return 0
 }
 
@@ -1196,16 +1604,6 @@ func (f *ConvStatusFieldNode) Read(ctx context.Context, fh fs.FileHandle, dest [
 	switch f.field {
 	case "fuse_id":
 		value = cs.LocalID
-	case "created":
-		if cs.Created {
-			value = "true"
-		} else {
-			value = "false"
-		}
-	case "created_at":
-		if !cs.CreatedAt.IsZero() {
-			value = cs.CreatedAt.Format(time.RFC3339)
-		}
 	default:
 		return nil, syscall.ENOENT
 	}
@@ -1216,6 +1614,41 @@ func (f *ConvStatusFieldNode) Read(ctx context.Context, fh fs.FileHandle, dest [
 
 func (f *ConvStatusFieldNode) Getattr(ctx context.Context, fh fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
 	out.Mode = fuse.S_IFREG | 0444
+	cs := f.state.Get(f.localID)
+	if cs != nil && !cs.CreatedAt.IsZero() {
+		setTimestamps(&out.Attr, cs.CreatedAt)
+	} else {
+		setTimestamps(&out.Attr, f.startTime)
+	}
+	return 0
+}
+
+// --- ConvCreatedNode: empty file indicating conversation is created (presence/absence semantics) ---
+// The file's mtime is set to the conversation creation time.
+
+type ConvCreatedNode struct {
+	fs.Inode
+	localID   string
+	state     *state.Store
+	startTime time.Time
+}
+
+var _ = (fs.NodeOpener)((*ConvCreatedNode)(nil))
+var _ = (fs.NodeReader)((*ConvCreatedNode)(nil))
+var _ = (fs.NodeGetattrer)((*ConvCreatedNode)(nil))
+
+func (f *ConvCreatedNode) Open(ctx context.Context, flags uint32) (fs.FileHandle, uint32, syscall.Errno) {
+	return nil, fuse.FOPEN_DIRECT_IO, 0
+}
+
+func (f *ConvCreatedNode) Read(ctx context.Context, fh fs.FileHandle, dest []byte, off int64) (fuse.ReadResult, syscall.Errno) {
+	// Empty file - presence indicates created
+	return fuse.ReadResultData(nil), 0
+}
+
+func (f *ConvCreatedNode) Getattr(ctx context.Context, fh fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
+	out.Mode = fuse.S_IFREG | 0444
+	out.Size = 0
 	cs := f.state.Get(f.localID)
 	if cs != nil && !cs.CreatedAt.IsZero() {
 		setTimestamps(&out.Attr, cs.CreatedAt)
@@ -1478,22 +1911,21 @@ func (q *QueryDirNode) Lookup(ctx context.Context, name string, out *fuse.EntryO
 		}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
 	}
 
-	// Otherwise, the child is {N}.json or {N}.md
-	format, ok := parseFormat(name)
-	if !ok {
-		return nil, syscall.ENOENT
-	}
-	base := strings.TrimSuffix(strings.TrimSuffix(name, ".json"), ".md")
-	n, err := strconv.Atoi(base)
+	// The child is {N} - a directory containing symlinks to message directories
+	n, err := strconv.Atoi(name)
 	if err != nil || n <= 0 {
 		return nil, syscall.ENOENT
 	}
 
-	return q.NewInode(ctx, &ConvContentNode{
-		localID: q.localID, client: q.client, state: q.state,
-		query: contentQuery{kind: q.kind, n: n, person: q.person, format: format},
+	return q.NewInode(ctx, &QueryResultDirNode{
+		localID:   q.localID,
+		client:    q.client,
+		state:     q.state,
+		kind:      q.kind,
+		n:         n,
+		person:    q.person,
 		startTime: q.startTime,
-	}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
+	}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
 }
 
 func (q *QueryDirNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
@@ -1504,6 +1936,119 @@ func (q *QueryDirNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno
 func (q *QueryDirNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
 	out.Mode = fuse.S_IFDIR | 0755
 	// Use conversation creation time if available, otherwise fall back to FS start time
+	cs := q.state.Get(q.localID)
+	if cs != nil && !cs.CreatedAt.IsZero() {
+		setTimestamps(&out.Attr, cs.CreatedAt)
+	} else {
+		setTimestamps(&out.Attr, q.startTime)
+	}
+	return 0
+}
+
+// --- QueryResultDirNode: represents last/{N}/ or since/{person}/{N}/ ---
+// Contains symlinks to the actual message directories.
+
+type QueryResultDirNode struct {
+	fs.Inode
+	localID   string
+	client    shelley.ShelleyClient
+	state     *state.Store
+	kind      queryKind // queryLast or querySince
+	n         int       // the N in last/{N} or since/{person}/{N}
+	person    string    // set for since/{person}/{N}
+	startTime time.Time
+}
+
+var _ = (fs.NodeLookuper)((*QueryResultDirNode)(nil))
+var _ = (fs.NodeReaddirer)((*QueryResultDirNode)(nil))
+var _ = (fs.NodeGetattrer)((*QueryResultDirNode)(nil))
+
+// getFilteredMessages returns the messages that match the query.
+func (q *QueryResultDirNode) getFilteredMessages() ([]shelley.Message, map[string]string, error) {
+	cs := q.state.Get(q.localID)
+	if cs == nil || !cs.Created || cs.ShelleyConversationID == "" {
+		return nil, nil, nil
+	}
+
+	convData, err := q.client.GetConversation(cs.ShelleyConversationID)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	msgs, err := shelley.ParseMessages(convData)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// Build toolMap for slug computation
+	msgPtrs := make([]*shelley.Message, len(msgs))
+	for i := range msgs {
+		msgPtrs[i] = &msgs[i]
+	}
+	toolMap := shelley.BuildToolNameMap(msgPtrs)
+
+	var filtered []shelley.Message
+	switch q.kind {
+	case queryLast:
+		filtered = shelley.FilterLast(msgs, q.n)
+	case querySince:
+		filtered = shelley.FilterSince(msgs, q.person, q.n)
+	}
+
+	return filtered, toolMap, nil
+}
+
+// symlinkPrefix returns the relative path prefix for symlinks.
+// For last/{N}/, this is "../../" (up to last/, up to messages/)
+// For since/{person}/{N}/, this is "../../../" (up to {N}/, up to {person}/, up to since/, up to messages/)
+func (q *QueryResultDirNode) symlinkPrefix() string {
+	if q.kind == queryLast {
+		return "../../"
+	}
+	return "../../../"
+}
+
+func (q *QueryResultDirNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
+	msgs, toolMap, err := q.getFilteredMessages()
+	if err != nil {
+		return nil, syscall.EIO
+	}
+	if msgs == nil {
+		return nil, syscall.ENOENT
+	}
+
+	// Look for a message matching the name
+	for i := range msgs {
+		slug := shelley.MessageSlug(&msgs[i], toolMap)
+		base := messageFileBase(msgs[i].SequenceID, slug)
+		if base == name {
+			// Found the message - return a symlink to it
+			target := q.symlinkPrefix() + base
+			return q.NewInode(ctx, &SymlinkNode{target: target, startTime: q.startTime}, fs.StableAttr{Mode: syscall.S_IFLNK}), 0
+		}
+	}
+
+	return nil, syscall.ENOENT
+}
+
+func (q *QueryResultDirNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
+	msgs, toolMap, err := q.getFilteredMessages()
+	if err != nil {
+		return nil, syscall.EIO
+	}
+
+	entries := make([]fuse.DirEntry, 0, len(msgs))
+	for i := range msgs {
+		slug := shelley.MessageSlug(&msgs[i], toolMap)
+		base := messageFileBase(msgs[i].SequenceID, slug)
+		entries = append(entries, fuse.DirEntry{Name: base, Mode: syscall.S_IFLNK})
+	}
+
+	return fs.NewListDirStream(entries), 0
+}
+
+func (q *QueryResultDirNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
+	out.Mode = fuse.S_IFDIR | 0755
 	cs := q.state.Get(q.localID)
 	if cs != nil && !cs.CreatedAt.IsZero() {
 		setTimestamps(&out.Attr, cs.CreatedAt)
@@ -1563,28 +2108,196 @@ func messageFileBase(seqID int, slug string) string {
 	return fmt.Sprintf("%03d-%s", seqID, sanitized)
 }
 
-// namedMessageFileRe matches named message files like "001-user.json" or "002-shelley.md".
-var namedMessageFileRe = regexp.MustCompile(`^(\d+)-[a-z0-9-]+\.(json|md)$`)
+// messageDirRe matches message directory names like "001-user" or "002-agent".
+var messageDirRe = regexp.MustCompile(`^(\d+)-[a-z0-9-]+$`)
 
-// parseNamedMessageFile extracts the sequence number and format from a named message filename.
-// Returns (seqNum, format, ok).
-func parseNamedMessageFile(name string) (int, contentFormat, bool) {
-	m := namedMessageFileRe.FindStringSubmatch(name)
+// parseMessageDirName extracts the sequence number from a message directory name.
+// Returns (seqNum, ok).
+func parseMessageDirName(name string) (int, bool) {
+	m := messageDirRe.FindStringSubmatch(name)
 	if m == nil {
-		return 0, 0, false
+		return 0, false
 	}
 	n, err := strconv.Atoi(m[1])
 	if err != nil || n <= 0 {
-		return 0, 0, false
+		return 0, false
 	}
-	var format contentFormat
-	switch m[2] {
-	case "json":
-		format = formatJSON
-	case "md":
-		format = formatMD
+	return n, true
+}
+
+// --- ConvMetaDirNode: /conversation/{id}/meta/ directory ---
+// Exposes conversation metadata as a JSON-to-filesystem tree using jsonfs.
+
+type ConvMetaDirNode struct {
+	fs.Inode
+	localID   string
+	client    shelley.ShelleyClient
+	state     *state.Store
+	startTime time.Time
+}
+
+var _ = (fs.NodeLookuper)((*ConvMetaDirNode)(nil))
+var _ = (fs.NodeReaddirer)((*ConvMetaDirNode)(nil))
+var _ = (fs.NodeGetattrer)((*ConvMetaDirNode)(nil))
+
+// buildMetadata returns the conversation metadata as a map suitable for jsonfs.
+func (m *ConvMetaDirNode) buildMetadata() map[string]any {
+	cs := m.state.Get(m.localID)
+	if cs == nil {
+		return map[string]any{}
 	}
-	return n, format, true
+
+	meta := map[string]any{
+		"local_id": cs.LocalID,
+		"created":  cs.Created,
+	}
+
+	// Only include non-empty string fields
+	if cs.ShelleyConversationID != "" {
+		meta["conversation_id"] = cs.ShelleyConversationID
+	}
+	if cs.Slug != "" {
+		meta["slug"] = cs.Slug
+	}
+	if cs.Model != "" {
+		meta["model"] = cs.Model
+	}
+	if cs.Cwd != "" {
+		meta["cwd"] = cs.Cwd
+	}
+	if !cs.CreatedAt.IsZero() {
+		meta["local_created_at"] = cs.CreatedAt.Format(time.RFC3339)
+	}
+
+	// Fetch API metadata if available
+	if cs.Created && cs.ShelleyConversationID != "" {
+		convData, err := m.client.GetConversation(cs.ShelleyConversationID)
+		if err == nil {
+			var conv shelley.Conversation
+			if err := json.Unmarshal(convData, &conv); err == nil {
+				if conv.CreatedAt != "" {
+					meta["api_created_at"] = conv.CreatedAt
+				}
+				if conv.UpdatedAt != "" {
+					meta["api_updated_at"] = conv.UpdatedAt
+				}
+			}
+		}
+	}
+
+	return meta
+}
+
+func (m *ConvMetaDirNode) getConversationTime() time.Time {
+	cs := m.state.Get(m.localID)
+	if cs != nil && !cs.CreatedAt.IsZero() {
+		return cs.CreatedAt
+	}
+	return m.startTime
+}
+
+func (m *ConvMetaDirNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
+	meta := m.buildMetadata()
+	value, ok := meta[name]
+	if !ok {
+		return nil, syscall.ENOENT
+	}
+
+	config := &jsonfs.Config{StartTime: m.getConversationTime()}
+	node := jsonfs.NewNode(value, config)
+
+	// Determine mode based on value type (maps/slices become directories, primitives become files)
+	mode := uint32(fuse.S_IFREG)
+	switch value.(type) {
+	case map[string]any, []any:
+		mode = fuse.S_IFDIR
+	}
+
+	return m.NewInode(ctx, node, fs.StableAttr{Mode: mode}), 0
+}
+
+func (m *ConvMetaDirNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
+	meta := m.buildMetadata()
+
+	// Sort keys for consistent ordering
+	keys := make([]string, 0, len(meta))
+	for k := range meta {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	entries := make([]fuse.DirEntry, 0, len(keys))
+	for _, k := range keys {
+		entries = append(entries, fuse.DirEntry{
+			Name: k,
+			Mode: fuse.S_IFREG, // All metadata fields are primitives
+		})
+	}
+	return fs.NewListDirStream(entries), 0
+}
+
+func (m *ConvMetaDirNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
+	out.Mode = fuse.S_IFDIR | 0755
+	setTimestamps(&out.Attr, m.getConversationTime())
+	return 0
+}
+
+// --- ArchivedNode: presence/absence file for archived status ---
+// When present, the conversation is archived. Touch to archive, rm to unarchive.
+
+type ArchivedNode struct {
+	fs.Inode
+	localID   string
+	client    shelley.ShelleyClient
+	state     *state.Store
+	startTime time.Time
+}
+
+var _ = (fs.NodeGetattrer)((*ArchivedNode)(nil))
+var _ = (fs.NodeOpener)((*ArchivedNode)(nil))
+var _ = (fs.NodeReader)((*ArchivedNode)(nil))
+var _ = (fs.NodeSetattrer)((*ArchivedNode)(nil))
+
+func (a *ArchivedNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
+	out.Mode = fuse.S_IFREG | 0444
+	cs := a.state.Get(a.localID)
+	
+	// Default timestamp is CreatedAt or startTime
+	timestamp := a.startTime
+	if cs != nil && !cs.CreatedAt.IsZero() {
+		timestamp = cs.CreatedAt
+	}
+	
+	// ArchivedNode only exists when conversation is archived, so use UpdatedAt
+	// as the timestamp (represents when the conversation was last modified/archived)
+	if cs != nil && cs.ShelleyConversationID != "" {
+		convData, err := a.client.GetConversation(cs.ShelleyConversationID)
+		if err == nil {
+			var conv shelley.Conversation
+			if err := json.Unmarshal(convData, &conv); err == nil && conv.UpdatedAt != "" {
+				if updatedTime, err := time.Parse(time.RFC3339, conv.UpdatedAt); err == nil {
+					timestamp = updatedTime
+				}
+			}
+		}
+	}
+	
+	setTimestamps(&out.Attr, timestamp)
+	return 0
+}
+
+func (a *ArchivedNode) Open(ctx context.Context, flags uint32) (fs.FileHandle, uint32, syscall.Errno) {
+	return nil, fuse.FOPEN_DIRECT_IO, 0
+}
+
+func (a *ArchivedNode) Read(ctx context.Context, f fs.FileHandle, dest []byte, off int64) (fuse.ReadResult, syscall.Errno) {
+	// Empty file - presence is what matters
+	return fuse.ReadResultData([]byte{}), 0
+}
+
+func (a *ArchivedNode) Setattr(ctx context.Context, f fs.FileHandle, in *fuse.SetAttrIn, out *fuse.AttrOut) syscall.Errno {
+	// Accept time changes (from touch) silently - just return current attributes
+	return a.Getattr(ctx, f, out)
 }
 
 // compile-time interface checks

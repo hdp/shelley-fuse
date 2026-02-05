@@ -21,6 +21,12 @@ type ConversationState struct {
 	Cwd                   string    `json:"cwd,omitempty"`
 	Created               bool      `json:"created"`
 	CreatedAt             time.Time `json:"created_at,omitempty"`
+	// APICreatedAt is the server's created_at timestamp (RFC3339 string).
+	// This is the original creation time from the Shelley API.
+	APICreatedAt string `json:"api_created_at,omitempty"`
+	// APIUpdatedAt is the server's updated_at timestamp (RFC3339 string).
+	// This is the last modification time from the Shelley API.
+	APIUpdatedAt string `json:"api_updated_at,omitempty"`
 }
 
 // Store manages local conversation state, persisted to a JSON file.
@@ -201,15 +207,35 @@ func (s *Store) Adopt(shelleyConversationID string) (string, error) {
 // including the slug. Returns the new local ID. If the Shelley ID is already tracked locally,
 // returns the existing local ID and updates the slug if it was previously empty.
 func (s *Store) AdoptWithSlug(shelleyConversationID, slug string) (string, error) {
+	return s.AdoptWithMetadata(shelleyConversationID, slug, "", "")
+}
+
+// AdoptWithMetadata creates a local conversation entry for an existing Shelley server conversation,
+// including metadata from the API. Returns the new local ID. If the Shelley ID is already tracked
+// locally, returns the existing local ID and updates metadata if previously empty.
+func (s *Store) AdoptWithMetadata(shelleyConversationID, slug, apiCreatedAt, apiUpdatedAt string) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	// Check if already tracked
 	for _, cs := range s.Conversations {
 		if cs.ShelleyConversationID == shelleyConversationID {
+			updated := false
 			// Update slug if it was previously empty and a new slug is provided
 			if slug != "" && cs.Slug == "" {
 				cs.Slug = slug
+				updated = true
+			}
+			// Update API timestamps if not already set
+			if apiCreatedAt != "" && cs.APICreatedAt == "" {
+				cs.APICreatedAt = apiCreatedAt
+				updated = true
+			}
+			if apiUpdatedAt != "" && (cs.APIUpdatedAt == "" || apiUpdatedAt > cs.APIUpdatedAt) {
+				cs.APIUpdatedAt = apiUpdatedAt
+				updated = true
+			}
+			if updated {
 				_ = s.saveLocked() // Best effort save
 			}
 			return cs.LocalID, nil
@@ -228,6 +254,8 @@ func (s *Store) AdoptWithSlug(shelleyConversationID, slug string) (string, error
 		Slug:                  slug,
 		Created:               true, // Already exists on server
 		CreatedAt:             time.Now(),
+		APICreatedAt:          apiCreatedAt,
+		APIUpdatedAt:          apiUpdatedAt,
 	}
 
 	if err := s.saveLocked(); err != nil {

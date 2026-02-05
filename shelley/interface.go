@@ -9,6 +9,9 @@ type ShelleyClient interface {
 	// ListConversations lists all conversations.
 	ListConversations() ([]byte, error)
 
+	// ListArchivedConversations lists all archived conversations.
+	ListArchivedConversations() ([]byte, error)
+
 	// ListModels lists available models.
 	ListModels() (ModelsResult, error)
 
@@ -17,6 +20,15 @@ type ShelleyClient interface {
 
 	// SendMessage sends a message to an existing conversation.
 	SendMessage(conversationID, message, model string) error
+
+	// ArchiveConversation archives a conversation.
+	ArchiveConversation(conversationID string) error
+
+	// UnarchiveConversation unarchives a conversation.
+	UnarchiveConversation(conversationID string) error
+
+	// IsConversationArchived checks if a conversation is archived.
+	IsConversationArchived(conversationID string) (bool, error)
 }
 
 // Verify that Client implements ShelleyClient at compile time.

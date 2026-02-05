@@ -1216,22 +1216,16 @@ func TestModelsDirNode_MountedReadAndAccess(t *testing.T) {
 		t.Errorf("expected 'model-ready', got %q", strings.TrimSpace(string(idData)))
 	}
 
-	// Test reading model-ready/ready
-	readyData, err := ioutil.ReadFile(filepath.Join(tmpDir, "models", "model-ready", "ready"))
-	if err != nil {
-		t.Fatalf("Failed to read model-ready/ready: %v", err)
-	}
-	if strings.TrimSpace(string(readyData)) != "true" {
-		t.Errorf("expected 'true', got %q", strings.TrimSpace(string(readyData)))
+	// Test model-ready/ready exists (presence/absence semantics)
+	readyPath := filepath.Join(tmpDir, "models", "model-ready", "ready")
+	if _, err := os.Stat(readyPath); err != nil {
+		t.Errorf("expected model-ready/ready to exist, got error: %v", err)
 	}
 
-	// Test reading model-not-ready/ready
-	readyData, err = ioutil.ReadFile(filepath.Join(tmpDir, "models", "model-not-ready", "ready"))
-	if err != nil {
-		t.Fatalf("Failed to read model-not-ready/ready: %v", err)
-	}
-	if strings.TrimSpace(string(readyData)) != "false" {
-		t.Errorf("expected 'false', got %q", strings.TrimSpace(string(readyData)))
+	// Test model-not-ready/ready does NOT exist (presence/absence semantics)
+	notReadyPath := filepath.Join(tmpDir, "models", "model-not-ready", "ready")
+	if _, err := os.Stat(notReadyPath); !os.IsNotExist(err) {
+		t.Errorf("expected model-not-ready/ready to not exist (ENOENT), got: %v", err)
 	}
 
 	// Test listing models directory
@@ -1527,14 +1521,10 @@ func TestModelsDirNode_DefaultSymlink_FollowsToModel(t *testing.T) {
 		t.Errorf("expected id content 'target-model', got %q", strings.TrimSpace(string(content)))
 	}
 
-	// Also check the ready file
+	// Also check the ready file exists (presence/absence semantics)
 	readyPath := filepath.Join(tmpDir, "models", "default", "ready")
-	content, err = ioutil.ReadFile(readyPath)
-	if err != nil {
-		t.Fatalf("Failed to read models/default/ready: %v", err)
-	}
-	if strings.TrimSpace(string(content)) != "true" {
-		t.Errorf("expected ready content 'true', got %q", strings.TrimSpace(string(content)))
+	if _, err := os.Stat(readyPath); err != nil {
+		t.Errorf("expected models/default/ready to exist, got error: %v", err)
 	}
 }
 
@@ -2202,6 +2192,8 @@ func TestTimestamps_NeverZero(t *testing.T) {
 	defer fssrv.Unmount()
 
 	// Check various paths - none should have zero timestamp
+	// Note: "created" is not checked because it uses presence/absence semantics
+	// and only exists when conversation is created on backend
 	pathsToCheck := []string{
 		tmpDir,                                            // root
 		filepath.Join(tmpDir, "models"),                   // models dir
@@ -2214,11 +2206,10 @@ func TestTimestamps_NeverZero(t *testing.T) {
 		filepath.Join(tmpDir, "conversation", convID, "ctl"),
 		filepath.Join(tmpDir, "conversation", convID, "new"),
 		filepath.Join(tmpDir, "conversation", convID, "fuse_id"),
-		filepath.Join(tmpDir, "conversation", convID, "created"),
+		// "created" not checked - uses presence/absence semantics
 		filepath.Join(tmpDir, "conversation", convID, "messages"),
 		filepath.Join(tmpDir, "conversation", convID, "messages", "last"),
 		filepath.Join(tmpDir, "conversation", convID, "messages", "since"),
-
 	}
 
 	for _, path := range pathsToCheck {
@@ -2467,8 +2458,8 @@ func TestTimestamps_StateCreatedAtIsPersisted(t *testing.T) {
 	}
 }
 
-// TestTimestamps_MessageFilesUseMessageTime verifies that individual message files
-// (like 001-user.md) use the message's CreatedAt timestamp, not the conversation's.
+// TestTimestamps_MessageDirsUseMessageTime verifies that individual message directories
+// and their contents (like 001-user/content.md) use the message's CreatedAt timestamp, not the conversation's.
 func TestTimestamps_MessageFilesUseMessageTime(t *testing.T) {
 	// Create messages with different timestamps
 	convID := "test-conv-msg-timestamps"
@@ -2527,30 +2518,31 @@ func TestTimestamps_MessageFilesUseMessageTime(t *testing.T) {
 	}
 	defer fssrv.Unmount()
 
+	// Test message directories and their content.md files
 	testCases := []struct {
 		name         string
-		filename     string
+		path         string // relative to messages/
 		expectedTime time.Time
 	}{
-		{"Message1_JSON", "001-user.json", msg1Time},
-		{"Message1_MD", "001-user.md", msg1Time},
-		{"Message2_JSON", "002-shelley.json", msg2Time},
-		{"Message2_MD", "002-shelley.md", msg2Time},
-		{"Message3_JSON", "003-user.json", msg3Time},
-		{"Message3_MD", "003-user.md", msg3Time},
+		{"Message1_Dir", "001-user", msg1Time},
+		{"Message1_ContentMD", "001-user/content.md", msg1Time},
+		{"Message2_Dir", "002-agent", msg2Time},
+		{"Message2_ContentMD", "002-agent/content.md", msg2Time},
+		{"Message3_Dir", "003-user", msg3Time},
+		{"Message3_ContentMD", "003-user/content.md", msg3Time},
 	}
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			path := filepath.Join(tmpDir, "conversation", localID, "messages", tc.filename)
+			path := filepath.Join(tmpDir, "conversation", localID, "messages", tc.path)
 			info, err := os.Stat(path)
 			if err != nil {
-				t.Fatalf("Failed to stat %s: %v", tc.filename, err)
+				t.Fatalf("Failed to stat %s: %v", tc.path, err)
 			}
 			mtime := info.ModTime()
 			diff := mtime.Sub(tc.expectedTime)
 			if diff < -time.Second || diff > time.Second {
-				t.Errorf("File %s mtime %v differs from expected %v by %v", tc.filename, mtime, tc.expectedTime, diff)
+				t.Errorf("Path %s mtime %v differs from expected %v by %v", tc.path, mtime, tc.expectedTime, diff)
 			}
 		})
 	}
@@ -2870,18 +2862,15 @@ func TestMessagesDirNodeReaddirWithToolCalls(t *testing.T) {
 		names = append(names, entry.Name)
 	}
 
-	// Expected files:
+	// Expected entries:
 	// - Static: all.json, all.md, count, last, since
-	// - Message 1 (user): 001-user.json, 001-user.md
-	// - Message 2 (bash-tool): 002-bash-tool.json, 002-bash-tool.md
-	// - Message 3 (bash-result): 003-bash-result.json, 003-bash-result.md
-	// - Message 4 (shelley): 004-shelley.json, 004-shelley.md
+	// - Message directories: 001-user, 002-bash-tool, 003-bash-result, 004-agent
 	expected := []string{
 		"all.json", "all.md", "count", "last", "since",
-		"001-user.json", "001-user.md",
-		"002-bash-tool.json", "002-bash-tool.md",
-		"003-bash-result.json", "003-bash-result.md",
-		"004-shelley.json", "004-shelley.md",
+		"001-user",
+		"002-bash-tool",
+		"003-bash-result",
+		"004-agent",
 	}
 
 	namesSet := make(map[string]bool)
@@ -2960,41 +2949,52 @@ func TestMessagesDirNodeLookupWithToolCalls(t *testing.T) {
 
 	msgDir := filepath.Join(tmpDir, "conversation", localID, "messages")
 
+	// Test message directories exist
 	testCases := []struct {
-		filename string
-		wantOK   bool
+		dirname string
+		wantOK  bool
 	}{
-		{"001-user.json", true},
-		{"001-user.md", true},
-		{"002-patch-tool.json", true},
-		{"002-patch-tool.md", true},
-		{"003-patch-result.json", true},
-		{"003-patch-result.md", true},
-		// Wrong slug for seq 1 (should be user, not shelley)
-		{"001-shelley.json", false},
+		{"001-user", true},
+		{"002-patch-tool", true},
+		{"003-patch-result", true},
+		// Wrong slug for seq 1 (should be user, not agent)
+		{"001-agent", false},
 		// Wrong slug for seq 2 (should be patch-tool, not bash-tool)
-		{"002-bash-tool.json", false},
+		{"002-bash-tool", false},
 		// Non-existent sequence
-		{"099-user.json", false},
+		{"099-user", false},
 	}
 
 	for _, tc := range testCases {
-		t.Run(tc.filename, func(t *testing.T) {
-			_, err := os.Stat(filepath.Join(msgDir, tc.filename))
+		t.Run(tc.dirname, func(t *testing.T) {
+			info, err := os.Stat(filepath.Join(msgDir, tc.dirname))
 			gotOK := err == nil
 			if gotOK != tc.wantOK {
 				if tc.wantOK {
-					t.Errorf("Stat(%q): expected success, got error: %v", tc.filename, err)
+					t.Errorf("Stat(%q): expected success, got error: %v", tc.dirname, err)
 				} else {
-					t.Errorf("Stat(%q): expected failure, got success", tc.filename)
+					t.Errorf("Stat(%q): expected failure, got success", tc.dirname)
 				}
+			}
+			if gotOK && !info.IsDir() {
+				t.Errorf("Stat(%q): expected directory, got file", tc.dirname)
+			}
+		})
+	}
+
+	// Test that content.md exists inside message directories
+	for _, dirname := range []string{"001-user", "002-patch-tool", "003-patch-result"} {
+		t.Run(dirname+"/content.md", func(t *testing.T) {
+			_, err := os.Stat(filepath.Join(msgDir, dirname, "content.md"))
+			if err != nil {
+				t.Errorf("Stat(%q/content.md): expected success, got error: %v", dirname, err)
 			}
 		})
 	}
 }
 
 // TestMessagesDirNodeReadToolCallContent verifies that reading a tool call/result
-// file returns the correct message content.
+// message directory returns the correct content.
 func TestMessagesDirNodeReadToolCallContent(t *testing.T) {
 	convID := "test-conv-read-tools"
 	msgs := []shelley.Message{
@@ -3049,35 +3049,42 @@ func TestMessagesDirNodeReadToolCallContent(t *testing.T) {
 
 	msgDir := filepath.Join(tmpDir, "conversation", localID, "messages")
 
-	// Read 100-bash-tool.json and verify it contains the tool call message
-	data, err := ioutil.ReadFile(filepath.Join(msgDir, "100-bash-tool.json"))
+	// Verify 100-bash-tool directory exists and has correct field files
+	toolDir := filepath.Join(msgDir, "100-bash-tool")
+	info, err := os.Stat(toolDir)
 	if err != nil {
-		t.Fatalf("Failed to read 100-bash-tool.json: %v", err)
+		t.Fatalf("Failed to stat 100-bash-tool: %v", err)
 	}
-	var readMsgs []shelley.Message
-	if err := json.Unmarshal(data, &readMsgs); err != nil {
-		t.Fatalf("Failed to parse 100-bash-tool.json: %v", err)
-	}
-	if len(readMsgs) != 1 {
-		t.Fatalf("Expected 1 message, got %d", len(readMsgs))
-	}
-	if readMsgs[0].SequenceID != 100 {
-		t.Errorf("Expected SequenceID=100, got %d", readMsgs[0].SequenceID)
+	if !info.IsDir() {
+		t.Fatalf("100-bash-tool should be a directory")
 	}
 
-	// Read 101-bash-result.json and verify it contains the tool result message
-	data, err = ioutil.ReadFile(filepath.Join(msgDir, "101-bash-result.json"))
+	// Check sequence_id field
+	seqID, err := ioutil.ReadFile(filepath.Join(toolDir, "sequence_id"))
 	if err != nil {
-		t.Fatalf("Failed to read 101-bash-result.json: %v", err)
+		t.Fatalf("Failed to read sequence_id: %v", err)
 	}
-	if err := json.Unmarshal(data, &readMsgs); err != nil {
-		t.Fatalf("Failed to parse 101-bash-result.json: %v", err)
+	if string(seqID) != "100\n" {
+		t.Errorf("Expected sequence_id=100, got %q", string(seqID))
 	}
-	if len(readMsgs) != 1 {
-		t.Fatalf("Expected 1 message, got %d", len(readMsgs))
+
+	// Verify 101-bash-result directory exists and has correct field files
+	resultDir := filepath.Join(msgDir, "101-bash-result")
+	info, err = os.Stat(resultDir)
+	if err != nil {
+		t.Fatalf("Failed to stat 101-bash-result: %v", err)
 	}
-	if readMsgs[0].SequenceID != 101 {
-		t.Errorf("Expected SequenceID=101, got %d", readMsgs[0].SequenceID)
+	if !info.IsDir() {
+		t.Fatalf("101-bash-result should be a directory")
+	}
+
+	// Check sequence_id field
+	seqID, err = ioutil.ReadFile(filepath.Join(resultDir, "sequence_id"))
+	if err != nil {
+		t.Fatalf("Failed to read sequence_id: %v", err)
+	}
+	if string(seqID) != "101\n" {
+		t.Errorf("Expected sequence_id=101, got %q", string(seqID))
 	}
 }
 
@@ -3239,7 +3246,7 @@ func TestParsedMessageCacheReducesParsing(t *testing.T) {
 	// Create a conversation with multiple messages including tool calls
 	convData := []byte(`{"messages":[
 		{"message_id":"m1","sequence_id":1,"type":"user","user_data":"{\"Content\":[{\"Type\":0,\"Text\":\"Hello\"}]}"},
-		{"message_id":"m2","sequence_id":2,"type":"shelley","llm_data":"{\"Content\":[{\"Type\":5,\"ID\":\"tool1\",\"ToolName\":\"bash\",\"Input\":{}}]}"},
+		{"message_id":"m2","sequence_id":2,"type":"shelley","llm_data":"{\"Content\":[{\"Type\":5,\"ID\":\"tool1\",\"ToolName\":\"bash\",\"ToolInput\":{}}]}"},
 		{"message_id":"m3","sequence_id":3,"type":"user","user_data":"{\"Content\":[{\"Type\":6,\"ToolUseID\":\"tool1\",\"ToolResult\":[{\"Text\":\"output\"}]}]}"}
 	]}`)
 
@@ -3330,5 +3337,1013 @@ func TestParsedMessageCacheZeroTTL(t *testing.T) {
 	// With zero TTL, we should get fresh parses each time
 	if &msgs1[0] == &msgs2[0] {
 		t.Error("Expected fresh parse with zero TTL, but got same slice")
+	}
+}
+
+// TestMessageDirNodeFields verifies that message directories contain all expected field files.
+func TestMessageDirNodeFields(t *testing.T) {
+	convID := "test-conv-msg-dir-fields"
+	llmData := `{"Content":[{"Type":2,"Text":"Hello from LLM"}]}`
+	usageData := `{"input_tokens":100,"output_tokens":50}`
+	msgs := []shelley.Message{
+		{
+			MessageID:      "msg-uuid-123",
+			ConversationID: convID,
+			SequenceID:     1,
+			Type:           "user",
+			UserData:       strPtr("Hello"),
+			CreatedAt:      "2026-01-15T10:00:00Z",
+		},
+		{
+			MessageID:      "msg-uuid-456",
+			ConversationID: convID,
+			SequenceID:     2,
+			Type:           "shelley",
+			LLMData:        strPtr(llmData),
+			UsageData:      strPtr(usageData),
+			CreatedAt:      "2026-01-15T10:05:00Z",
+		},
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/conversation/"+convID {
+			data, _ := json.Marshal(struct {
+				Messages []shelley.Message `json:"messages"`
+			}{Messages: msgs})
+			w.Write(data)
+			return
+		}
+		if r.URL.Path == "/api/conversations" {
+			data, _ := json.Marshal([]shelley.Conversation{{ConversationID: convID}})
+			w.Write(data)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	client := shelley.NewClient(server.URL)
+	store := testStore(t)
+
+	localID, _ := store.Clone()
+	store.MarkCreated(localID, convID, "")
+
+	shelleyFS := NewFS(client, store, time.Hour)
+
+	tmpDir, err := ioutil.TempDir("", "shelley-fuse-msg-dir-fields-test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	opts := &fs.Options{}
+	entryTimeout := time.Duration(0)
+	attrTimeout := time.Duration(0)
+	negativeTimeout := time.Duration(0)
+	opts.EntryTimeout = &entryTimeout
+	opts.AttrTimeout = &attrTimeout
+	opts.NegativeTimeout = &negativeTimeout
+
+	fssrv, err := fs.Mount(tmpDir, shelleyFS, opts)
+	if err != nil {
+		t.Fatalf("Mount failed: %v", err)
+	}
+	defer fssrv.Unmount()
+
+	msgDir := filepath.Join(tmpDir, "conversation", localID, "messages")
+
+	// Test user message directory (001-user)
+	t.Run("UserMessageDir", func(t *testing.T) {
+		userDir := filepath.Join(msgDir, "001-user")
+
+		// Verify it's a directory
+		info, err := os.Stat(userDir)
+		if err != nil {
+			t.Fatalf("Failed to stat 001-user: %v", err)
+		}
+		if !info.IsDir() {
+			t.Errorf("001-user should be a directory")
+		}
+
+		// Test field files
+		tests := []struct {
+			field    string
+			expected string
+		}{
+			{"message_id", "msg-uuid-123\n"},
+			{"conversation_id", convID + "\n"},
+			{"sequence_id", "1\n"},
+			{"type", "user\n"},
+			{"created_at", "2026-01-15T10:00:00Z\n"},
+		}
+
+		for _, tc := range tests {
+			data, err := ioutil.ReadFile(filepath.Join(userDir, tc.field))
+			if err != nil {
+				t.Errorf("Failed to read %s: %v", tc.field, err)
+				continue
+			}
+			if string(data) != tc.expected {
+				t.Errorf("%s: expected %q, got %q", tc.field, tc.expected, string(data))
+			}
+		}
+
+		// Verify content.md exists
+		data, err := ioutil.ReadFile(filepath.Join(userDir, "content.md"))
+		if err != nil {
+			t.Errorf("Failed to read content.md: %v", err)
+		}
+		if !strings.Contains(string(data), "user") {
+			t.Errorf("content.md should contain 'user', got %q", string(data))
+		}
+
+		// User message should NOT have llm_data or usage_data
+		_, err = os.Stat(filepath.Join(userDir, "llm_data"))
+		if !os.IsNotExist(err) {
+			t.Errorf("User message should not have llm_data")
+		}
+		_, err = os.Stat(filepath.Join(userDir, "usage_data"))
+		if !os.IsNotExist(err) {
+			t.Errorf("User message should not have usage_data")
+		}
+	})
+
+	// Test agent message directory (002-agent) with llm_data and usage_data
+	t.Run("AgentMessageDir", func(t *testing.T) {
+		agentDir := filepath.Join(msgDir, "002-agent")
+
+		// Verify field files
+		tests := []struct {
+			field    string
+			expected string
+		}{
+			{"message_id", "msg-uuid-456\n"},
+			{"sequence_id", "2\n"},
+			{"type", "shelley\n"},
+		}
+
+		for _, tc := range tests {
+			data, err := ioutil.ReadFile(filepath.Join(agentDir, tc.field))
+			if err != nil {
+				t.Errorf("Failed to read %s: %v", tc.field, err)
+				continue
+			}
+			if string(data) != tc.expected {
+				t.Errorf("%s: expected %q, got %q", tc.field, tc.expected, string(data))
+			}
+		}
+
+		// Verify llm_data is a directory (JSON object)
+		llmDataPath := filepath.Join(agentDir, "llm_data")
+		info, err := os.Stat(llmDataPath)
+		if err != nil {
+			t.Fatalf("Failed to stat llm_data: %v", err)
+		}
+		if !info.IsDir() {
+			t.Errorf("llm_data should be a directory")
+		}
+
+		// Navigate into llm_data/Content/0/Text
+		textPath := filepath.Join(llmDataPath, "Content", "0", "Text")
+		data, err := ioutil.ReadFile(textPath)
+		if err != nil {
+			t.Errorf("Failed to read llm_data/Content/0/Text: %v", err)
+		} else if strings.TrimSpace(string(data)) != "Hello from LLM" {
+			t.Errorf("Expected 'Hello from LLM', got %q", string(data))
+		}
+
+		// Verify usage_data is a directory
+		usageDataPath := filepath.Join(agentDir, "usage_data")
+		info, err = os.Stat(usageDataPath)
+		if err != nil {
+			t.Fatalf("Failed to stat usage_data: %v", err)
+		}
+		if !info.IsDir() {
+			t.Errorf("usage_data should be a directory")
+		}
+
+		// Read usage_data/input_tokens
+		data, err = ioutil.ReadFile(filepath.Join(usageDataPath, "input_tokens"))
+		if err != nil {
+			t.Errorf("Failed to read usage_data/input_tokens: %v", err)
+		} else if strings.TrimSpace(string(data)) != "100" {
+			t.Errorf("Expected input_tokens=100, got %q", string(data))
+		}
+	})
+}
+
+// TestTimestamps_APIMetadataMapping tests that API metadata (created_at, updated_at)
+// is properly mapped to filesystem stat attributes.
+func TestTimestamps_APIMetadataMapping(t *testing.T) {
+	// Create a mock server with conversations that have API timestamps
+	convs := []shelley.Conversation{
+		{
+			ConversationID: "conv-with-timestamps",
+			Slug:           strPtr("test-conv"),
+			CreatedAt:      "2024-01-15T10:30:00Z",
+			UpdatedAt:      "2024-01-16T14:20:00Z",
+		},
+	}
+	server := mockConversationsServer(t, convs)
+	defer server.Close()
+
+	client := shelley.NewClient(server.URL)
+	store := testStore(t)
+	shelleyFS := NewFS(client, store, time.Hour)
+
+	// Mount the filesystem
+	tmpDir, err := ioutil.TempDir("", "shelley-fuse-api-metadata-test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	opts := &fs.Options{}
+	entryTimeout := time.Duration(0)
+	attrTimeout := time.Duration(0)
+	negativeTimeout := time.Duration(0)
+	opts.EntryTimeout = &entryTimeout
+	opts.AttrTimeout = &attrTimeout
+	opts.NegativeTimeout = &negativeTimeout
+
+	fssrv, err := fs.Mount(tmpDir, shelleyFS, opts)
+	if err != nil {
+		t.Fatalf("Mount failed: %v", err)
+	}
+	defer fssrv.Unmount()
+
+	// List conversations to trigger adoption with metadata
+	_, err = ioutil.ReadDir(filepath.Join(tmpDir, "conversation"))
+	if err != nil {
+		t.Fatalf("Failed to read conversation dir: %v", err)
+	}
+
+	// Get the local ID for the adopted conversation
+	localID := store.GetByShelleyID("conv-with-timestamps")
+	if localID == "" {
+		t.Fatal("Conversation was not adopted")
+	}
+
+	// Verify the API timestamps were stored
+	cs := store.Get(localID)
+	if cs == nil {
+		t.Fatal("Conversation state not found")
+	}
+	if cs.APICreatedAt != "2024-01-15T10:30:00Z" {
+		t.Errorf("APICreatedAt = %q, want %q", cs.APICreatedAt, "2024-01-15T10:30:00Z")
+	}
+	if cs.APIUpdatedAt != "2024-01-16T14:20:00Z" {
+		t.Errorf("APIUpdatedAt = %q, want %q", cs.APIUpdatedAt, "2024-01-16T14:20:00Z")
+	}
+
+	// Stat the conversation directory and verify timestamps
+	convPath := filepath.Join(tmpDir, "conversation", localID)
+	info, err := os.Stat(convPath)
+	if err != nil {
+		t.Fatalf("Failed to stat conversation: %v", err)
+	}
+
+	// Parse expected times
+	expectedMtime, _ := time.Parse(time.RFC3339, "2024-01-16T14:20:00Z")
+
+	// mtime should be the updated_at time
+	actualMtime := info.ModTime()
+	if !actualMtime.Equal(expectedMtime) {
+		t.Errorf("Conversation mtime = %v, want %v (from updated_at)", actualMtime, expectedMtime)
+	}
+}
+
+// TestTimestamps_APIMetadataMtimeDiffersFromCtime tests that mtime uses updated_at
+// while ctime uses created_at when both are available.
+func TestTimestamps_APIMetadataMtimeDiffersFromCtime(t *testing.T) {
+	// Create a conversation with different created_at and updated_at
+	convs := []shelley.Conversation{
+		{
+			ConversationID: "conv-mtime-ctime",
+			Slug:           strPtr("mtime-ctime-test"),
+			CreatedAt:      "2024-01-10T08:00:00Z",
+			UpdatedAt:      "2024-01-20T16:30:00Z",
+		},
+	}
+	server := mockConversationsServer(t, convs)
+	defer server.Close()
+
+	client := shelley.NewClient(server.URL)
+	store := testStore(t)
+	shelleyFS := NewFS(client, store, time.Hour)
+
+	tmpDir, err := ioutil.TempDir("", "shelley-fuse-mtime-ctime-test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	opts := &fs.Options{}
+	entryTimeout := time.Duration(0)
+	attrTimeout := time.Duration(0)
+	negativeTimeout := time.Duration(0)
+	opts.EntryTimeout = &entryTimeout
+	opts.AttrTimeout = &attrTimeout
+	opts.NegativeTimeout = &negativeTimeout
+
+	fssrv, err := fs.Mount(tmpDir, shelleyFS, opts)
+	if err != nil {
+		t.Fatalf("Mount failed: %v", err)
+	}
+	defer fssrv.Unmount()
+
+	// Trigger adoption
+	_, _ = ioutil.ReadDir(filepath.Join(tmpDir, "conversation"))
+
+	localID := store.GetByShelleyID("conv-mtime-ctime")
+	if localID == "" {
+		t.Fatal("Conversation was not adopted")
+	}
+
+	// Use syscall.Stat to get all timestamps (ctime requires syscall)
+	convPath := filepath.Join(tmpDir, "conversation", localID)
+	var stat syscall.Stat_t
+	if err := syscall.Stat(convPath, &stat); err != nil {
+		t.Fatalf("syscall.Stat failed: %v", err)
+	}
+
+	expectedCtime, _ := time.Parse(time.RFC3339, "2024-01-10T08:00:00Z")
+	expectedMtime, _ := time.Parse(time.RFC3339, "2024-01-20T16:30:00Z")
+
+	actualCtime := time.Unix(stat.Ctim.Sec, stat.Ctim.Nsec)
+	actualMtime := time.Unix(stat.Mtim.Sec, stat.Mtim.Nsec)
+
+	if !actualCtime.Equal(expectedCtime) {
+		t.Errorf("ctime = %v, want %v (from created_at)", actualCtime, expectedCtime)
+	}
+	if !actualMtime.Equal(expectedMtime) {
+		t.Errorf("mtime = %v, want %v (from updated_at)", actualMtime, expectedMtime)
+	}
+
+	// ctime and mtime should be different
+	if actualCtime.Equal(actualMtime) {
+		t.Error("ctime and mtime should be different when created_at != updated_at")
+	}
+}
+
+// TestTimestamps_APIMetadataFallbackToLocalTime tests that when API timestamps
+// are not available, we fall back to local CreatedAt time.
+func TestTimestamps_APIMetadataFallbackToLocalTime(t *testing.T) {
+	// Mock server with no conversations (we'll use a locally cloned one)
+	server := mockConversationsServer(t, []shelley.Conversation{})
+	defer server.Close()
+
+	client := shelley.NewClient(server.URL)
+	store := testStore(t)
+	shelleyFS := NewFS(client, store, time.Hour)
+
+	startTime := shelleyFS.StartTime()
+
+	// Wait a bit so clone time is clearly different
+	time.Sleep(50 * time.Millisecond)
+
+	// Clone locally (no API timestamps)
+	convID, err := store.Clone()
+	if err != nil {
+		t.Fatalf("Failed to clone: %v", err)
+	}
+
+	cs := store.Get(convID)
+	if cs == nil {
+		t.Fatal("Conversation state not found")
+	}
+	localCreatedAt := cs.CreatedAt
+
+	tmpDir, err := ioutil.TempDir("", "shelley-fuse-fallback-test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	opts := &fs.Options{}
+	entryTimeout := time.Duration(0)
+	attrTimeout := time.Duration(0)
+	negativeTimeout := time.Duration(0)
+	opts.EntryTimeout = &entryTimeout
+	opts.AttrTimeout = &attrTimeout
+	opts.NegativeTimeout = &negativeTimeout
+
+	fssrv, err := fs.Mount(tmpDir, shelleyFS, opts)
+	if err != nil {
+		t.Fatalf("Mount failed: %v", err)
+	}
+	defer fssrv.Unmount()
+
+	convPath := filepath.Join(tmpDir, "conversation", convID)
+	info, err := os.Stat(convPath)
+	if err != nil {
+		t.Fatalf("Failed to stat conversation: %v", err)
+	}
+
+	// mtime should be the local CreatedAt (since no API timestamps)
+	actualMtime := info.ModTime()
+
+	// Allow 1 second tolerance for timing
+	diff := actualMtime.Sub(localCreatedAt)
+	if diff < -time.Second || diff > time.Second {
+		t.Errorf("Conversation mtime %v should be close to local CreatedAt %v", actualMtime, localCreatedAt)
+	}
+
+	// Should be different from startTime
+	if actualMtime.Sub(startTime) < 40*time.Millisecond {
+		t.Errorf("Conversation mtime should be after startTime (waited 50ms before clone)")
+	}
+}
+
+// TestTimestamps_MessageDirUsesCreatedAt tests that message directories
+// use the message's created_at timestamp.
+func TestTimestamps_MessageDirUsesCreatedAt(t *testing.T) {
+	convID := "conv-msg-time"
+	messages := []shelley.Message{
+		{
+			MessageID:      "msg-1",
+			ConversationID: convID,
+			SequenceID:     1,
+			Type:           "user",
+			UserData:       strPtr("Hello"),
+			CreatedAt:      "2024-02-20T09:15:30Z",
+		},
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/conversation/"+convID {
+			data, _ := json.Marshal(struct {
+				Messages []shelley.Message `json:"messages"`
+			}{Messages: messages})
+			w.Write(data)
+			return
+		}
+		if r.URL.Path == "/api/conversations" {
+			data, _ := json.Marshal([]shelley.Conversation{{ConversationID: convID}})
+			w.Write(data)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	client := shelley.NewClient(server.URL)
+	store := testStore(t)
+
+	// Create and mark conversation as created
+	localID, _ := store.Clone()
+	_ = store.MarkCreated(localID, convID, "test-slug")
+
+	shelleyFS := NewFS(client, store, time.Hour)
+
+	tmpDir, err := ioutil.TempDir("", "shelley-fuse-msg-time-test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	opts := &fs.Options{}
+	entryTimeout := time.Duration(0)
+	attrTimeout := time.Duration(0)
+	negativeTimeout := time.Duration(0)
+	opts.EntryTimeout = &entryTimeout
+	opts.AttrTimeout = &attrTimeout
+	opts.NegativeTimeout = &negativeTimeout
+
+	fssrv, err := fs.Mount(tmpDir, shelleyFS, opts)
+	if err != nil {
+		t.Fatalf("Mount failed: %v", err)
+	}
+	defer fssrv.Unmount()
+
+	// Stat the message directory
+	msgDirPath := filepath.Join(tmpDir, "conversation", localID, "messages", "001-user")
+	var stat syscall.Stat_t
+	if err := syscall.Stat(msgDirPath, &stat); err != nil {
+		t.Fatalf("syscall.Stat failed: %v", err)
+	}
+
+	expectedTime, _ := time.Parse(time.RFC3339, "2024-02-20T09:15:30Z")
+	actualMtime := time.Unix(stat.Mtim.Sec, stat.Mtim.Nsec)
+	actualCtime := time.Unix(stat.Ctim.Sec, stat.Ctim.Nsec)
+
+	// Both ctime and mtime should be from message's created_at
+	if !actualMtime.Equal(expectedTime) {
+		t.Errorf("Message dir mtime = %v, want %v", actualMtime, expectedTime)
+	}
+	if !actualCtime.Equal(expectedTime) {
+		t.Errorf("Message dir ctime = %v, want %v", actualCtime, expectedTime)
+	}
+}
+
+// TestTimestamps_ConversationUpdatedAtUpdatesOnReadopt tests that when a
+// conversation is re-adopted with a newer updated_at, the timestamp is updated.
+func TestTimestamps_ConversationUpdatedAtUpdatesOnReadopt(t *testing.T) {
+	// First adoption with older timestamps
+	store := testStore(t)
+	_, err := store.AdoptWithMetadata("conv-update-test", "slug", "2024-01-01T00:00:00Z", "2024-01-05T00:00:00Z")
+	if err != nil {
+		t.Fatalf("First adoption failed: %v", err)
+	}
+
+	// Re-adopt with newer updated_at
+	_, err = store.AdoptWithMetadata("conv-update-test", "", "", "2024-01-10T00:00:00Z")
+	if err != nil {
+		t.Fatalf("Second adoption failed: %v", err)
+	}
+
+	localID := store.GetByShelleyID("conv-update-test")
+	cs := store.Get(localID)
+
+	// created_at should not change
+	if cs.APICreatedAt != "2024-01-01T00:00:00Z" {
+		t.Errorf("APICreatedAt should not change, got %q", cs.APICreatedAt)
+	}
+
+	// updated_at should be the newer value
+	if cs.APIUpdatedAt != "2024-01-10T00:00:00Z" {
+		t.Errorf("APIUpdatedAt should be updated to newer value, got %q", cs.APIUpdatedAt)
+	}
+}
+
+// TestTimestamps_MessagesSubdirUsesConversationMetadata tests that the messages/
+// subdirectory uses the conversation's metadata timestamps.
+func TestTimestamps_MessagesSubdirUsesConversationMetadata(t *testing.T) {
+	convID := "conv-msg-subdir"
+	messages := []shelley.Message{}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/conversation/"+convID {
+			data, _ := json.Marshal(struct {
+				Messages []shelley.Message `json:"messages"`
+			}{Messages: messages})
+			w.Write(data)
+			return
+		}
+		if r.URL.Path == "/api/conversations" {
+			data, _ := json.Marshal([]shelley.Conversation{{ConversationID: convID}})
+			w.Write(data)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	client := shelley.NewClient(server.URL)
+	store := testStore(t)
+
+	// Create conversation with API metadata
+	localID, _ := store.Clone()
+	_ = store.MarkCreated(localID, convID, "test-slug")
+
+	// Set API timestamps
+	_, _ = store.AdoptWithMetadata(convID, "test-slug", "2024-03-01T10:00:00Z", "2024-03-05T15:00:00Z")
+
+	shelleyFS := NewFS(client, store, time.Hour)
+
+	tmpDir, err := ioutil.TempDir("", "shelley-fuse-msg-subdir-test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	opts := &fs.Options{}
+	entryTimeout := time.Duration(0)
+	attrTimeout := time.Duration(0)
+	negativeTimeout := time.Duration(0)
+	opts.EntryTimeout = &entryTimeout
+	opts.AttrTimeout = &attrTimeout
+	opts.NegativeTimeout = &negativeTimeout
+
+	fssrv, err := fs.Mount(tmpDir, shelleyFS, opts)
+	if err != nil {
+		t.Fatalf("Mount failed: %v", err)
+	}
+	defer fssrv.Unmount()
+
+	// Stat the messages/ directory
+	msgsDirPath := filepath.Join(tmpDir, "conversation", localID, "messages")
+	var stat syscall.Stat_t
+	if err := syscall.Stat(msgsDirPath, &stat); err != nil {
+		t.Fatalf("syscall.Stat failed: %v", err)
+	}
+
+	expectedCtime, _ := time.Parse(time.RFC3339, "2024-03-01T10:00:00Z")
+	expectedMtime, _ := time.Parse(time.RFC3339, "2024-03-05T15:00:00Z")
+
+	actualCtime := time.Unix(stat.Ctim.Sec, stat.Ctim.Nsec)
+	actualMtime := time.Unix(stat.Mtim.Sec, stat.Mtim.Nsec)
+
+	if !actualCtime.Equal(expectedCtime) {
+		t.Errorf("messages/ ctime = %v, want %v", actualCtime, expectedCtime)
+	}
+	if !actualMtime.Equal(expectedMtime) {
+		t.Errorf("messages/ mtime = %v, want %v", actualMtime, expectedMtime)
+	}
+}
+
+// TestQueryResultDirNode_LastN verifies that last/{N} returns a directory
+// containing symlinks to the last N message directories.
+func TestQueryResultDirNode_LastN(t *testing.T) {
+	convID := "test-conv-last-n"
+	msgs := []shelley.Message{
+		{MessageID: "m1", ConversationID: convID, SequenceID: 1, Type: "user", UserData: strPtr("Hello")},
+		{MessageID: "m2", ConversationID: convID, SequenceID: 2, Type: "shelley", LLMData: strPtr("Hi there!")},
+		{MessageID: "m3", ConversationID: convID, SequenceID: 3, Type: "user", UserData: strPtr("How are you?")},
+		{MessageID: "m4", ConversationID: convID, SequenceID: 4, Type: "shelley", LLMData: strPtr("I'm great!")},
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/conversation/"+convID {
+			data, _ := json.Marshal(struct {
+				Messages []shelley.Message `json:"messages"`
+			}{Messages: msgs})
+			w.Write(data)
+			return
+		}
+		if r.URL.Path == "/api/conversations" {
+			data, _ := json.Marshal([]shelley.Conversation{{ConversationID: convID}})
+			w.Write(data)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	client := shelley.NewClient(server.URL)
+	store := testStore(t)
+
+	localID, _ := store.Clone()
+	store.MarkCreated(localID, convID, "")
+
+	shelleyFS := NewFS(client, store, time.Hour)
+
+	tmpDir, err := ioutil.TempDir("", "shelley-fuse-last-n-test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	opts := &fs.Options{}
+	entryTimeout := time.Duration(0)
+	attrTimeout := time.Duration(0)
+	negativeTimeout := time.Duration(0)
+	opts.EntryTimeout = &entryTimeout
+	opts.AttrTimeout = &attrTimeout
+	opts.NegativeTimeout = &negativeTimeout
+
+	fssrv, err := fs.Mount(tmpDir, shelleyFS, opts)
+	if err != nil {
+		t.Fatalf("Mount failed: %v", err)
+	}
+	defer fssrv.Unmount()
+
+	// Test last/2 - should contain symlinks to the last 2 messages
+	last2Dir := filepath.Join(tmpDir, "conversation", localID, "messages", "last", "2")
+	info, err := os.Stat(last2Dir)
+	if err != nil {
+		t.Fatalf("Failed to stat last/2: %v", err)
+	}
+	if !info.IsDir() {
+		t.Fatalf("last/2 should be a directory")
+	}
+
+	entries, err := ioutil.ReadDir(last2Dir)
+	if err != nil {
+		t.Fatalf("Failed to read last/2: %v", err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("Expected 2 entries in last/2, got %d", len(entries))
+	}
+
+	// Verify the entries are symlinks
+	expectedNames := []string{"003-user", "004-agent"}
+	for i, e := range entries {
+		if e.Mode()&os.ModeSymlink == 0 {
+			t.Errorf("Expected symlink, got %s with mode %v", e.Name(), e.Mode())
+		}
+		if e.Name() != expectedNames[i] {
+			t.Errorf("Expected name %q, got %q", expectedNames[i], e.Name())
+		}
+	}
+
+	// Verify symlink targets are correct (../../{message-dir})
+	for _, name := range expectedNames {
+		target, err := os.Readlink(filepath.Join(last2Dir, name))
+		if err != nil {
+			t.Errorf("Failed to readlink %s: %v", name, err)
+			continue
+		}
+		expectedTarget := "../../" + name
+		if target != expectedTarget {
+			t.Errorf("Symlink %s target = %q, want %q", name, target, expectedTarget)
+		}
+	}
+
+	// Verify we can read through the symlinks
+	data, err := ioutil.ReadFile(filepath.Join(last2Dir, "003-user", "type"))
+	if err != nil {
+		t.Fatalf("Failed to read type through symlink: %v", err)
+	}
+	if strings.TrimSpace(string(data)) != "user" {
+		t.Errorf("Expected type=user, got %q", string(data))
+	}
+
+	data, err = ioutil.ReadFile(filepath.Join(last2Dir, "004-agent", "type"))
+	if err != nil {
+		t.Fatalf("Failed to read type through symlink: %v", err)
+	}
+	if strings.TrimSpace(string(data)) != "shelley" {
+		t.Errorf("Expected type=shelley, got %q", string(data))
+	}
+
+	// Test last/3 - should contain 3 messages
+	last3Dir := filepath.Join(tmpDir, "conversation", localID, "messages", "last", "3")
+	entries, err = ioutil.ReadDir(last3Dir)
+	if err != nil {
+		t.Fatalf("Failed to read last/3: %v", err)
+	}
+	if len(entries) != 3 {
+		t.Errorf("Expected 3 entries in last/3, got %d", len(entries))
+	}
+}
+
+// TestQueryResultDirNode_SincePersonN verifies that since/{person}/{N} returns
+// a directory containing symlinks to messages after the Nth occurrence of that person.
+func TestQueryResultDirNode_SincePersonN(t *testing.T) {
+	convID := "test-conv-since-n"
+	msgs := []shelley.Message{
+		{MessageID: "m1", ConversationID: convID, SequenceID: 1, Type: "user", UserData: strPtr("First")},
+		{MessageID: "m2", ConversationID: convID, SequenceID: 2, Type: "shelley", LLMData: strPtr("Response 1")},
+		{MessageID: "m3", ConversationID: convID, SequenceID: 3, Type: "user", UserData: strPtr("Second")},
+		{MessageID: "m4", ConversationID: convID, SequenceID: 4, Type: "shelley", LLMData: strPtr("Response 2")},
+		{MessageID: "m5", ConversationID: convID, SequenceID: 5, Type: "user", UserData: strPtr("Third")},
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/conversation/"+convID {
+			data, _ := json.Marshal(struct {
+				Messages []shelley.Message `json:"messages"`
+			}{Messages: msgs})
+			w.Write(data)
+			return
+		}
+		if r.URL.Path == "/api/conversations" {
+			data, _ := json.Marshal([]shelley.Conversation{{ConversationID: convID}})
+			w.Write(data)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	client := shelley.NewClient(server.URL)
+	store := testStore(t)
+
+	localID, _ := store.Clone()
+	store.MarkCreated(localID, convID, "")
+
+	shelleyFS := NewFS(client, store, time.Hour)
+
+	tmpDir, err := ioutil.TempDir("", "shelley-fuse-since-n-test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	opts := &fs.Options{}
+	entryTimeout := time.Duration(0)
+	attrTimeout := time.Duration(0)
+	negativeTimeout := time.Duration(0)
+	opts.EntryTimeout = &entryTimeout
+	opts.AttrTimeout = &attrTimeout
+	opts.NegativeTimeout = &negativeTimeout
+
+	fssrv, err := fs.Mount(tmpDir, shelleyFS, opts)
+	if err != nil {
+		t.Fatalf("Mount failed: %v", err)
+	}
+	defer fssrv.Unmount()
+
+	// Test since/user/2 - messages after the 2nd-to-last user message (003-user)
+	// Should include: 004-agent, 005-user
+	since2Dir := filepath.Join(tmpDir, "conversation", localID, "messages", "since", "user", "2")
+	info, err := os.Stat(since2Dir)
+	if err != nil {
+		t.Fatalf("Failed to stat since/user/2: %v", err)
+	}
+	if !info.IsDir() {
+		t.Fatalf("since/user/2 should be a directory")
+	}
+
+	entries, err := ioutil.ReadDir(since2Dir)
+	if err != nil {
+		t.Fatalf("Failed to read since/user/2: %v", err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("Expected 2 entries in since/user/2, got %d", len(entries))
+	}
+
+	expectedNames := []string{"004-agent", "005-user"}
+	for i, e := range entries {
+		if e.Mode()&os.ModeSymlink == 0 {
+			t.Errorf("Expected symlink, got %s with mode %v", e.Name(), e.Mode())
+		}
+		if e.Name() != expectedNames[i] {
+			t.Errorf("Expected name %q, got %q", expectedNames[i], e.Name())
+		}
+	}
+
+	// Verify symlink targets are correct (../../../{message-dir})
+	for _, name := range expectedNames {
+		target, err := os.Readlink(filepath.Join(since2Dir, name))
+		if err != nil {
+			t.Errorf("Failed to readlink %s: %v", name, err)
+			continue
+		}
+		expectedTarget := "../../../" + name
+		if target != expectedTarget {
+			t.Errorf("Symlink %s target = %q, want %q", name, target, expectedTarget)
+		}
+	}
+
+	// Test since/user/1 - messages after the last user message (005-user)
+	// Should be empty since it's the last message
+	since1Dir := filepath.Join(tmpDir, "conversation", localID, "messages", "since", "user", "1")
+	entries, err = ioutil.ReadDir(since1Dir)
+	if err != nil {
+		t.Fatalf("Failed to read since/user/1: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("Expected 0 entries in since/user/1, got %d", len(entries))
+	}
+
+	// Verify we can read through symlinks
+	data, err := ioutil.ReadFile(filepath.Join(since2Dir, "004-agent", "type"))
+	if err != nil {
+		t.Fatalf("Failed to read type through symlink: %v", err)
+	}
+	if strings.TrimSpace(string(data)) != "shelley" {
+		t.Errorf("Expected type=shelley, got %q", string(data))
+	}
+}
+
+// TestConvMetaDirNode tests the meta/ directory in conversations.
+func TestConvMetaDirNode(t *testing.T) {
+	convID := "test-meta-conv-id"
+	convSlug := "test-meta-slug"
+	convCreatedAt := "2024-01-15T10:30:00Z"
+	convUpdatedAt := "2024-01-15T11:00:00Z"
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/conversations" {
+			slugPtr := &convSlug
+			data, _ := json.Marshal([]shelley.Conversation{{
+				ConversationID: convID,
+				Slug:           slugPtr,
+				CreatedAt:      convCreatedAt,
+				UpdatedAt:      convUpdatedAt,
+			}})
+			w.Write(data)
+			return
+		}
+		if r.URL.Path == "/api/conversation/"+convID {
+			slugPtr := &convSlug
+			data, _ := json.Marshal(shelley.Conversation{
+				ConversationID: convID,
+				Slug:           slugPtr,
+				CreatedAt:      convCreatedAt,
+				UpdatedAt:      convUpdatedAt,
+			})
+			w.Write(data)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	store := testStore(t)
+	localID, _ := store.Clone()
+	store.SetCtl(localID, "model", "claude-3-opus") // Must be before MarkCreated
+	store.MarkCreated(localID, convID, convSlug)
+
+	mountPoint, cleanup := mountTestFSWithServer(t, server, store)
+	defer cleanup()
+
+	metaDir := filepath.Join(mountPoint, "conversation", localID, "meta")
+
+	// Verify meta is a directory
+	info, err := os.Stat(metaDir)
+	if err != nil {
+		t.Fatalf("Failed to stat meta dir: %v", err)
+	}
+	if !info.IsDir() {
+		t.Error("meta should be a directory")
+	}
+
+	// Read directory contents
+	entries, err := ioutil.ReadDir(metaDir)
+	if err != nil {
+		t.Fatalf("Failed to read meta dir: %v", err)
+	}
+
+	// Build a map of entries for easier checking
+	entryMap := make(map[string]bool)
+	for _, e := range entries {
+		entryMap[e.Name()] = true
+	}
+
+	// Required fields
+	requiredFields := []string{"local_id", "conversation_id", "slug", "created", "model"}
+	for _, field := range requiredFields {
+		if !entryMap[field] {
+			t.Errorf("Missing required field: %s", field)
+		}
+	}
+
+	// Verify some field values
+	tests := []struct {
+		field    string
+		expected string
+	}{
+		{"local_id", localID + "\n"},
+		{"conversation_id", convID + "\n"},
+		{"slug", convSlug + "\n"},
+		{"created", "true\n"},
+		{"model", "claude-3-opus\n"},
+		{"api_created_at", convCreatedAt + "\n"},
+		{"api_updated_at", convUpdatedAt + "\n"},
+	}
+
+	for _, tc := range tests {
+		data, err := ioutil.ReadFile(filepath.Join(metaDir, tc.field))
+		if err != nil {
+			t.Errorf("Failed to read %s: %v", tc.field, err)
+			continue
+		}
+		if string(data) != tc.expected {
+			t.Errorf("%s: expected %q, got %q", tc.field, tc.expected, string(data))
+		}
+	}
+}
+
+// TestConvMetaDirNode_UncreatedConversation tests meta/ for a conversation not yet created on backend.
+func TestConvMetaDirNode_UncreatedConversation(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/conversations" {
+			w.Write([]byte("[]"))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	store := testStore(t)
+	localID, _ := store.Clone()
+	// Don't mark as created - this is an uncreated local conversation
+	store.SetCtl(localID, "model", "claude-3-haiku")
+
+	mountPoint, cleanup := mountTestFSWithServer(t, server, store)
+	defer cleanup()
+
+	metaDir := filepath.Join(mountPoint, "conversation", localID, "meta")
+
+	// Read local_id (should be present)
+	data, err := ioutil.ReadFile(filepath.Join(metaDir, "local_id"))
+	if err != nil {
+		t.Fatalf("Failed to read local_id: %v", err)
+	}
+	if string(data) != localID+"\n" {
+		t.Errorf("local_id: expected %q, got %q", localID, string(data))
+	}
+
+	// Read created (should be false)
+	data, err = ioutil.ReadFile(filepath.Join(metaDir, "created"))
+	if err != nil {
+		t.Fatalf("Failed to read created: %v", err)
+	}
+	if string(data) != "false\n" {
+		t.Errorf("created: expected 'false', got %q", string(data))
+	}
+
+	// Read model (should be set)
+	data, err = ioutil.ReadFile(filepath.Join(metaDir, "model"))
+	if err != nil {
+		t.Fatalf("Failed to read model: %v", err)
+	}
+	if string(data) != "claude-3-haiku\n" {
+		t.Errorf("model: expected 'claude-3-haiku', got %q", string(data))
+	}
+
+	// conversation_id should not exist for uncreated conversation
+	_, err = os.Stat(filepath.Join(metaDir, "conversation_id"))
+	if err == nil {
+		t.Error("conversation_id should not exist for uncreated conversation")
+	}
+
+	// api_created_at should not exist
+	_, err = os.Stat(filepath.Join(metaDir, "api_created_at"))
+	if err == nil {
+		t.Error("api_created_at should not exist for uncreated conversation")
 	}
 }

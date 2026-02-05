@@ -282,6 +282,146 @@ func (c *Client) ListConversations() ([]byte, error) {
 	return io.ReadAll(resp.Body)
 }
 
+// ListArchivedConversations lists all archived conversations
+func (c *Client) ListArchivedConversations() ([]byte, error) {
+	req, err := http.NewRequest("GET", c.baseURL+"/api/conversations/archived", nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("X-Exedev-Userid", "1")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to send request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		// If archived endpoint doesn't exist, return empty list
+		if resp.StatusCode == http.StatusNotFound {
+			return []byte("[]"), nil
+		}
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(body))
+	}
+
+	return io.ReadAll(resp.Body)
+}
+
+// ArchiveConversation archives a conversation
+func (c *Client) ArchiveConversation(conversationID string) error {
+	req, err := http.NewRequest("POST", c.baseURL+"/api/conversation/"+conversationID+"/archive", nil)
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("X-Exedev-Userid", "1")
+	req.Header.Set("X-Shelley-Request", "1")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to send request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(body))
+	}
+
+	return nil
+}
+
+// UnarchiveConversation unarchives a conversation
+func (c *Client) UnarchiveConversation(conversationID string) error {
+	req, err := http.NewRequest("POST", c.baseURL+"/api/conversation/"+conversationID+"/unarchive", nil)
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("X-Exedev-Userid", "1")
+	req.Header.Set("X-Shelley-Request", "1")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to send request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(body))
+	}
+
+	return nil
+}
+
+// IsConversationArchived checks if a conversation is archived
+func (c *Client) IsConversationArchived(conversationID string) (bool, error) {
+	// Get conversations list first
+	req, err := http.NewRequest("GET", c.baseURL+"/api/conversations", nil)
+	if err != nil {
+		return false, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("X-Exedev-Userid", "1")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return false, fmt.Errorf("failed to send request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return false, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(body))
+	}
+
+	var convs []Conversation
+	if err := json.NewDecoder(resp.Body).Decode(&convs); err != nil {
+		return false, fmt.Errorf("failed to decode response: %w", err)
+	}
+
+	// If found in non-archived list, it's not archived
+	for _, conv := range convs {
+		if conv.ConversationID == conversationID {
+			return false, nil
+		}
+	}
+
+	// Check archived list
+	req, err = http.NewRequest("GET", c.baseURL+"/api/conversations/archived", nil)
+	if err != nil {
+		return false, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("X-Exedev-Userid", "1")
+
+	resp, err = c.httpClient.Do(req)
+	if err != nil {
+		return false, fmt.Errorf("failed to send request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		// If archived endpoint doesn't exist, conversation is not archived
+		return false, nil
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&convs); err != nil {
+		return false, fmt.Errorf("failed to decode response: %w", err)
+	}
+
+	for _, conv := range convs {
+		if conv.ConversationID == conversationID {
+			return true, nil
+		}
+	}
+
+	return false, nil
+}
+
 // Helper function to safely get string from map
 func getString(m map[string]interface{}, key string) string {
 	if v, ok := m[key]; ok {

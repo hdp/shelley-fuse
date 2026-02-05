@@ -743,3 +743,116 @@ func TestDeletePersistence(t *testing.T) {
 		t.Error("non-deleted conversation should persist")
 	}
 }
+
+func TestAdoptWithMetadata(t *testing.T) {
+	s, err := NewStore(tempStatePath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	localID, err := s.AdoptWithMetadata("server-meta-123", "test-slug", "2024-01-15T10:30:00Z", "2024-01-16T14:20:00Z")
+	if err != nil {
+		t.Fatalf("AdoptWithMetadata failed: %v", err)
+	}
+
+	cs := s.Get(localID)
+	if cs == nil {
+		t.Fatal("expected conversation state")
+	}
+	if cs.Slug != "test-slug" {
+		t.Errorf("expected Slug=test-slug, got %s", cs.Slug)
+	}
+	if cs.APICreatedAt != "2024-01-15T10:30:00Z" {
+		t.Errorf("expected APICreatedAt=2024-01-15T10:30:00Z, got %s", cs.APICreatedAt)
+	}
+	if cs.APIUpdatedAt != "2024-01-16T14:20:00Z" {
+		t.Errorf("expected APIUpdatedAt=2024-01-16T14:20:00Z, got %s", cs.APIUpdatedAt)
+	}
+}
+
+func TestAdoptWithMetadataUpdatesTimestamps(t *testing.T) {
+	s, err := NewStore(tempStatePath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// First adoption without timestamps
+	localID, err := s.AdoptWithMetadata("server-meta-update", "slug", "", "")
+	if err != nil {
+		t.Fatalf("first AdoptWithMetadata failed: %v", err)
+	}
+
+	// Second adoption with timestamps should update them
+	_, err = s.AdoptWithMetadata("server-meta-update", "", "2024-01-15T10:30:00Z", "2024-01-16T14:20:00Z")
+	if err != nil {
+		t.Fatalf("second AdoptWithMetadata failed: %v", err)
+	}
+
+	cs := s.Get(localID)
+	if cs.APICreatedAt != "2024-01-15T10:30:00Z" {
+		t.Errorf("expected APICreatedAt to be updated, got %s", cs.APICreatedAt)
+	}
+	if cs.APIUpdatedAt != "2024-01-16T14:20:00Z" {
+		t.Errorf("expected APIUpdatedAt to be updated, got %s", cs.APIUpdatedAt)
+	}
+}
+
+func TestAdoptWithMetadataUpdatesNewerTimestamp(t *testing.T) {
+	s, err := NewStore(tempStatePath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// First adoption with older timestamp
+	localID, err := s.AdoptWithMetadata("server-meta-newer", "slug", "2024-01-15T10:30:00Z", "2024-01-16T14:20:00Z")
+	if err != nil {
+		t.Fatalf("first AdoptWithMetadata failed: %v", err)
+	}
+
+	// Second adoption with newer updated_at should update
+	_, err = s.AdoptWithMetadata("server-meta-newer", "", "", "2024-01-17T09:00:00Z")
+	if err != nil {
+		t.Fatalf("second AdoptWithMetadata failed: %v", err)
+	}
+
+	cs := s.Get(localID)
+	// created_at should not change (already set)
+	if cs.APICreatedAt != "2024-01-15T10:30:00Z" {
+		t.Errorf("expected APICreatedAt unchanged, got %s", cs.APICreatedAt)
+	}
+	// updated_at should be newer
+	if cs.APIUpdatedAt != "2024-01-17T09:00:00Z" {
+		t.Errorf("expected APIUpdatedAt=2024-01-17T09:00:00Z, got %s", cs.APIUpdatedAt)
+	}
+}
+
+func TestAdoptWithMetadataPersistence(t *testing.T) {
+	path := tempStatePath(t)
+
+	s1, err := NewStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	localID, err := s1.AdoptWithMetadata("server-meta-persist", "slug", "2024-01-15T10:30:00Z", "2024-01-16T14:20:00Z")
+	if err != nil {
+		t.Fatalf("AdoptWithMetadata failed: %v", err)
+	}
+
+	// Load into fresh store
+	s2, err := NewStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cs := s2.Get(localID)
+	if cs == nil {
+		t.Fatal("expected conversation state after reload")
+	}
+	if cs.APICreatedAt != "2024-01-15T10:30:00Z" {
+		t.Errorf("expected APICreatedAt persisted, got %s", cs.APICreatedAt)
+	}
+	if cs.APIUpdatedAt != "2024-01-16T14:20:00Z" {
+		t.Errorf("expected APIUpdatedAt persisted, got %s", cs.APIUpdatedAt)
+	}
+}
