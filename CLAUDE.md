@@ -25,10 +25,6 @@ just dev
 just clean
 ```
 
-## Version Control
-
-This repository uses **jj** (Jujutsu) for version control, not raw git. Use `jj` commands for all VCS operations (status, log, commit, etc.). Do not use `git` directly.
-
 This project uses a CLI ticket system for task management. Run `tk help` when you need to use it.
 
 ## Architecture
