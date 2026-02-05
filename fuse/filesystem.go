@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -871,7 +870,47 @@ func (c *ConversationNode) getConversationTime() time.Time {
 	return c.startTime
 }
 
+// buildConversationJSONMap builds a map of conversation data suitable for jsonfs.
+// This exposes API fields as files at the conversation directory root.
+func (c *ConversationNode) buildConversationJSONMap() map[string]any {
+	cs := c.state.Get(c.localID)
+	if cs == nil {
+		return nil
+	}
+
+	result := make(map[string]any)
+
+	// Always expose id (conversation_id from API, or empty if not created)
+	if cs.ShelleyConversationID != "" {
+		result["id"] = cs.ShelleyConversationID
+	}
+
+	// Always expose slug if set
+	if cs.Slug != "" {
+		result["slug"] = cs.Slug
+	}
+
+	// Fetch API data for created conversations
+	if cs.Created && cs.ShelleyConversationID != "" {
+		convData, err := c.client.GetConversation(cs.ShelleyConversationID)
+		if err == nil {
+			var conv shelley.Conversation
+			if err := json.Unmarshal(convData, &conv); err == nil {
+				if conv.CreatedAt != "" {
+					result["created_at"] = conv.CreatedAt
+				}
+				if conv.UpdatedAt != "" {
+					result["updated_at"] = conv.UpdatedAt
+				}
+			}
+		}
+	}
+
+	return result
+}
+
 func (c *ConversationNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
+	// Special files with custom behavior
 	switch name {
 	case "ctl":
 		return c.NewInode(ctx, &CtlNode{localID: c.localID, state: c.state, startTime: c.startTime}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
@@ -879,10 +918,6 @@ func (c *ConversationNode) Lookup(ctx context.Context, name string, out *fuse.En
 		return c.NewInode(ctx, &ConvNewNode{localID: c.localID, client: c.client, state: c.state, startTime: c.startTime, parsedCache: c.parsedCache}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
 	case "messages":
 		return c.NewInode(ctx, &MessagesDirNode{localID: c.localID, client: c.client, state: c.state, startTime: c.startTime, parsedCache: c.parsedCache}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
-	case "id":
-		return c.NewInode(ctx, &ConvMetaFieldNode{localID: c.localID, state: c.state, field: "id", startTime: c.startTime}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
-	case "slug":
-		return c.NewInode(ctx, &ConvMetaFieldNode{localID: c.localID, state: c.state, field: "slug", startTime: c.startTime}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
 	case "fuse_id":
 		return c.NewInode(ctx, &ConvStatusFieldNode{localID: c.localID, client: c.client, state: c.state, field: "fuse_id", startTime: c.startTime}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
 	case "created":
@@ -909,15 +944,8 @@ func (c *ConversationNode) Lookup(ctx context.Context, name string, out *fuse.En
 			state:     c.state,
 			startTime: c.startTime,
 		}, fs.StableAttr{Mode: syscall.S_IFLNK}), 0
-	case "meta":
-		return c.NewInode(ctx, &ConvMetaDirNode{
-			localID:   c.localID,
-			client:    c.client,
-			state:     c.state,
-			startTime: c.startTime,
-		}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
 	case "archived":
-		// Only return the file if the conversation is archived
+		// Presence/absence semantics: file exists only when conversation is archived
 		cs := c.state.Get(c.localID)
 		if cs == nil || !cs.Created || cs.ShelleyConversationID == "" {
 			return nil, syscall.ENOENT
@@ -934,17 +962,36 @@ func (c *ConversationNode) Lookup(ctx context.Context, name string, out *fuse.En
 		}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
 	}
 
-	return nil, syscall.ENOENT
+	// For all other fields, use jsonfs to expose conversation JSON data
+	convMap := c.buildConversationJSONMap()
+	if convMap == nil {
+		return nil, syscall.ENOENT
+	}
+
+	value, ok := convMap[name]
+	if !ok {
+		return nil, syscall.ENOENT
+	}
+
+	config := &jsonfs.Config{StartTime: c.getConversationTime()}
+	node := jsonfs.NewNode(value, config)
+
+	// Determine mode based on value type
+	mode := uint32(fuse.S_IFREG)
+	switch value.(type) {
+	case map[string]any, []any:
+		mode = fuse.S_IFDIR
+	}
+
+	return c.NewInode(ctx, node, fs.StableAttr{Mode: mode}), 0
 }
 
 func (c *ConversationNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
+	// Special files always present
 	entries := []fuse.DirEntry{
 		{Name: "ctl", Mode: fuse.S_IFREG},
 		{Name: "new", Mode: fuse.S_IFREG},
 		{Name: "messages", Mode: fuse.S_IFDIR},
-		{Name: "meta", Mode: fuse.S_IFDIR},
-		{Name: "id", Mode: fuse.S_IFREG},
-		{Name: "slug", Mode: fuse.S_IFREG},
 		{Name: "fuse_id", Mode: fuse.S_IFREG},
 	}
 
@@ -967,6 +1014,14 @@ func (c *ConversationNode) Readdir(ctx context.Context) (fs.DirStream, syscall.E
 		archived, err := c.client.IsConversationArchived(cs.ShelleyConversationID)
 		if err == nil && archived {
 			entries = append(entries, fuse.DirEntry{Name: "archived", Mode: fuse.S_IFREG})
+		}
+	}
+
+	// Add JSON fields from conversation data via jsonfs
+	convMap := c.buildConversationJSONMap()
+	if convMap != nil {
+		for name := range convMap {
+			entries = append(entries, fuse.DirEntry{Name: name, Mode: fuse.S_IFREG})
 		}
 	}
 
@@ -1693,63 +1748,6 @@ func (c *CwdSymlinkNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse
 	return 0
 }
 
-// --- ConvMetaFieldNode: read-only file for conversation metadata (id or slug) ---
-
-type ConvMetaFieldNode struct {
-	fs.Inode
-	localID   string
-	state     *state.Store
-	field     string    // "id" or "slug"
-	startTime time.Time // fallback if conversation has no CreatedAt
-}
-
-var _ = (fs.NodeOpener)((*ConvMetaFieldNode)(nil))
-var _ = (fs.NodeReader)((*ConvMetaFieldNode)(nil))
-var _ = (fs.NodeGetattrer)((*ConvMetaFieldNode)(nil))
-
-func (m *ConvMetaFieldNode) Open(ctx context.Context, flags uint32) (fs.FileHandle, uint32, syscall.Errno) {
-	return nil, fuse.FOPEN_DIRECT_IO, 0
-}
-
-func (m *ConvMetaFieldNode) Read(ctx context.Context, f fs.FileHandle, dest []byte, off int64) (fuse.ReadResult, syscall.Errno) {
-	cs := m.state.Get(m.localID)
-	if cs == nil {
-		return nil, syscall.ENOENT
-	}
-	if !cs.Created {
-		// Conversation not yet created on the backend — no id or slug available
-		return nil, syscall.ENOENT
-	}
-
-	var value string
-	switch m.field {
-	case "id":
-		value = cs.ShelleyConversationID
-	case "slug":
-		if cs.Slug == "" {
-			return nil, syscall.ENOENT
-		}
-		value = cs.Slug
-	default:
-		return nil, syscall.ENOENT
-	}
-
-	data := []byte(value + "\n")
-	return fuse.ReadResultData(readAt(data, dest, off)), 0
-}
-
-func (m *ConvMetaFieldNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
-	out.Mode = fuse.S_IFREG | 0444
-	// Use conversation creation time if available, otherwise fall back to FS start time
-	cs := m.state.Get(m.localID)
-	if cs != nil && !cs.CreatedAt.IsZero() {
-		setTimestamps(&out.Attr, cs.CreatedAt)
-	} else {
-		setTimestamps(&out.Attr, m.startTime)
-	}
-	return 0
-}
-
 // --- Content query types ---
 
 type queryKind int
@@ -2123,123 +2121,6 @@ func parseMessageDirName(name string) (int, bool) {
 		return 0, false
 	}
 	return n, true
-}
-
-// --- ConvMetaDirNode: /conversation/{id}/meta/ directory ---
-// Exposes conversation metadata as a JSON-to-filesystem tree using jsonfs.
-
-type ConvMetaDirNode struct {
-	fs.Inode
-	localID   string
-	client    shelley.ShelleyClient
-	state     *state.Store
-	startTime time.Time
-}
-
-var _ = (fs.NodeLookuper)((*ConvMetaDirNode)(nil))
-var _ = (fs.NodeReaddirer)((*ConvMetaDirNode)(nil))
-var _ = (fs.NodeGetattrer)((*ConvMetaDirNode)(nil))
-
-// buildMetadata returns the conversation metadata as a map suitable for jsonfs.
-func (m *ConvMetaDirNode) buildMetadata() map[string]any {
-	cs := m.state.Get(m.localID)
-	if cs == nil {
-		return map[string]any{}
-	}
-
-	meta := map[string]any{
-		"local_id": cs.LocalID,
-		"created":  cs.Created,
-	}
-
-	// Only include non-empty string fields
-	if cs.ShelleyConversationID != "" {
-		meta["conversation_id"] = cs.ShelleyConversationID
-	}
-	if cs.Slug != "" {
-		meta["slug"] = cs.Slug
-	}
-	if cs.Model != "" {
-		meta["model"] = cs.Model
-	}
-	if cs.Cwd != "" {
-		meta["cwd"] = cs.Cwd
-	}
-	if !cs.CreatedAt.IsZero() {
-		meta["local_created_at"] = cs.CreatedAt.Format(time.RFC3339)
-	}
-
-	// Fetch API metadata if available
-	if cs.Created && cs.ShelleyConversationID != "" {
-		convData, err := m.client.GetConversation(cs.ShelleyConversationID)
-		if err == nil {
-			var conv shelley.Conversation
-			if err := json.Unmarshal(convData, &conv); err == nil {
-				if conv.CreatedAt != "" {
-					meta["api_created_at"] = conv.CreatedAt
-				}
-				if conv.UpdatedAt != "" {
-					meta["api_updated_at"] = conv.UpdatedAt
-				}
-			}
-		}
-	}
-
-	return meta
-}
-
-func (m *ConvMetaDirNode) getConversationTime() time.Time {
-	cs := m.state.Get(m.localID)
-	if cs != nil && !cs.CreatedAt.IsZero() {
-		return cs.CreatedAt
-	}
-	return m.startTime
-}
-
-func (m *ConvMetaDirNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
-	meta := m.buildMetadata()
-	value, ok := meta[name]
-	if !ok {
-		return nil, syscall.ENOENT
-	}
-
-	config := &jsonfs.Config{StartTime: m.getConversationTime()}
-	node := jsonfs.NewNode(value, config)
-
-	// Determine mode based on value type (maps/slices become directories, primitives become files)
-	mode := uint32(fuse.S_IFREG)
-	switch value.(type) {
-	case map[string]any, []any:
-		mode = fuse.S_IFDIR
-	}
-
-	return m.NewInode(ctx, node, fs.StableAttr{Mode: mode}), 0
-}
-
-func (m *ConvMetaDirNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
-	meta := m.buildMetadata()
-
-	// Sort keys for consistent ordering
-	keys := make([]string, 0, len(meta))
-	for k := range meta {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-
-	entries := make([]fuse.DirEntry, 0, len(keys))
-	for _, k := range keys {
-		entries = append(entries, fuse.DirEntry{
-			Name: k,
-			Mode: fuse.S_IFREG, // All metadata fields are primitives
-		})
-	}
-	return fs.NewListDirStream(entries), 0
-}
-
-func (m *ConvMetaDirNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
-	out.Mode = fuse.S_IFDIR | 0755
-	setTimestamps(&out.Attr, m.getConversationTime())
-	return 0
 }
 
 // --- ArchivedNode: presence/absence file for archived status ---

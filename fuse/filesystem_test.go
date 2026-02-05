@@ -4188,10 +4188,10 @@ func TestQueryResultDirNode_SincePersonN(t *testing.T) {
 	}
 }
 
-// TestConvMetaDirNode tests the meta/ directory in conversations.
-func TestConvMetaDirNode(t *testing.T) {
-	convID := "test-meta-conv-id"
-	convSlug := "test-meta-slug"
+// TestConversationAPITimestampFields tests that created_at and updated_at are exposed at the conversation root.
+func TestConversationAPITimestampFields(t *testing.T) {
+	convID := "test-timestamp-conv-id"
+	convSlug := "test-timestamp-slug"
 	convCreatedAt := "2024-01-15T10:30:00Z"
 	convUpdatedAt := "2024-01-15T11:00:00Z"
 
@@ -4224,71 +4224,51 @@ func TestConvMetaDirNode(t *testing.T) {
 
 	store := testStore(t)
 	localID, _ := store.Clone()
-	store.SetCtl(localID, "model", "claude-3-opus") // Must be before MarkCreated
+	store.SetCtl(localID, "model", "claude-3-opus")
 	store.MarkCreated(localID, convID, convSlug)
 
 	mountPoint, cleanup := mountTestFSWithServer(t, server, store)
 	defer cleanup()
 
-	metaDir := filepath.Join(mountPoint, "conversation", localID, "meta")
+	convDir := filepath.Join(mountPoint, "conversation", localID)
 
-	// Verify meta is a directory
-	info, err := os.Stat(metaDir)
+	// Test created_at field
+	data, err := ioutil.ReadFile(filepath.Join(convDir, "created_at"))
 	if err != nil {
-		t.Fatalf("Failed to stat meta dir: %v", err)
+		t.Fatalf("Failed to read created_at: %v", err)
 	}
-	if !info.IsDir() {
-		t.Error("meta should be a directory")
+	if string(data) != convCreatedAt+"\n" {
+		t.Errorf("created_at: expected %q, got %q", convCreatedAt+"\n", string(data))
 	}
 
-	// Read directory contents
-	entries, err := ioutil.ReadDir(metaDir)
+	// Test updated_at field
+	data, err = ioutil.ReadFile(filepath.Join(convDir, "updated_at"))
 	if err != nil {
-		t.Fatalf("Failed to read meta dir: %v", err)
+		t.Fatalf("Failed to read updated_at: %v", err)
+	}
+	if string(data) != convUpdatedAt+"\n" {
+		t.Errorf("updated_at: expected %q, got %q", convUpdatedAt+"\n", string(data))
 	}
 
-	// Build a map of entries for easier checking
+	// Verify directory listing includes the timestamp fields
+	entries, err := ioutil.ReadDir(convDir)
+	if err != nil {
+		t.Fatalf("Failed to read conversation dir: %v", err)
+	}
 	entryMap := make(map[string]bool)
 	for _, e := range entries {
 		entryMap[e.Name()] = true
 	}
-
-	// Required fields
-	requiredFields := []string{"local_id", "conversation_id", "slug", "created", "model"}
-	for _, field := range requiredFields {
-		if !entryMap[field] {
-			t.Errorf("Missing required field: %s", field)
-		}
+	if !entryMap["created_at"] {
+		t.Error("created_at should be listed in directory")
 	}
-
-	// Verify some field values
-	tests := []struct {
-		field    string
-		expected string
-	}{
-		{"local_id", localID + "\n"},
-		{"conversation_id", convID + "\n"},
-		{"slug", convSlug + "\n"},
-		{"created", "true\n"},
-		{"model", "claude-3-opus\n"},
-		{"api_created_at", convCreatedAt + "\n"},
-		{"api_updated_at", convUpdatedAt + "\n"},
-	}
-
-	for _, tc := range tests {
-		data, err := ioutil.ReadFile(filepath.Join(metaDir, tc.field))
-		if err != nil {
-			t.Errorf("Failed to read %s: %v", tc.field, err)
-			continue
-		}
-		if string(data) != tc.expected {
-			t.Errorf("%s: expected %q, got %q", tc.field, tc.expected, string(data))
-		}
+	if !entryMap["updated_at"] {
+		t.Error("updated_at should be listed in directory")
 	}
 }
 
-// TestConvMetaDirNode_UncreatedConversation tests meta/ for a conversation not yet created on backend.
-func TestConvMetaDirNode_UncreatedConversation(t *testing.T) {
+// TestConversationAPITimestampFields_UncreatedConversation tests that timestamp fields don't exist for uncreated conversations.
+func TestConversationAPITimestampFields_UncreatedConversation(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/conversations" {
 			w.Write([]byte("[]"))
@@ -4306,44 +4286,28 @@ func TestConvMetaDirNode_UncreatedConversation(t *testing.T) {
 	mountPoint, cleanup := mountTestFSWithServer(t, server, store)
 	defer cleanup()
 
-	metaDir := filepath.Join(mountPoint, "conversation", localID, "meta")
+	convDir := filepath.Join(mountPoint, "conversation", localID)
 
-	// Read local_id (should be present)
-	data, err := ioutil.ReadFile(filepath.Join(metaDir, "local_id"))
-	if err != nil {
-		t.Fatalf("Failed to read local_id: %v", err)
-	}
-	if string(data) != localID+"\n" {
-		t.Errorf("local_id: expected %q, got %q", localID, string(data))
-	}
-
-	// Read created (should be false)
-	data, err = ioutil.ReadFile(filepath.Join(metaDir, "created"))
-	if err != nil {
-		t.Fatalf("Failed to read created: %v", err)
-	}
-	if string(data) != "false\n" {
-		t.Errorf("created: expected 'false', got %q", string(data))
-	}
-
-	// Read model (should be set)
-	data, err = ioutil.ReadFile(filepath.Join(metaDir, "model"))
-	if err != nil {
-		t.Fatalf("Failed to read model: %v", err)
-	}
-	if string(data) != "claude-3-haiku\n" {
-		t.Errorf("model: expected 'claude-3-haiku', got %q", string(data))
-	}
-
-	// conversation_id should not exist for uncreated conversation
-	_, err = os.Stat(filepath.Join(metaDir, "conversation_id"))
+	// created_at should not exist for uncreated conversation
+	_, err := os.Stat(filepath.Join(convDir, "created_at"))
 	if err == nil {
-		t.Error("conversation_id should not exist for uncreated conversation")
+		t.Error("created_at should not exist for uncreated conversation")
 	}
 
-	// api_created_at should not exist
-	_, err = os.Stat(filepath.Join(metaDir, "api_created_at"))
+	// updated_at should not exist for uncreated conversation
+	_, err = os.Stat(filepath.Join(convDir, "updated_at"))
 	if err == nil {
-		t.Error("api_created_at should not exist for uncreated conversation")
+		t.Error("updated_at should not exist for uncreated conversation")
+	}
+
+	// Verify directory listing doesn't include timestamp fields
+	entries, err := ioutil.ReadDir(convDir)
+	if err != nil {
+		t.Fatalf("Failed to read conversation dir: %v", err)
+	}
+	for _, e := range entries {
+		if e.Name() == "created_at" || e.Name() == "updated_at" {
+			t.Errorf("%s should not be listed for uncreated conversation", e.Name())
+		}
 	}
 }

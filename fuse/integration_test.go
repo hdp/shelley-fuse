@@ -429,15 +429,32 @@ func TestConversationDirectoryStructure(t *testing.T) {
 		t.Fatalf("Failed to read conversation directory: %v", err)
 	}
 
+	// Required files for all conversations
 	expectedFiles := map[string]bool{
-		"ctl": false, "new": false, "id": false, "slug": false,
-		"fuse_id": false, "created": false,
+		"ctl": false, "new": false, "fuse_id": false,
 	}
+	// Files that appear only when conversation is created on backend
+	createdFiles := map[string]bool{
+		"id": false, "created": false,
+	}
+	// API timestamp fields (may or may not be present depending on server)
+	apiTimestampFiles := map[string]bool{"created_at": false, "updated_at": false}
+	// Optional files (slug may not be set)
+	optionalFiles := map[string]bool{"slug": false}
 	expectedDirs := map[string]bool{"messages": false}
 
 	for _, e := range entries {
 		if _, ok := expectedFiles[e.Name()]; ok {
 			expectedFiles[e.Name()] = true
+		}
+		if _, ok := createdFiles[e.Name()]; ok {
+			createdFiles[e.Name()] = true
+		}
+		if _, ok := optionalFiles[e.Name()]; ok {
+			optionalFiles[e.Name()] = true
+		}
+		if _, ok := apiTimestampFiles[e.Name()]; ok {
+			apiTimestampFiles[e.Name()] = true
 		}
 		if _, ok := expectedDirs[e.Name()]; ok {
 			expectedDirs[e.Name()] = true
@@ -449,6 +466,14 @@ func TestConversationDirectoryStructure(t *testing.T) {
 			t.Errorf("Expected file %q", name)
 		}
 	}
+	for name, found := range createdFiles {
+		if !found {
+			t.Errorf("Expected file %q (for created conversation)", name)
+		}
+	}
+	// optionalFiles and apiTimestampFiles are not checked - they may or may not be present
+	_ = optionalFiles
+	_ = apiTimestampFiles
 	for name, found := range expectedDirs {
 		if !found {
 			t.Errorf("Expected directory %q", name)
