@@ -1,6 +1,6 @@
 ---
 id: sf-yior
-status: closed
+status: open
 deps: [sf-37oa]
 links: []
 created: 2026-02-04T02:16:23Z
@@ -90,3 +90,7 @@ The filesystem structure should be:
 The messages/ subdir should follow same pattern - 0-indexed to match JSON arrays.
 
 The meta/ subdirectory approach was wrong - fields should be flat at the conversation level, not nested.
+
+**2026-02-05T13:26:13Z**
+
+messages/ were not reworked to be 0-indexed
