@@ -1,6 +1,6 @@
 ---
 id: sf-sevm
-status: open
+status: in_progress
 deps: []
 links: []
 created: 2026-02-04T13:16:41Z
