@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -4016,48 +4017,51 @@ func TestQueryResultDirNode_LastN(t *testing.T) {
 		t.Fatalf("Expected 2 entries in last/2, got %d", len(entries))
 	}
 
-	// Verify the entries are symlinks (0-indexed: seqID 3 → 2-user, seqID 4 → 3-agent)
-	expectedNames := []string{"2-user", "3-agent"}
+	// Verify the entries are ordinal symlinks: 0, 1 (0 = oldest, 1 = newest of last 2)
+	// last/2 should have entries "0" and "1"
+	// 0 → ../../2-user (seqID 3, 0-indexed as 2)
+	// 1 → ../../3-agent (seqID 4, 0-indexed as 3)
+	expectedOrdinals := []string{"0", "1"}
+	expectedTargets := []string{"../../2-user", "../../3-agent"}
 	for i, e := range entries {
 		if e.Mode()&os.ModeSymlink == 0 {
 			t.Errorf("Expected symlink, got %s with mode %v", e.Name(), e.Mode())
 		}
-		if e.Name() != expectedNames[i] {
-			t.Errorf("Expected name %q, got %q", expectedNames[i], e.Name())
+		if e.Name() != expectedOrdinals[i] {
+			t.Errorf("Expected name %q, got %q", expectedOrdinals[i], e.Name())
 		}
 	}
 
 	// Verify symlink targets are correct (../../{message-dir})
-	for _, name := range expectedNames {
-		target, err := os.Readlink(filepath.Join(last2Dir, name))
+	for i, ordinal := range expectedOrdinals {
+		target, err := os.Readlink(filepath.Join(last2Dir, ordinal))
 		if err != nil {
-			t.Errorf("Failed to readlink %s: %v", name, err)
+			t.Errorf("Failed to readlink %s: %v", ordinal, err)
 			continue
 		}
-		expectedTarget := "../../" + name
-		if target != expectedTarget {
-			t.Errorf("Symlink %s target = %q, want %q", name, target, expectedTarget)
+		if target != expectedTargets[i] {
+			t.Errorf("Symlink %s target = %q, want %q", ordinal, target, expectedTargets[i])
 		}
 	}
 
 	// Verify we can read through the symlinks
-	data, err := ioutil.ReadFile(filepath.Join(last2Dir, "2-user", "type"))
+	data, err := ioutil.ReadFile(filepath.Join(last2Dir, "0", "type"))
 	if err != nil {
-		t.Fatalf("Failed to read type through symlink: %v", err)
+		t.Fatalf("Failed to read type through symlink 0: %v", err)
 	}
 	if strings.TrimSpace(string(data)) != "user" {
-		t.Errorf("Expected type=user, got %q", string(data))
+		t.Errorf("Expected type=user for ordinal 0, got %q", string(data))
 	}
 
-	data, err = ioutil.ReadFile(filepath.Join(last2Dir, "3-agent", "type"))
+	data, err = ioutil.ReadFile(filepath.Join(last2Dir, "1", "type"))
 	if err != nil {
-		t.Fatalf("Failed to read type through symlink: %v", err)
+		t.Fatalf("Failed to read type through symlink 1: %v", err)
 	}
 	if strings.TrimSpace(string(data)) != "shelley" {
-		t.Errorf("Expected type=shelley, got %q", string(data))
+		t.Errorf("Expected type=shelley for ordinal 1, got %q", string(data))
 	}
 
-	// Test last/3 - should contain 3 messages
+	// Test last/3 - should contain 3 messages with ordinals 0, 1, 2
 	last3Dir := filepath.Join(tmpDir, "conversation", localID, "messages", "last", "3")
 	entries, err = ioutil.ReadDir(last3Dir)
 	if err != nil {
@@ -4065,6 +4069,13 @@ func TestQueryResultDirNode_LastN(t *testing.T) {
 	}
 	if len(entries) != 3 {
 		t.Errorf("Expected 3 entries in last/3, got %d", len(entries))
+	}
+	// Verify ordinals
+	for i, e := range entries {
+		expected := strconv.Itoa(i)
+		if e.Name() != expected {
+			t.Errorf("Expected ordinal %q in last/3, got %q", expected, e.Name())
+		}
 	}
 }
 

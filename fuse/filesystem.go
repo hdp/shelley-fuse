@@ -1953,19 +1953,21 @@ func (q *QueryDirNode) Lookup(ctx context.Context, name string, out *fuse.EntryO
 		}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
 	}
 
-	// The child is {N} - a symlink to the Nth message
+	// The child is {N} - return a QueryResultDirNode
 	n, err := strconv.Atoi(name)
 	if err != nil || n <= 0 {
 		return nil, syscall.ENOENT
 	}
 
-	// Get the target message
-	target, errno := q.getSymlinkTarget(n)
-	if errno != 0 {
-		return nil, errno
-	}
-
-	return q.NewInode(ctx, &SymlinkNode{target: target, startTime: q.startTime}, fs.StableAttr{Mode: syscall.S_IFLNK}), 0
+	return q.NewInode(ctx, &QueryResultDirNode{
+		localID:   q.localID,
+		client:    q.client,
+		state:     q.state,
+		kind:      q.kind,
+		n:         n,
+		person:    q.person,
+		startTime: q.startTime,
+	}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
 }
 
 // getSymlinkTarget returns the symlink target for last/{N} or since/{person}/{N}.
@@ -2106,7 +2108,22 @@ func (q *QueryResultDirNode) Lookup(ctx context.Context, name string, out *fuse.
 		return nil, syscall.ENOENT
 	}
 
-	// Look for a message matching the name
+	// For last/{N}, entries are ordinal (0, 1, 2, ...)
+	// For since/{person}/{N}, entries are message base names
+	if q.kind == queryLast {
+		// Parse the ordinal index
+		idx, err := strconv.Atoi(name)
+		if err != nil || idx < 0 || idx >= len(msgs) {
+			return nil, syscall.ENOENT
+		}
+		// idx 0 is oldest, idx len-1 is newest (msgs are already in oldest-first order from FilterLast)
+		slug := shelley.MessageSlug(&msgs[idx], toolMap)
+		base := messageFileBase(msgs[idx].SequenceID, slug)
+		target := q.symlinkPrefix() + base
+		return q.NewInode(ctx, &SymlinkNode{target: target, startTime: q.startTime}, fs.StableAttr{Mode: syscall.S_IFLNK}), 0
+	}
+
+	// For since/{person}/{N}, look for a message matching the name
 	for i := range msgs {
 		slug := shelley.MessageSlug(&msgs[i], toolMap)
 		base := messageFileBase(msgs[i].SequenceID, slug)
@@ -2127,10 +2144,18 @@ func (q *QueryResultDirNode) Readdir(ctx context.Context) (fs.DirStream, syscall
 	}
 
 	entries := make([]fuse.DirEntry, 0, len(msgs))
-	for i := range msgs {
-		slug := shelley.MessageSlug(&msgs[i], toolMap)
-		base := messageFileBase(msgs[i].SequenceID, slug)
-		entries = append(entries, fuse.DirEntry{Name: base, Mode: syscall.S_IFLNK})
+	// For last/{N}, entries are ordinal (0, 1, 2, ...)
+	// For since/{person}/{N}, entries are message base names
+	if q.kind == queryLast {
+		for i := range msgs {
+			entries = append(entries, fuse.DirEntry{Name: strconv.Itoa(i), Mode: syscall.S_IFLNK})
+		}
+	} else {
+		for i := range msgs {
+			slug := shelley.MessageSlug(&msgs[i], toolMap)
+			base := messageFileBase(msgs[i].SequenceID, slug)
+			entries = append(entries, fuse.DirEntry{Name: base, Mode: syscall.S_IFLNK})
+		}
 	}
 
 	return fs.NewListDirStream(entries), 0
