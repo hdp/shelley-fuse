@@ -1,6 +1,6 @@
 ---
 id: sf-sevm
-status: in_progress
+status: closed
 deps: []
 links: []
 created: 2026-02-04T13:16:41Z
@@ -33,3 +33,13 @@ This elegantly uses filesystem semantics to express 'is the conversation ready f
 - gitinfo messages are ignored for status purposes
 - Tests cover edge cases (pending tool calls, user messages, nested tools)
 
+
+## Notes
+
+**2026-02-06T15:19:32Z**
+
+Implementation complete. Added AnalyzeWaitingForInput function with comprehensive logic for tool call/result pairing. Symlink target points to messages/{N}-agent/llm_data/EndOfTurn. Tests cover: empty conversations, simple agent responses, user messages after agent, pending tool calls, completed tool calls, multiple tool calls, partial completion, and gitinfo messages. All unit and integration tests pass.
+
+**2026-02-06T15:36:06Z**
+
+Fixed critical bugs: (1) isAgentMessage() now checks only Type='shelley' instead of also requiring slug='agent', which was wrong for tool call messages. (2) Added LastAgentSlug field to WaitingForInputStatus and use it when constructing symlink target instead of hardcoding 'agent'. (3) Added test for 'tool call completed with no follow-up text' scenario. All tests pass.
