@@ -350,6 +350,50 @@ func FilterLast(messages []Message, n int) []Message {
 	return messages[len(messages)-n:]
 }
 
+// GetNthLast returns the nth-to-last message (1-based).
+// n=1 returns the last message, n=2 returns the second-to-last, etc.
+// Returns nil if n is out of range or <= 0.
+func GetNthLast(messages []Message, n int) *Message {
+	if n <= 0 || n > len(messages) {
+		return nil
+	}
+	return &messages[len(messages)-n]
+}
+
+// GetNthSince returns the nth message after the reference message from person (1-based).
+// n=1 returns the first message after the last message from person.
+// n=2 returns the second message after the last message from person.
+// Returns nil if person is not found or n is out of range.
+func GetNthSince(messages []Message, person string, n int) *Message {
+	if n <= 0 {
+		return nil
+	}
+	person = strings.ToLower(person)
+
+	// Build tool map for slug computation
+	toolMap := buildToolMapFromSlice(messages)
+
+	// Find the last message from this person
+	refIdx := -1
+	for i := len(messages) - 1; i >= 0; i-- {
+		slug := MessageSlug(&messages[i], toolMap)
+		if slug == person {
+			refIdx = i
+			break
+		}
+	}
+	if refIdx == -1 {
+		return nil
+	}
+
+	// Get the nth message after the reference
+	targetIdx := refIdx + n
+	if targetIdx >= len(messages) {
+		return nil
+	}
+	return &messages[targetIdx]
+}
+
 // FilterSince returns messages after the nth-to-last message from the given person.
 // The referenced message itself is NOT included in the result.
 // Person matching is case-insensitive against the message slug (computed by MessageSlug).

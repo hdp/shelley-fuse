@@ -249,13 +249,13 @@ echo "Thanks!" > conversation/$ID/send
           content.md     → markdown rendering
           llm_data/      → unpacked JSON (if present)
           usage_data/    → unpacked JSON (if present)
-        last/{N}/        → directory with symlinks to last N messages
-          2-user         → symlink to ../../2-user
-          3-agent        → symlink to ../../3-agent
+        last/{N}         → symlink to Nth-to-last message (../../{NNN-{slug}})
+          last/1         → symlink to last message
+          last/2         → symlink to second-to-last message
           ...
-        since/{slug}/{N}/ → directory with symlinks to messages after Nth {slug}
-          4-agent        → symlink to ../../../4-agent
-          5-user         → symlink to ../../../5-user
+        since/{slug}/{N} → symlink to Nth message after last {slug} (../../../{NNN-{slug}})
+          since/user/1   → symlink to first message after last user message
+          since/user/2   → symlink to second message after last user message
           ...
 
 ` + "```" + `
@@ -272,17 +272,17 @@ readlink models/default
 # List conversations
 ls conversation/
 
-# List last 5 messages (symlinks to message directories)
-ls conversation/$ID/messages/last/5/
+# Read the last message
+cat conversation/$ID/messages/last/1/content.md
 
-# Read content of all last 5 messages
-cat conversation/$ID/messages/last/5/*/content.md
+# Read the second-to-last message
+cat conversation/$ID/messages/last/2/content.md
 
-# List messages since your last message
-ls conversation/$ID/messages/since/user/1/
+# Read the first message after your last message
+cat conversation/$ID/messages/since/user/1/content.md
 
-# Read content of messages since your last message
-cat conversation/$ID/messages/since/user/1/*/content.md
+# Read the second message after your last message
+cat conversation/$ID/messages/since/user/2/content.md
 
 # Get message count
 cat conversation/$ID/messages/count
@@ -1953,21 +1953,68 @@ func (q *QueryDirNode) Lookup(ctx context.Context, name string, out *fuse.EntryO
 		}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
 	}
 
-	// The child is {N} - a directory containing symlinks to message directories
+	// The child is {N} - a symlink to the Nth message
 	n, err := strconv.Atoi(name)
 	if err != nil || n <= 0 {
 		return nil, syscall.ENOENT
 	}
 
-	return q.NewInode(ctx, &QueryResultDirNode{
-		localID:   q.localID,
-		client:    q.client,
-		state:     q.state,
-		kind:      q.kind,
-		n:         n,
-		person:    q.person,
-		startTime: q.startTime,
-	}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
+	// Get the target message
+	target, errno := q.getSymlinkTarget(n)
+	if errno != 0 {
+		return nil, errno
+	}
+
+	return q.NewInode(ctx, &SymlinkNode{target: target, startTime: q.startTime}, fs.StableAttr{Mode: syscall.S_IFLNK}), 0
+}
+
+// getSymlinkTarget returns the symlink target for last/{N} or since/{person}/{N}.
+// For last/{N}: returns "../../{NNN-{slug}}" pointing to the Nth-to-last message
+// For since/{person}/{N}: returns "../../../{NNN-{slug}}" pointing to the Nth message after the last message from person
+func (q *QueryDirNode) getSymlinkTarget(n int) (string, syscall.Errno) {
+	cs := q.state.Get(q.localID)
+	if cs == nil || !cs.Created || cs.ShelleyConversationID == "" {
+		return "", syscall.ENOENT
+	}
+
+	convData, err := q.client.GetConversation(cs.ShelleyConversationID)
+	if err != nil {
+		return "", syscall.EIO
+	}
+
+	msgs, err := shelley.ParseMessages(convData)
+	if err != nil {
+		return "", syscall.EIO
+	}
+
+	// Build toolMap for slug computation
+	msgPtrs := make([]*shelley.Message, len(msgs))
+	for i := range msgs {
+		msgPtrs[i] = &msgs[i]
+	}
+	toolMap := shelley.BuildToolNameMap(msgPtrs)
+
+	var targetMsg *shelley.Message
+	var prefix string
+
+	switch q.kind {
+	case queryLast:
+		// last/{N} -> Nth-to-last message
+		targetMsg = shelley.GetNthLast(msgs, n)
+		prefix = "../../" // up from last/, up from messages/
+	case querySince:
+		// since/{person}/{N} -> Nth message after the last message from person
+		targetMsg = shelley.GetNthSince(msgs, q.person, n)
+		prefix = "../../../" // up from {N}/, up from {person}/, up from since/, into messages/
+	}
+
+	if targetMsg == nil {
+		return "", syscall.ENOENT
+	}
+
+	slug := shelley.MessageSlug(targetMsg, toolMap)
+	base := messageFileBase(targetMsg.SequenceID, slug)
+	return prefix + base, 0
 }
 
 func (q *QueryDirNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
