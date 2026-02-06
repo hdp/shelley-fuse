@@ -208,13 +208,13 @@ ID=$(cat new/clone)
 echo "model=claude-sonnet-4.5 cwd=$PWD" > conversation/$ID/ctl
 
 # Send first message (creates conversation on backend)
-echo "Hello, Shelley!" > conversation/$ID/new
+echo "Hello, Shelley!" > conversation/$ID/send
 
 # Read the response
 cat conversation/$ID/messages/all.md
 
 # Send follow-up
-echo "Thanks!" > conversation/$ID/new
+echo "Thanks!" > conversation/$ID/send
 ` + "```" + `
 
 ## Filesystem Layout
@@ -232,7 +232,7 @@ echo "Thanks!" > conversation/$ID/new
   conversation/          → all conversations
     {id}/                → directory per conversation
       ctl                → read/write config; read-only after first message
-      new                → write here to send messages
+      send               → write here to send messages
       id                 → Shelley server conversation ID
       slug               → conversation slug (if set)
       created            → present if created on backend (absence = not created)
@@ -914,8 +914,8 @@ func (c *ConversationNode) Lookup(ctx context.Context, name string, out *fuse.En
 	switch name {
 	case "ctl":
 		return c.NewInode(ctx, &CtlNode{localID: c.localID, state: c.state, startTime: c.startTime}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
-	case "new":
-		return c.NewInode(ctx, &ConvNewNode{localID: c.localID, client: c.client, state: c.state, startTime: c.startTime, parsedCache: c.parsedCache}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
+	case "send":
+		return c.NewInode(ctx, &ConvSendNode{localID: c.localID, client: c.client, state: c.state, startTime: c.startTime, parsedCache: c.parsedCache}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
 	case "messages":
 		return c.NewInode(ctx, &MessagesDirNode{localID: c.localID, client: c.client, state: c.state, startTime: c.startTime, parsedCache: c.parsedCache}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
 	case "fuse_id":
@@ -990,7 +990,7 @@ func (c *ConversationNode) Readdir(ctx context.Context) (fs.DirStream, syscall.E
 	// Special files always present
 	entries := []fuse.DirEntry{
 		{Name: "ctl", Mode: fuse.S_IFREG},
-		{Name: "new", Mode: fuse.S_IFREG},
+		{Name: "send", Mode: fuse.S_IFREG},
 		{Name: "messages", Mode: fuse.S_IFDIR},
 		{Name: "fuse_id", Mode: fuse.S_IFREG},
 	}
@@ -1522,9 +1522,9 @@ func (c *CtlNode) Setattr(ctx context.Context, f fs.FileHandle, in *fuse.SetAttr
 	return c.Getattr(ctx, f, out)
 }
 
-// --- ConvNewNode: write message, creates conversation if needed ---
+// --- ConvSendNode: write message, creates conversation if needed ---
 
-type ConvNewNode struct {
+type ConvSendNode struct {
 	fs.Inode
 	localID     string
 	client      shelley.ShelleyClient
@@ -1533,28 +1533,28 @@ type ConvNewNode struct {
 	parsedCache *ParsedMessageCache
 }
 
-var _ = (fs.NodeOpener)((*ConvNewNode)(nil))
-var _ = (fs.NodeGetattrer)((*ConvNewNode)(nil))
-var _ = (fs.NodeSetattrer)((*ConvNewNode)(nil))
+var _ = (fs.NodeOpener)((*ConvSendNode)(nil))
+var _ = (fs.NodeGetattrer)((*ConvSendNode)(nil))
+var _ = (fs.NodeSetattrer)((*ConvSendNode)(nil))
 
-func (n *ConvNewNode) Open(ctx context.Context, flags uint32) (fs.FileHandle, uint32, syscall.Errno) {
-	return &ConvNewFileHandle{
+func (n *ConvSendNode) Open(ctx context.Context, flags uint32) (fs.FileHandle, uint32, syscall.Errno) {
+	return &ConvSendFileHandle{
 		node: n,
 	}, fuse.FOPEN_DIRECT_IO, 0
 }
 
-// ConvNewFileHandle buffers writes and sends the message on Flush (close)
-type ConvNewFileHandle struct {
-	node    *ConvNewNode
+// ConvSendFileHandle buffers writes and sends the message on Flush (close)
+type ConvSendFileHandle struct {
+	node    *ConvSendNode
 	buffer  []byte
 	flushed bool
 	mu      sync.Mutex
 }
 
-var _ = (fs.FileWriter)((*ConvNewFileHandle)(nil))
-var _ = (fs.FileFlusher)((*ConvNewFileHandle)(nil))
+var _ = (fs.FileWriter)((*ConvSendFileHandle)(nil))
+var _ = (fs.FileFlusher)((*ConvSendFileHandle)(nil))
 
-func (h *ConvNewFileHandle) Write(ctx context.Context, data []byte, off int64) (uint32, syscall.Errno) {
+func (h *ConvSendFileHandle) Write(ctx context.Context, data []byte, off int64) (uint32, syscall.Errno) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
@@ -1566,7 +1566,7 @@ func (h *ConvNewFileHandle) Write(ctx context.Context, data []byte, off int64) (
 // Flush is called synchronously during close(2), so the caller will block until
 // the message is sent. This ensures the conversation is created before close returns.
 // Note: Flush may be called multiple times for dup'd file descriptors.
-func (h *ConvNewFileHandle) Flush(ctx context.Context) syscall.Errno {
+func (h *ConvSendFileHandle) Flush(ctx context.Context) syscall.Errno {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
@@ -1613,7 +1613,7 @@ func (h *ConvNewFileHandle) Flush(ctx context.Context) syscall.Errno {
 	return 0
 }
 
-func (n *ConvNewNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
+func (n *ConvSendNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
 	out.Mode = fuse.S_IFREG | 0222
 	// Use conversation creation time if available, otherwise fall back to FS start time
 	cs := n.state.Get(n.localID)
@@ -1625,7 +1625,7 @@ func (n *ConvNewNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.At
 	return 0
 }
 
-func (n *ConvNewNode) Setattr(ctx context.Context, f fs.FileHandle, in *fuse.SetAttrIn, out *fuse.AttrOut) syscall.Errno {
+func (n *ConvSendNode) Setattr(ctx context.Context, f fs.FileHandle, in *fuse.SetAttrIn, out *fuse.AttrOut) syscall.Errno {
 	return n.Getattr(ctx, f, out)
 }
 

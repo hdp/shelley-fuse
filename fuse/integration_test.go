@@ -128,7 +128,7 @@ func createConversation(t *testing.T, mountPoint, message string) (string, strin
 		[]byte("model=predictable"), 0644); err != nil {
 		t.Fatalf("Failed to write ctl: %v", err)
 	}
-	if err := ioutil.WriteFile(filepath.Join(mountPoint, "conversation", localID, "new"),
+	if err := ioutil.WriteFile(filepath.Join(mountPoint, "conversation", localID, "send"),
 		[]byte(message), 0644); err != nil {
 		t.Fatalf("Failed to send message: %v", err)
 	}
@@ -287,7 +287,7 @@ func TestConversationFlow(t *testing.T) {
 	}
 
 	// Write first message
-	if err := ioutil.WriteFile(filepath.Join(mountPoint, "conversation", convID, "new"),
+	if err := ioutil.WriteFile(filepath.Join(mountPoint, "conversation", convID, "send"),
 		[]byte("Hello shelley, this is a test"), 0644); err != nil {
 		t.Fatalf("Failed to write first message: %v", err)
 	}
@@ -431,7 +431,7 @@ func TestConversationDirectoryStructure(t *testing.T) {
 
 	// Required files for all conversations
 	expectedFiles := map[string]bool{
-		"ctl": false, "new": false, "fuse_id": false,
+		"ctl": false, "send": false, "fuse_id": false,
 	}
 	// Files that appear only when conversation is created on backend
 	createdFiles := map[string]bool{
@@ -673,7 +673,7 @@ func TestSymlinkAccess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to list through symlink: %v", err)
 	}
-	expected := map[string]bool{"ctl": false, "new": false, "messages": false}
+	expected := map[string]bool{"ctl": false, "send": false, "messages": false}
 	for _, e := range entries {
 		if _, ok := expected[e.Name()]; ok {
 			expected[e.Name()] = true
@@ -894,7 +894,7 @@ func TestUnconversedIDsHiddenFromListing(t *testing.T) {
 
 	// Create it
 	ioutil.WriteFile(filepath.Join(mountPoint, "conversation", convID, "ctl"), []byte("model=predictable"), 0644)
-	ioutil.WriteFile(filepath.Join(mountPoint, "conversation", convID, "new"), []byte("Hello"), 0644)
+	ioutil.WriteFile(filepath.Join(mountPoint, "conversation", convID, "send"), []byte("Hello"), 0644)
 
 	// Now in listing
 	entries, _ = ioutil.ReadDir(filepath.Join(mountPoint, "conversation"))
@@ -988,10 +988,10 @@ func TestCreatedConversationNotCleanedUp(t *testing.T) {
 	}
 }
 
-// TestMultilineWriteToNew verifies that multiline messages written to /new
+// TestMultilineWriteToSend verifies that multiline messages written to /send
 // are buffered and sent as a single message when the file is closed, not
 // split on newlines. This tests the fix for sf-bksa.
-func TestMultilineWriteToNew(t *testing.T) {
+func TestMultilineWriteToSend(t *testing.T) {
 	skipIfNoFusermount(t)
 	skipIfNoShelley(t)
 
@@ -1001,10 +1001,10 @@ func TestMultilineWriteToNew(t *testing.T) {
 	localID, _ := createConversation(t, mountPoint, "Initial message")
 
 	// Write a multiline message using explicit open/write/close
-	newPath := filepath.Join(mountPoint, "conversation", localID, "new")
-	f, err := os.OpenFile(newPath, os.O_WRONLY, 0644)
+	sendPath := filepath.Join(mountPoint, "conversation", localID, "send")
+	f, err := os.OpenFile(sendPath, os.O_WRONLY, 0644)
 	if err != nil {
-		t.Fatalf("Failed to open new: %v", err)
+		t.Fatalf("Failed to open send: %v", err)
 	}
 
 	// Write in multiple chunks, simulating how a shell might pipe data
@@ -1063,7 +1063,7 @@ func TestMultilineWriteToNew(t *testing.T) {
 	}
 }
 
-// TestShellRedirectToNew tests the shell redirect pattern where bash does:
+// TestShellRedirectToSend tests the shell redirect pattern where bash does:
 //   1. open file -> fd 3
 //   2. dup2(3, 1) -> fd 1 now points to file
 //   3. close(3) -> triggers Flush with EMPTY buffer (no data written yet!)
@@ -1072,7 +1072,7 @@ func TestMultilineWriteToNew(t *testing.T) {
 //
 // The bug (sf-bksa): flushed flag was set on step 3, so step 5 was a no-op.
 // The fix: only set flushed when there's actual data to send.
-func TestShellRedirectToNew(t *testing.T) {
+func TestShellRedirectToSend(t *testing.T) {
 	skipIfNoFusermount(t)
 	skipIfNoShelley(t)
 
@@ -1081,13 +1081,13 @@ func TestShellRedirectToNew(t *testing.T) {
 
 	localID, _ := createConversation(t, mountPoint, "Initial message")
 
-	newPath := filepath.Join(mountPoint, "conversation", localID, "new")
+	sendPath := filepath.Join(mountPoint, "conversation", localID, "send")
 
 	// Simulate shell redirect behavior:
 	// 1. Open the file (fd 3)
-	fd1, err := syscall.Open(newPath, syscall.O_WRONLY, 0644)
+	fd1, err := syscall.Open(sendPath, syscall.O_WRONLY, 0644)
 	if err != nil {
-		t.Fatalf("Failed to open new: %v", err)
+		t.Fatalf("Failed to open send: %v", err)
 	}
 
 	// 2. Dup to a new fd (simulating dup2 to redirect stdout)

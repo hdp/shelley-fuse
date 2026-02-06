@@ -51,7 +51,7 @@ The filesystem follows a Plan 9-inspired control file model. There are no host d
   conversation/                           → lists local IDs + server conversations (merged via GET /api/conversations)
     {local-id}/                         → directory per conversation (8-character hex local ID)
       ctl                               → read/write config (model=X cwd=Y); becomes read-only after creation
-      new                               → write here to send a message; first write creates conversation on backend
+      send                              → write here to send a message; first write creates conversation on backend
       id                                → read-only: Shelley server conversation ID (ENOENT before creation)
       slug                              → read-only: conversation slug (ENOENT before creation or if no slug)
       fuse_id                           → read-only: local FUSE conversation ID (8-character hex)
@@ -87,7 +87,7 @@ The filesystem follows a Plan 9-inspired control file model. There are no host d
     {slug}                              → symlink to local-id: allows access via conversation slug
 ```
 
-Key design: conversation creation is split into clone → configure via ctl → first write to new. The `state` package maps local IDs to Shelley backend conversation IDs, persisted to `~/.shelley-fuse/state.json`.
+Key design: conversation creation is split into clone → configure via ctl → first write to send. The `state` package maps local IDs to Shelley backend conversation IDs, persisted to `~/.shelley-fuse/state.json`.
 
 The `/conversation` directory automatically discovers and adopts server-side conversations. When `ConversationListNode.Readdir` is called, it fetches conversations from `client.ListConversations()` and immediately adopts any that aren't already tracked locally via `state.AdoptWithSlug()`. This ensures all conversations always appear with 8-character local IDs—there are no "server-only" conversations visible to users. The `Lookup` method also supports accessing conversations by their Shelley server ID for backwards compatibility, adopting them on first access.
 

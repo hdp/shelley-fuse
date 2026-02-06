@@ -1962,19 +1962,19 @@ func TestTimestamps_ConversationNodesUseCreatedAt(t *testing.T) {
 		}
 	})
 
-	// Test new file timestamp
-	t.Run("NewFile", func(t *testing.T) {
-		info, err := os.Stat(filepath.Join(tmpDir, "conversation", convID, "new"))
+	// Test send file timestamp
+	t.Run("SendFile", func(t *testing.T) {
+		info, err := os.Stat(filepath.Join(tmpDir, "conversation", convID, "send"))
 		if err != nil {
-			t.Fatalf("Failed to stat new: %v", err)
+			t.Fatalf("Failed to stat send: %v", err)
 		}
 		mtime := info.ModTime()
 		diff := mtime.Sub(convTime)
 		if diff < -time.Second || diff > time.Second {
-			t.Errorf("New mtime %v differs from convTime %v by %v", mtime, convTime, diff)
+			t.Errorf("Send file mtime %v differs from convTime %v by %v", mtime, convTime, diff)
 		}
 		if mtime.Unix() == 0 {
-			t.Error("New mtime is zero (1970)")
+			t.Error("Send file mtime is zero (1970)")
 		}
 	})
 
@@ -2204,7 +2204,7 @@ func TestTimestamps_NeverZero(t *testing.T) {
 		filepath.Join(tmpDir, "conversation"),             // conversation list
 		filepath.Join(tmpDir, "conversation", convID),     // conversation dir
 		filepath.Join(tmpDir, "conversation", convID, "ctl"),
-		filepath.Join(tmpDir, "conversation", convID, "new"),
+		filepath.Join(tmpDir, "conversation", convID, "send"),
 		filepath.Join(tmpDir, "conversation", convID, "fuse_id"),
 		// "created" not checked - uses presence/absence semantics
 		filepath.Join(tmpDir, "conversation", convID, "messages"),

@@ -39,13 +39,13 @@ func runShellOK(t *testing.T, dir, command string) string {
 //	echo "model=claude-sonnet-4.5 cwd=$PWD" > conversation/$ID/ctl
 //
 //	# Send first message (creates conversation on backend)
-//	echo "Hello, Shelley!" > conversation/$ID/new
+//	echo "Hello, Shelley!" > conversation/$ID/send
 //
 //	# Read the response
 //	cat conversation/$ID/messages/all.md
 //
 //	# Send follow-up
-//	echo "Thanks!" > conversation/$ID/new
+//	echo "Thanks!" > conversation/$ID/send
 func TestReadmeQuickStart(t *testing.T) {
 	skipIfNoFusermount(t)
 	skipIfNoShelley(t)
@@ -77,8 +77,8 @@ func TestReadmeQuickStart(t *testing.T) {
 	}
 
 	// Step 3: Send first message (creates conversation on backend)
-	// echo "Hello, Shelley!" > conversation/$ID/new
-	runShellOK(t, mountPoint, "echo 'Hello, Shelley!' > conversation/"+convID+"/new")
+	// echo "Hello, Shelley!" > conversation/$ID/send
+	runShellOK(t, mountPoint, "echo 'Hello, Shelley!' > conversation/"+convID+"/send")
 
 	// Step 4: Read the response
 	// cat conversation/$ID/messages/all.md
@@ -92,8 +92,8 @@ func TestReadmeQuickStart(t *testing.T) {
 	t.Logf("all.md content (truncated): %.200s...", allMd)
 
 	// Step 5: Send follow-up
-	// echo "Thanks!" > conversation/$ID/new
-	runShellOK(t, mountPoint, "echo 'Thanks!' > conversation/"+convID+"/new")
+	// echo "Thanks!" > conversation/$ID/send
+	runShellOK(t, mountPoint, "echo 'Thanks!' > conversation/"+convID+"/send")
 
 	// Verify follow-up was added
 	allMdAfter := runShellOK(t, mountPoint, "cat conversation/"+convID+"/messages/all.md")
@@ -152,7 +152,7 @@ func TestReadmeCommonOperationsConversationListing(t *testing.T) {
 	// Create a conversation first so there's something to list
 	convID := strings.TrimSpace(runShellOK(t, mountPoint, "cat new/clone"))
 	runShellOK(t, mountPoint, "echo 'model=predictable' > conversation/"+convID+"/ctl")
-	runShellOK(t, mountPoint, "echo 'Test message' > conversation/"+convID+"/new")
+	runShellOK(t, mountPoint, "echo 'Test message' > conversation/"+convID+"/send")
 
 	// List conversations: ls conversation/
 	convListing := runShellOK(t, mountPoint, "ls conversation/")
@@ -179,9 +179,9 @@ func TestReadmeCommonOperationsLastMessages(t *testing.T) {
 	// Create a conversation with multiple messages
 	convID := strings.TrimSpace(runShellOK(t, mountPoint, "cat new/clone"))
 	runShellOK(t, mountPoint, "echo 'model=predictable' > conversation/"+convID+"/ctl")
-	runShellOK(t, mountPoint, "echo 'First message' > conversation/"+convID+"/new")
-	runShellOK(t, mountPoint, "echo 'Second message' > conversation/"+convID+"/new")
-	runShellOK(t, mountPoint, "echo 'Third message' > conversation/"+convID+"/new")
+	runShellOK(t, mountPoint, "echo 'First message' > conversation/"+convID+"/send")
+	runShellOK(t, mountPoint, "echo 'Second message' > conversation/"+convID+"/send")
+	runShellOK(t, mountPoint, "echo 'Third message' > conversation/"+convID+"/send")
 
 	// List last 5 messages: ls conversation/$ID/messages/last/5/
 	last5Listing := runShellOK(t, mountPoint, "ls conversation/"+convID+"/messages/last/5/")
@@ -217,7 +217,7 @@ func TestReadmeCommonOperationsSinceMessages(t *testing.T) {
 	// So since/user/1 should return messages after the last user message
 	convID := strings.TrimSpace(runShellOK(t, mountPoint, "cat new/clone"))
 	runShellOK(t, mountPoint, "echo 'model=predictable' > conversation/"+convID+"/ctl")
-	runShellOK(t, mountPoint, "echo 'Hello agent' > conversation/"+convID+"/new")
+	runShellOK(t, mountPoint, "echo 'Hello agent' > conversation/"+convID+"/send")
 
 	// List messages since user's last message: ls conversation/$ID/messages/since/user/1/
 	// Note: The command may return empty if user's message is the last one,
@@ -231,7 +231,7 @@ func TestReadmeCommonOperationsSinceMessages(t *testing.T) {
 	}
 
 	// Send another message to get an agent response, then check again
-	runShellOK(t, mountPoint, "echo 'Another message' > conversation/"+convID+"/new")
+	runShellOK(t, mountPoint, "echo 'Another message' > conversation/"+convID+"/send")
 
 	// The directory should be accessible (even if empty when user message is last)
 	_, _, _ = runShell(t, mountPoint, "ls conversation/"+convID+"/messages/since/user/1/ 2>/dev/null || true")
@@ -260,7 +260,7 @@ func TestReadmeCommonOperationsMessageCount(t *testing.T) {
 	}
 
 	// Send a message
-	runShellOK(t, mountPoint, "echo 'Test message' > conversation/"+convID+"/new")
+	runShellOK(t, mountPoint, "echo 'Test message' > conversation/"+convID+"/send")
 
 	// Get message count: cat conversation/$ID/messages/count
 	count := runShellOK(t, mountPoint, "cat conversation/"+convID+"/messages/count")
@@ -300,7 +300,7 @@ func TestReadmeCommonOperationsCreatedCheck(t *testing.T) {
 	}
 
 	// Send first message to create conversation
-	runShellOK(t, mountPoint, "echo 'Hello!' > conversation/"+convID+"/new")
+	runShellOK(t, mountPoint, "echo 'Hello!' > conversation/"+convID+"/send")
 
 	// Check if created after sending message - should exist
 	// test -e conversation/$ID/created && echo created
@@ -338,7 +338,7 @@ func TestReadmeFullWorkflow(t *testing.T) {
 	t.Log("Step 3 - Verified not created yet")
 
 	// 4. Send first message
-	runShellOK(t, mountPoint, "echo 'Hello from workflow test!' > conversation/"+convID+"/new")
+	runShellOK(t, mountPoint, "echo 'Hello from workflow test!' > conversation/"+convID+"/send")
 	t.Log("Step 4 - Sent first message")
 
 	// 5. Verify created
@@ -353,7 +353,7 @@ func TestReadmeFullWorkflow(t *testing.T) {
 	t.Log("Step 6 - Read response via all.md")
 
 	// 7. Send follow-up
-	runShellOK(t, mountPoint, "echo 'Follow-up message!' > conversation/"+convID+"/new")
+	runShellOK(t, mountPoint, "echo 'Follow-up message!' > conversation/"+convID+"/send")
 	t.Log("Step 7 - Sent follow-up")
 
 	// === Common Operations ===
@@ -415,9 +415,9 @@ func TestReadmeFullWorkflow(t *testing.T) {
 	t.Log("=== Full workflow completed successfully ===")
 }
 
-// TestShellPipeToNew tests that piping content to the new file works correctly.
-// This is a common shell pattern: echo "message" | tee conversation/$ID/new
-func TestShellPipeToNew(t *testing.T) {
+// TestShellPipeToSend tests that piping content to the send file works correctly.
+// This is a common shell pattern: echo "message" | tee conversation/$ID/send
+func TestShellPipeToSend(t *testing.T) {
 	skipIfNoFusermount(t)
 	skipIfNoShelley(t)
 
@@ -428,7 +428,7 @@ func TestShellPipeToNew(t *testing.T) {
 	runShellOK(t, mountPoint, "echo 'model=predictable' > conversation/"+convID+"/ctl")
 
 	// Use shell pipe pattern
-	runShellOK(t, mountPoint, "echo 'Piped message' | cat > conversation/"+convID+"/new")
+	runShellOK(t, mountPoint, "echo 'Piped message' | cat > conversation/"+convID+"/send")
 
 	// Verify the message was received
 	allMd := runShellOK(t, mountPoint, "cat conversation/"+convID+"/messages/all.md")
@@ -437,9 +437,9 @@ func TestShellPipeToNew(t *testing.T) {
 	}
 }
 
-// TestShellHeredocToNew tests that heredoc input works correctly.
+// TestShellHeredocToSend tests that heredoc input works correctly.
 // This tests multiline input via shell heredoc.
-func TestShellHeredocToNew(t *testing.T) {
+func TestShellHeredocToSend(t *testing.T) {
 	skipIfNoFusermount(t)
 	skipIfNoShelley(t)
 
@@ -450,7 +450,7 @@ func TestShellHeredocToNew(t *testing.T) {
 	runShellOK(t, mountPoint, "echo 'model=predictable' > conversation/"+convID+"/ctl")
 
 	// Use heredoc pattern for multiline input
-	heredocCmd := `cat > conversation/` + convID + `/new << 'EOF'
+	heredocCmd := `cat > conversation/` + convID + `/send << 'EOF'
 Line 1 of heredoc
 Line 2 of heredoc
 Line 3 of heredoc
@@ -475,11 +475,11 @@ func TestShellVariableSubstitution(t *testing.T) {
 
 	// This mirrors the exact documented pattern:
 	// ID=$(cat new/clone)
-	// echo "..." > conversation/$ID/new
+	// echo "..." > conversation/$ID/send
 	script := `
 ID=$(cat new/clone)
 echo "model=predictable" > conversation/$ID/ctl
-echo "Variable substitution test" > conversation/$ID/new
+echo "Variable substitution test" > conversation/$ID/send
 cat conversation/$ID/messages/all.md
 `
 	output := runShellOK(t, mountPoint, script)
@@ -503,8 +503,8 @@ func TestShellGlobPatterns(t *testing.T) {
 	// Create conversation with messages
 	convID := strings.TrimSpace(runShellOK(t, mountPoint, "cat new/clone"))
 	runShellOK(t, mountPoint, "echo 'model=predictable' > conversation/"+convID+"/ctl")
-	runShellOK(t, mountPoint, "echo 'Message one' > conversation/"+convID+"/new")
-	runShellOK(t, mountPoint, "echo 'Message two' > conversation/"+convID+"/new")
+	runShellOK(t, mountPoint, "echo 'Message one' > conversation/"+convID+"/send")
+	runShellOK(t, mountPoint, "echo 'Message two' > conversation/"+convID+"/send")
 
 	// Test glob pattern for last N messages
 	globOutput := runShellOK(t, mountPoint, "cat conversation/"+convID+"/messages/last/5/*/content.md")
