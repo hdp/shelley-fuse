@@ -1,6 +1,6 @@
 ---
 id: sf-yior
-status: closed
+status: open
 deps: [sf-37oa]
 links: []
 created: 2026-02-04T02:16:23Z
@@ -94,3 +94,7 @@ The meta/ subdirectory approach was wrong - fields should be flat at the convers
 **2026-02-05T13:26:13Z**
 
 messages/ were not reworked to be 0-indexed
+
+**2026-02-06T15:05:07Z**
+
+Message directories must still be 0-padded based on the total message count so that '9-foo' sorts in ls output before '10-bar'
