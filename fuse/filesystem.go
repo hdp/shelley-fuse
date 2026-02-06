@@ -240,7 +240,7 @@ echo "Thanks!" > conversation/$ID/new
         all.json         → full conversation as JSON
         all.md           → full conversation as Markdown
         count            → number of messages
-        001-user/        → message directory (named by slug)
+        0-user/          → message directory (0-indexed, named by slug)
           message_id     → message UUID
           conversation_id → conversation ID
           sequence_id    → sequence number
@@ -250,12 +250,12 @@ echo "Thanks!" > conversation/$ID/new
           llm_data/      → unpacked JSON (if present)
           usage_data/    → unpacked JSON (if present)
         last/{N}/        → directory with symlinks to last N messages
-          003-user       → symlink to ../../003-user
-          004-agent      → symlink to ../../004-agent
+          2-user         → symlink to ../../2-user
+          3-agent        → symlink to ../../3-agent
           ...
         since/{slug}/{N}/ → directory with symlinks to messages after Nth {slug}
-          005-agent      → symlink to ../../../005-agent
-          006-user       → symlink to ../../../006-user
+          4-agent        → symlink to ../../../4-agent
+          5-user         → symlink to ../../../5-user
           ...
 
 ` + "```" + `
@@ -1216,7 +1216,7 @@ func (m *MessagesDirNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Er
 		{Name: "since", Mode: fuse.S_IFDIR},
 	}
 
-	// List individual messages as directories (001-user/, 002-agent/, ...)
+	// List individual messages as directories (0-user/, 1-agent/, ...)
 	cs := m.state.Get(m.localID)
 	if cs != nil && cs.Created && cs.ShelleyConversationID != "" {
 		convData, err := m.client.GetConversation(cs.ShelleyConversationID)
@@ -2094,7 +2094,8 @@ func readAt(data, dest []byte, off int64) []byte {
 // slugSanitizerRe matches non-alphanumeric characters for slug sanitization.
 var slugSanitizerRe = regexp.MustCompile(`[^a-z0-9]+`)
 
-// messageFileBase returns the base name for a message file, e.g. "001-user" or "002-bash-tool".
+// messageFileBase returns the base name for a message file, e.g. "0-user" or "1-bash-tool".
+// The directory name uses 0-based indexing (seqID-1) to match JSON array conventions.
 // The slug parameter should be obtained from shelley.MessageSlug() for proper tool naming.
 func messageFileBase(seqID int, slug string) string {
 	// Sanitize slug: replace any non-alphanumeric characters with hyphens
@@ -2103,24 +2104,27 @@ func messageFileBase(seqID int, slug string) string {
 	if sanitized == "" {
 		sanitized = "unknown"
 	}
-	return fmt.Sprintf("%03d-%s", seqID, sanitized)
+	// Directory names are 0-indexed (seqID - 1) to match JSON array conventions
+	return fmt.Sprintf("%d-%s", seqID-1, sanitized)
 }
 
-// messageDirRe matches message directory names like "001-user" or "002-agent".
+// messageDirRe matches message directory names like "0-user" or "1-agent".
 var messageDirRe = regexp.MustCompile(`^(\d+)-[a-z0-9-]+$`)
 
-// parseMessageDirName extracts the sequence number from a message directory name.
-// Returns (seqNum, ok).
+// parseMessageDirName extracts the sequence ID from a message directory name.
+// Directory names are 0-indexed, but returns the 1-indexed seqID for API lookups.
+// Returns (seqID, ok).
 func parseMessageDirName(name string) (int, bool) {
 	m := messageDirRe.FindStringSubmatch(name)
 	if m == nil {
 		return 0, false
 	}
-	n, err := strconv.Atoi(m[1])
-	if err != nil || n <= 0 {
+	idx, err := strconv.Atoi(m[1])
+	if err != nil || idx < 0 {
 		return 0, false
 	}
-	return n, true
+	// Convert 0-indexed directory name to 1-indexed seqID
+	return idx + 1, true
 }
 
 // --- ArchivedNode: presence/absence file for archived status ---

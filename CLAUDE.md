@@ -72,7 +72,7 @@ The filesystem follows a Plan 9-inspired control file model. There are no host d
         all.json                        → full conversation as JSON
         all.md                          → full conversation as Markdown
         count                           → number of messages in conversation (0 before creation)
-        {NNN}-{slug}/                   → message directory (e.g. 001-user/, 100-bash-tool/, 101-bash-result/)
+        {N}-{slug}/                     → message directory (0-indexed, e.g. 0-user/, 99-bash-tool/, 100-bash-result/)
           message_id                    → message UUID
           conversation_id               → conversation ID
           sequence_id                   → sequence number

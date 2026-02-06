@@ -2459,7 +2459,7 @@ func TestTimestamps_StateCreatedAtIsPersisted(t *testing.T) {
 }
 
 // TestTimestamps_MessageDirsUseMessageTime verifies that individual message directories
-// and their contents (like 001-user/content.md) use the message's CreatedAt timestamp, not the conversation's.
+// and their contents (like 0-user/content.md) use the message's CreatedAt timestamp, not the conversation's.
 func TestTimestamps_MessageFilesUseMessageTime(t *testing.T) {
 	// Create messages with different timestamps
 	convID := "test-conv-msg-timestamps"
@@ -2524,12 +2524,12 @@ func TestTimestamps_MessageFilesUseMessageTime(t *testing.T) {
 		path         string // relative to messages/
 		expectedTime time.Time
 	}{
-		{"Message1_Dir", "001-user", msg1Time},
-		{"Message1_ContentMD", "001-user/content.md", msg1Time},
-		{"Message2_Dir", "002-agent", msg2Time},
-		{"Message2_ContentMD", "002-agent/content.md", msg2Time},
-		{"Message3_Dir", "003-user", msg3Time},
-		{"Message3_ContentMD", "003-user/content.md", msg3Time},
+		{"Message1_Dir", "0-user", msg1Time},
+		{"Message1_ContentMD", "0-user/content.md", msg1Time},
+		{"Message2_Dir", "1-agent", msg2Time},
+		{"Message2_ContentMD", "1-agent/content.md", msg2Time},
+		{"Message3_Dir", "2-user", msg3Time},
+		{"Message3_ContentMD", "2-user/content.md", msg3Time},
 	}
 
 	for _, tc := range testCases {
@@ -2864,13 +2864,13 @@ func TestMessagesDirNodeReaddirWithToolCalls(t *testing.T) {
 
 	// Expected entries:
 	// - Static: all.json, all.md, count, last, since
-	// - Message directories: 001-user, 002-bash-tool, 003-bash-result, 004-agent
+	// - Message directories: 0-user, 1-bash-tool, 2-bash-result, 3-agent (0-indexed)
 	expected := []string{
 		"all.json", "all.md", "count", "last", "since",
-		"001-user",
-		"002-bash-tool",
-		"003-bash-result",
-		"004-agent",
+		"0-user",
+		"1-bash-tool",
+		"2-bash-result",
+		"3-agent",
 	}
 
 	namesSet := make(map[string]bool)
@@ -2949,20 +2949,20 @@ func TestMessagesDirNodeLookupWithToolCalls(t *testing.T) {
 
 	msgDir := filepath.Join(tmpDir, "conversation", localID, "messages")
 
-	// Test message directories exist
+	// Test message directories exist (0-indexed)
 	testCases := []struct {
 		dirname string
 		wantOK  bool
 	}{
-		{"001-user", true},
-		{"002-patch-tool", true},
-		{"003-patch-result", true},
-		// Wrong slug for seq 1 (should be user, not agent)
-		{"001-agent", false},
-		// Wrong slug for seq 2 (should be patch-tool, not bash-tool)
-		{"002-bash-tool", false},
-		// Non-existent sequence
-		{"099-user", false},
+		{"0-user", true},
+		{"1-patch-tool", true},
+		{"2-patch-result", true},
+		// Wrong slug for index 0 (should be user, not agent)
+		{"0-agent", false},
+		// Wrong slug for index 1 (should be patch-tool, not bash-tool)
+		{"1-bash-tool", false},
+		// Non-existent index
+		{"99-user", false},
 	}
 
 	for _, tc := range testCases {
@@ -2983,7 +2983,7 @@ func TestMessagesDirNodeLookupWithToolCalls(t *testing.T) {
 	}
 
 	// Test that content.md exists inside message directories
-	for _, dirname := range []string{"001-user", "002-patch-tool", "003-patch-result"} {
+	for _, dirname := range []string{"0-user", "1-patch-tool", "2-patch-result"} {
 		t.Run(dirname+"/content.md", func(t *testing.T) {
 			_, err := os.Stat(filepath.Join(msgDir, dirname, "content.md"))
 			if err != nil {
@@ -3049,14 +3049,14 @@ func TestMessagesDirNodeReadToolCallContent(t *testing.T) {
 
 	msgDir := filepath.Join(tmpDir, "conversation", localID, "messages")
 
-	// Verify 100-bash-tool directory exists and has correct field files
-	toolDir := filepath.Join(msgDir, "100-bash-tool")
+	// Verify 99-bash-tool directory exists and has correct field files (0-indexed: seqID 100 → index 99)
+	toolDir := filepath.Join(msgDir, "99-bash-tool")
 	info, err := os.Stat(toolDir)
 	if err != nil {
-		t.Fatalf("Failed to stat 100-bash-tool: %v", err)
+		t.Fatalf("Failed to stat 99-bash-tool: %v", err)
 	}
 	if !info.IsDir() {
-		t.Fatalf("100-bash-tool should be a directory")
+		t.Fatalf("99-bash-tool should be a directory")
 	}
 
 	// Check sequence_id field
@@ -3068,14 +3068,14 @@ func TestMessagesDirNodeReadToolCallContent(t *testing.T) {
 		t.Errorf("Expected sequence_id=100, got %q", string(seqID))
 	}
 
-	// Verify 101-bash-result directory exists and has correct field files
-	resultDir := filepath.Join(msgDir, "101-bash-result")
+	// Verify 100-bash-result directory exists and has correct field files (0-indexed: seqID 101 → index 100)
+	resultDir := filepath.Join(msgDir, "100-bash-result")
 	info, err = os.Stat(resultDir)
 	if err != nil {
-		t.Fatalf("Failed to stat 101-bash-result: %v", err)
+		t.Fatalf("Failed to stat 100-bash-result: %v", err)
 	}
 	if !info.IsDir() {
-		t.Fatalf("101-bash-result should be a directory")
+		t.Fatalf("100-bash-result should be a directory")
 	}
 
 	// Check sequence_id field
@@ -3412,17 +3412,17 @@ func TestMessageDirNodeFields(t *testing.T) {
 
 	msgDir := filepath.Join(tmpDir, "conversation", localID, "messages")
 
-	// Test user message directory (001-user)
+	// Test user message directory (0-user)
 	t.Run("UserMessageDir", func(t *testing.T) {
-		userDir := filepath.Join(msgDir, "001-user")
+		userDir := filepath.Join(msgDir, "0-user")
 
 		// Verify it's a directory
 		info, err := os.Stat(userDir)
 		if err != nil {
-			t.Fatalf("Failed to stat 001-user: %v", err)
+			t.Fatalf("Failed to stat 0-user: %v", err)
 		}
 		if !info.IsDir() {
-			t.Errorf("001-user should be a directory")
+			t.Errorf("0-user should be a directory")
 		}
 
 		// Test field files
@@ -3468,9 +3468,9 @@ func TestMessageDirNodeFields(t *testing.T) {
 		}
 	})
 
-	// Test agent message directory (002-agent) with llm_data and usage_data
+	// Test agent message directory (1-agent) with llm_data and usage_data
 	t.Run("AgentMessageDir", func(t *testing.T) {
-		agentDir := filepath.Join(msgDir, "002-agent")
+		agentDir := filepath.Join(msgDir, "1-agent")
 
 		// Verify field files
 		tests := []struct {
@@ -3817,7 +3817,7 @@ func TestTimestamps_MessageDirUsesCreatedAt(t *testing.T) {
 	defer fssrv.Unmount()
 
 	// Stat the message directory
-	msgDirPath := filepath.Join(tmpDir, "conversation", localID, "messages", "001-user")
+	msgDirPath := filepath.Join(tmpDir, "conversation", localID, "messages", "0-user")
 	var stat syscall.Stat_t
 	if err := syscall.Stat(msgDirPath, &stat); err != nil {
 		t.Fatalf("syscall.Stat failed: %v", err)
@@ -4016,8 +4016,8 @@ func TestQueryResultDirNode_LastN(t *testing.T) {
 		t.Fatalf("Expected 2 entries in last/2, got %d", len(entries))
 	}
 
-	// Verify the entries are symlinks
-	expectedNames := []string{"003-user", "004-agent"}
+	// Verify the entries are symlinks (0-indexed: seqID 3 → 2-user, seqID 4 → 3-agent)
+	expectedNames := []string{"2-user", "3-agent"}
 	for i, e := range entries {
 		if e.Mode()&os.ModeSymlink == 0 {
 			t.Errorf("Expected symlink, got %s with mode %v", e.Name(), e.Mode())
@@ -4041,7 +4041,7 @@ func TestQueryResultDirNode_LastN(t *testing.T) {
 	}
 
 	// Verify we can read through the symlinks
-	data, err := ioutil.ReadFile(filepath.Join(last2Dir, "003-user", "type"))
+	data, err := ioutil.ReadFile(filepath.Join(last2Dir, "2-user", "type"))
 	if err != nil {
 		t.Fatalf("Failed to read type through symlink: %v", err)
 	}
@@ -4049,7 +4049,7 @@ func TestQueryResultDirNode_LastN(t *testing.T) {
 		t.Errorf("Expected type=user, got %q", string(data))
 	}
 
-	data, err = ioutil.ReadFile(filepath.Join(last2Dir, "004-agent", "type"))
+	data, err = ioutil.ReadFile(filepath.Join(last2Dir, "3-agent", "type"))
 	if err != nil {
 		t.Fatalf("Failed to read type through symlink: %v", err)
 	}
@@ -4125,8 +4125,8 @@ func TestQueryResultDirNode_SincePersonN(t *testing.T) {
 	}
 	defer fssrv.Unmount()
 
-	// Test since/user/2 - messages after the 2nd-to-last user message (003-user)
-	// Should include: 004-agent, 005-user
+	// Test since/user/2 - messages after the 2nd-to-last user message (2-user)
+	// Should include: 3-agent, 4-user
 	since2Dir := filepath.Join(tmpDir, "conversation", localID, "messages", "since", "user", "2")
 	info, err := os.Stat(since2Dir)
 	if err != nil {
@@ -4144,7 +4144,7 @@ func TestQueryResultDirNode_SincePersonN(t *testing.T) {
 		t.Fatalf("Expected 2 entries in since/user/2, got %d", len(entries))
 	}
 
-	expectedNames := []string{"004-agent", "005-user"}
+	expectedNames := []string{"3-agent", "4-user"}
 	for i, e := range entries {
 		if e.Mode()&os.ModeSymlink == 0 {
 			t.Errorf("Expected symlink, got %s with mode %v", e.Name(), e.Mode())
@@ -4167,7 +4167,7 @@ func TestQueryResultDirNode_SincePersonN(t *testing.T) {
 		}
 	}
 
-	// Test since/user/1 - messages after the last user message (005-user)
+	// Test since/user/1 - messages after the last user message (4-user)
 	// Should be empty since it's the last message
 	since1Dir := filepath.Join(tmpDir, "conversation", localID, "messages", "since", "user", "1")
 	entries, err = ioutil.ReadDir(since1Dir)
@@ -4179,7 +4179,7 @@ func TestQueryResultDirNode_SincePersonN(t *testing.T) {
 	}
 
 	// Verify we can read through symlinks
-	data, err := ioutil.ReadFile(filepath.Join(since2Dir, "004-agent", "type"))
+	data, err := ioutil.ReadFile(filepath.Join(since2Dir, "3-agent", "type"))
 	if err != nil {
 		t.Fatalf("Failed to read type through symlink: %v", err)
 	}

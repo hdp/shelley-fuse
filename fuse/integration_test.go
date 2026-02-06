@@ -335,21 +335,21 @@ func TestConversationFlow(t *testing.T) {
 	}
 
 	// Read specific message via named directory
-	// Note: The first message is typically a system message (001-system/),
-	// so the user message is at sequence 2 (002-user/)
-	userMsgDir := filepath.Join(mountPoint, "conversation", convID, "messages", "002-user")
+	// Note: The first message is typically a system message (0-system/),
+	// so the user message is at index 1 (1-user/). Directories are 0-indexed.
+	userMsgDir := filepath.Join(mountPoint, "conversation", convID, "messages", "1-user")
 	info, err := os.Stat(userMsgDir)
 	if err != nil {
-		t.Fatalf("Failed to stat 002-user: %v", err)
+		t.Fatalf("Failed to stat 1-user: %v", err)
 	}
 	if !info.IsDir() {
-		t.Errorf("Expected 002-user to be a directory")
+		t.Errorf("Expected 1-user to be a directory")
 	}
 
 	// Verify the message directory contents
 	data, err = ioutil.ReadFile(filepath.Join(userMsgDir, "type"))
 	if err != nil {
-		t.Fatalf("Failed to read 002-user/type: %v", err)
+		t.Fatalf("Failed to read 1-user/type: %v", err)
 	}
 	if strings.TrimSpace(string(data)) != "user" {
 		t.Errorf("Expected type=user, got %q", string(data))
@@ -358,7 +358,7 @@ func TestConversationFlow(t *testing.T) {
 	// Verify content.md exists
 	data, err = ioutil.ReadFile(filepath.Join(userMsgDir, "content.md"))
 	if err != nil {
-		t.Fatalf("Failed to read 002-user/content.md: %v", err)
+		t.Fatalf("Failed to read 1-user/content.md: %v", err)
 	}
 	if !strings.Contains(string(data), "##") {
 		t.Error("Expected markdown headers in content.md")
