@@ -27,11 +27,11 @@ dev mount="/shelley" url="http://localhost:9999":
     mkdir -p {{mount}}
     ./shelley-fuse {{mount}} {{url}}
 
-# Finish work on a ticket: close, rebase onto main, ff-merge, remove worktree+branch
-# Idempotent — safe to run repeatedly. Agents should run until exit 0.
-# Ticket is optional when run from a worktree (inferred from branch/directory).
+# Finish work: close ticket, rebase onto main, ff-merge, remove worktree+branch.
+# Idempotent — safe to run repeatedly until exit 0.
+# From a worktree: ticket is inferred if omitted. Always runs main's copy of the script.
 finish-work *ticket:
-    ./scripts/finish-work {{ticket}}
+    "$(git worktree list --porcelain | awk '/^worktree /{print $2; exit}')/scripts/finish-work" {{ticket}}
 
 # Clean up all worktrees and branches for tickets that are already closed
 clean-finished:

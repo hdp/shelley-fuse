@@ -33,6 +33,7 @@ if [ "$current_wt" != "$main_wt" ]; then
     fi
     echo "Running from worktree — delegating to main worktree ($main_wt)"
     cd "$main_wt"
+    # Always run main's copy of the script (worktree may have stale version)
     exec "$main_wt/scripts/finish-work" "$ticket"
 fi
 
