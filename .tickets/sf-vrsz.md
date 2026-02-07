@@ -1,6 +1,6 @@
 ---
 id: sf-vrsz
-status: in_progress
+status: open
 deps: []
 links: [sf-94sv]
 created: 2026-02-04T13:33:57Z
