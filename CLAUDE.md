@@ -56,6 +56,8 @@ The filesystem follows a Plan 9-inspired control file model. There are no host d
       slug                              → read-only: conversation slug (ENOENT before creation or if no slug)
       fuse_id                           → read-only: local FUSE conversation ID (8-character hex)
       created                           → present only when created on backend (presence semantics, mtime = creation time)
+      archived                          → present only when conversation is archived (presence semantics, mtime = updated_at);
+                                            touch/create to archive, rm to unarchive; ENOENT before backend creation
       model                             → symlink to ../../models/{model-id} (only if model is set)
       cwd                               → symlink to working directory (only if cwd is set)
       meta/                             → conversation metadata as jsonfs directory tree
