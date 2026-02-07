@@ -44,7 +44,7 @@ echo "Thanks!" > conversation/$ID/send
         all.json         → full conversation as JSON
         all.md           → full conversation as Markdown
         count            → number of messages
-        0-user/          → message directory (0-indexed, named by slug)
+        000-user/        → message directory (0-indexed, zero-padded, named by slug)
           message_id     → message UUID
           conversation_id → conversation ID
           sequence_id    → sequence number
