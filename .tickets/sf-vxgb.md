@@ -1,6 +1,6 @@
 ---
 id: sf-vxgb
-status: in_progress
+status: closed
 deps: []
 links: []
 created: 2026-02-07T02:38:16Z
