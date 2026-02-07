@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Shelley FUSE is a Go FUSE filesystem that exposes the Shelley API (an AI conversation platform) as a mountable filesystem. Shell tools interact with Shelley conversations through standard file operations (cat, echo, ls).
+Shelley FUSE is a Go FUSE filesystem that exposes the Shelley API (an AI conversation platform, https://github.com/boldsoftware/shelley is the source) as a mountable filesystem. Shell tools interact with Shelley conversations through standard file operations (cat, echo, ls).
 
 ## Build & Test Commands
 
