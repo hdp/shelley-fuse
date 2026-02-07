@@ -1,6 +1,6 @@
 ---
 id: sf-pn5q
-status: in_progress
+status: closed
 deps: []
 links: []
 created: 2026-02-04T13:00:03Z
