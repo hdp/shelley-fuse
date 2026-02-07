@@ -27,6 +27,26 @@ dev mount="/shelley" url="http://localhost:9999":
     mkdir -p {{mount}}
     ./shelley-fuse {{mount}} {{url}}
 
+# Finish work on a ticket: close, rebase onto main, ff-merge, remove worktree+branch
+# Idempotent — safe to run repeatedly. Agents should run until exit 0.
+finish-work ticket:
+    ./scripts/finish-work {{ticket}}
+
+# Clean up all worktrees and branches for tickets that are already closed
+clean-finished:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for branch in $(git branch --list | sed 's/^[* ] //'); do
+        [ "$branch" = "main" ] && continue
+        status=$(tk show "$branch" 2>/dev/null | awk '/^status:/{print $2}') || true
+        if [ "$status" = "closed" ]; then
+            echo "=== Cleaning up $branch ==="
+            just finish-work "$branch"
+        else
+            echo "Skipping $branch (status: ${status:-unknown})"
+        fi
+    done
+
 # Clean build artifacts
 clean:
     rm -f shelley-fuse

@@ -1,0 +1,118 @@
+#!/usr/bin/env bash
+#
+# finish-work <ticket-id>
+#
+# Idempotent cleanup: close ticket, rebase onto main, ff-merge, remove worktree
+# and branch. Safe to run repeatedly — skips already-completed steps.
+#
+# Exit codes:
+#   0  — all done
+#   1  — failed at a step that needs manual/agent intervention (e.g. rebase conflict)
+#
+set -euo pipefail
+
+ticket="${1:?Usage: finish-work <ticket-id>}"
+
+# ---------------------------------------------------------------------------
+# Resolve paths
+# ---------------------------------------------------------------------------
+main_wt=$(git worktree list --porcelain | awk '/^worktree /{print $2; exit}')
+current_wt=$(git rev-parse --show-toplevel)
+if [ "$current_wt" != "$main_wt" ]; then
+    echo "ERROR: run from the main worktree ($main_wt), not $current_wt" >&2
+    exit 1
+fi
+
+worktree_dir=$(git worktree list --porcelain | awk -v t="$ticket" '/^worktree /{ wt=$2 } /^branch /{ if ($2 ~ t) print wt }')
+# Also check for detached worktrees by path convention
+if [ -z "$worktree_dir" ]; then
+    candidate="/home/exedev/worktree/shelley-fuse/$ticket"
+    if git worktree list | grep -q "$candidate"; then
+        worktree_dir="$candidate"
+    fi
+fi
+
+branch_exists() { git rev-parse --verify "refs/heads/$ticket" &>/dev/null; }
+worktree_exists() { [ -n "$worktree_dir" ] && git worktree list | grep -q "$worktree_dir"; }
+
+step() { printf '\n--- %s ---\n' "$*"; }
+
+# ---------------------------------------------------------------------------
+# 1. Abort any in-progress rebase in the worktree
+# ---------------------------------------------------------------------------
+if worktree_exists; then
+    if [ -d "$worktree_dir/.git" ] || [ -f "$worktree_dir/.git" ]; then
+        git -C "$worktree_dir" rebase --abort 2>/dev/null || true
+    fi
+fi
+
+# ---------------------------------------------------------------------------
+# 2. Close the ticket (idempotent — skips if already closed or not found)
+# ---------------------------------------------------------------------------
+status=$(tk show "$ticket" 2>/dev/null | awk '/^status:/{print $2}') || true
+if [ -n "$status" ] && [ "$status" != "closed" ]; then
+    step "Closing ticket $ticket"
+    tk close "$ticket"
+    # Commit the status change wherever the file lives
+    ticket_file=".tickets/${ticket}.md"
+    if worktree_exists; then
+        git -C "$worktree_dir" add "$ticket_file" 2>/dev/null \
+            && git -C "$worktree_dir" commit -m "Close ticket ${ticket}" -- "$ticket_file" 2>/dev/null || true
+    elif [ -f "$ticket_file" ]; then
+        git add "$ticket_file" 2>/dev/null \
+            && git commit -m "Close ticket ${ticket}" -- "$ticket_file" 2>/dev/null || true
+    fi
+fi
+
+# ---------------------------------------------------------------------------
+# 3. Rebase & merge (only if branch exists with commits ahead of main)
+# ---------------------------------------------------------------------------
+if branch_exists; then
+    ahead=$(git rev-list --count "main..$ticket" 2>/dev/null || echo 0)
+    if [ "$ahead" -gt 0 ]; then
+        step "Rebasing $ticket onto main ($ahead commit(s) ahead)"
+        if worktree_exists; then
+            git -C "$worktree_dir" rebase main
+        else
+            # No worktree — rebase the branch directly
+            git rebase main "$ticket"
+            git checkout main
+        fi
+
+        step "Fast-forward merging $ticket into main"
+        stashed=false
+        if ! git diff --quiet 2>/dev/null || ! git diff --cached --quiet 2>/dev/null; then
+            git stash push -m "finish-work: temp stash for $ticket merge"
+            stashed=true
+        fi
+        git merge --ff-only "$ticket"
+        if [ "$stashed" = true ]; then
+            git stash pop
+        fi
+    else
+        step "Branch $ticket has no commits ahead of main — skipping merge"
+    fi
+fi
+
+# ---------------------------------------------------------------------------
+# 4. Remove worktree
+# ---------------------------------------------------------------------------
+if worktree_exists; then
+    step "Removing worktree $worktree_dir"
+    git worktree remove --force "$worktree_dir"
+fi
+git worktree prune 2>/dev/null || true
+
+# ---------------------------------------------------------------------------
+# 5. Delete branch
+# ---------------------------------------------------------------------------
+if branch_exists; then
+    step "Deleting branch $ticket"
+    git branch -D "$ticket"
+fi
+
+# ---------------------------------------------------------------------------
+# Done
+# ---------------------------------------------------------------------------
+echo ""
+echo "✓ $ticket finished."
