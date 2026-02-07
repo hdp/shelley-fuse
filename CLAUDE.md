@@ -43,6 +43,7 @@ The filesystem follows a Plan 9-inspired control file model. There are no host d
 ```
 /
   models/                               → directory of available models (GET /, parse HTML for model list)
+    default                             → symlink to default model's {model-id} (only if backend has a default configured)
     {model-id}/                         → directory for each model
       id                                → read-only file: model ID
       ready                             → present only if model is ready (presence semantics)
