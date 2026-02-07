@@ -3050,14 +3050,15 @@ func TestMessagesDirNodeReadToolCallContent(t *testing.T) {
 
 	msgDir := filepath.Join(tmpDir, "conversation", localID, "messages")
 
-	// Verify 99-bash-tool directory exists and has correct field files (0-indexed: seqID 100 → index 99)
-	toolDir := filepath.Join(msgDir, "99-bash-tool")
+	// Verify 099-bash-tool directory exists and has correct field files (0-indexed: seqID 100 → index 99)
+	// With maxSeqID=101, width=3 (len("100")=3), so 99 is zero-padded to 099
+	toolDir := filepath.Join(msgDir, "099-bash-tool")
 	info, err := os.Stat(toolDir)
 	if err != nil {
-		t.Fatalf("Failed to stat 99-bash-tool: %v", err)
+		t.Fatalf("Failed to stat 099-bash-tool: %v", err)
 	}
 	if !info.IsDir() {
-		t.Fatalf("99-bash-tool should be a directory")
+		t.Fatalf("099-bash-tool should be a directory")
 	}
 
 	// Check sequence_id field

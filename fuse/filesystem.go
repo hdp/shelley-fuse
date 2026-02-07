@@ -986,7 +986,7 @@ func (c *ConversationNode) Lookup(ctx context.Context, name string, out *fuse.En
 
 		// Construct the symlink target: messages/{NNN}-agent/llm_data/EndOfTurn
 		// The directory name uses 0-based indexing (seqID-1)
-		agentDirName := messageFileBase(status.LastAgentSeqID, status.LastAgentSlug)
+		agentDirName := messageFileBase(status.LastAgentSeqID, status.LastAgentSlug, maxSeqIDFromMessages(msgs))
 		target := fmt.Sprintf("messages/%s/llm_data/EndOfTurn", agentDirName)
 
 		return c.NewInode(ctx, &SymlinkNode{target: target, startTime: c.getConversationTime()}, fs.StableAttr{Mode: syscall.S_IFLNK}), 0
@@ -1234,7 +1234,7 @@ func (m *MessagesDirNode) Lookup(ctx context.Context, name string, out *fuse.Ent
 
 		// Compute expected slug using the cached toolMap
 		expectedSlug := shelley.MessageSlug(msg, toolMap)
-		expectedName := messageFileBase(seqNum, expectedSlug)
+		expectedName := messageFileBase(seqNum, expectedSlug, maxSeqIDFromMessages(msgs))
 
 		// Verify the directory name matches the expected slug
 		if name != expectedName {
@@ -1270,7 +1270,7 @@ func (m *MessagesDirNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Er
 			if err == nil {
 				for i := range msgs {
 					slug := shelley.MessageSlug(&msgs[i], toolMap)
-					base := messageFileBase(msgs[i].SequenceID, slug)
+					base := messageFileBase(msgs[i].SequenceID, slug, maxSeqIDFromMessages(msgs))
 					entries = append(entries, fuse.DirEntry{Name: base, Mode: fuse.S_IFDIR})
 				}
 			}
@@ -2015,7 +2015,7 @@ func (q *QueryDirNode) getSymlinkTarget(n int) (string, syscall.Errno) {
 	}
 
 	slug := shelley.MessageSlug(targetMsg, toolMap)
-	base := messageFileBase(targetMsg.SequenceID, slug)
+	base := messageFileBase(targetMsg.SequenceID, slug, maxSeqIDFromMessages(msgs))
 	return prefix + base, 0
 }
 
@@ -2054,21 +2054,22 @@ var _ = (fs.NodeLookuper)((*QueryResultDirNode)(nil))
 var _ = (fs.NodeReaddirer)((*QueryResultDirNode)(nil))
 var _ = (fs.NodeGetattrer)((*QueryResultDirNode)(nil))
 
-// getFilteredMessages returns the messages that match the query.
-func (q *QueryResultDirNode) getFilteredMessages() ([]shelley.Message, map[string]string, error) {
+// getFilteredMessages returns the messages that match the query, along with the max
+// sequence ID in the conversation (needed for consistent zero-padding of directory names).
+func (q *QueryResultDirNode) getFilteredMessages() (filtered []shelley.Message, toolMap map[string]string, maxSeqID int, err error) {
 	cs := q.state.Get(q.localID)
 	if cs == nil || !cs.Created || cs.ShelleyConversationID == "" {
-		return nil, nil, nil
+		return nil, nil, 0, nil
 	}
 
 	convData, err := q.client.GetConversation(cs.ShelleyConversationID)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, 0, err
 	}
 
 	msgs, err := shelley.ParseMessages(convData)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, 0, err
 	}
 
 	// Build toolMap for slug computation
@@ -2076,9 +2077,8 @@ func (q *QueryResultDirNode) getFilteredMessages() ([]shelley.Message, map[strin
 	for i := range msgs {
 		msgPtrs[i] = &msgs[i]
 	}
-	toolMap := shelley.BuildToolNameMap(msgPtrs)
+	toolMap = shelley.BuildToolNameMap(msgPtrs)
 
-	var filtered []shelley.Message
 	switch q.kind {
 	case queryLast:
 		filtered = shelley.FilterLast(msgs, q.n)
@@ -2086,7 +2086,7 @@ func (q *QueryResultDirNode) getFilteredMessages() ([]shelley.Message, map[strin
 		filtered = shelley.FilterSince(msgs, q.person, q.n)
 	}
 
-	return filtered, toolMap, nil
+	return filtered, toolMap, maxSeqIDFromMessages(msgs), nil
 }
 
 // symlinkPrefix returns the relative path prefix for symlinks.
@@ -2100,7 +2100,7 @@ func (q *QueryResultDirNode) symlinkPrefix() string {
 }
 
 func (q *QueryResultDirNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
-	msgs, toolMap, err := q.getFilteredMessages()
+	msgs, toolMap, maxSeqID, err := q.getFilteredMessages()
 	if err != nil {
 		return nil, syscall.EIO
 	}
@@ -2118,7 +2118,7 @@ func (q *QueryResultDirNode) Lookup(ctx context.Context, name string, out *fuse.
 		}
 		// idx 0 is oldest, idx len-1 is newest (msgs are already in oldest-first order from FilterLast)
 		slug := shelley.MessageSlug(&msgs[idx], toolMap)
-		base := messageFileBase(msgs[idx].SequenceID, slug)
+		base := messageFileBase(msgs[idx].SequenceID, slug, maxSeqID)
 		target := q.symlinkPrefix() + base
 		return q.NewInode(ctx, &SymlinkNode{target: target, startTime: q.startTime}, fs.StableAttr{Mode: syscall.S_IFLNK}), 0
 	}
@@ -2126,7 +2126,7 @@ func (q *QueryResultDirNode) Lookup(ctx context.Context, name string, out *fuse.
 	// For since/{person}/{N}, look for a message matching the name
 	for i := range msgs {
 		slug := shelley.MessageSlug(&msgs[i], toolMap)
-		base := messageFileBase(msgs[i].SequenceID, slug)
+		base := messageFileBase(msgs[i].SequenceID, slug, maxSeqID)
 		if base == name {
 			// Found the message - return a symlink to it
 			target := q.symlinkPrefix() + base
@@ -2138,7 +2138,7 @@ func (q *QueryResultDirNode) Lookup(ctx context.Context, name string, out *fuse.
 }
 
 func (q *QueryResultDirNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
-	msgs, toolMap, err := q.getFilteredMessages()
+	msgs, toolMap, maxSeqID, err := q.getFilteredMessages()
 	if err != nil {
 		return nil, syscall.EIO
 	}
@@ -2153,7 +2153,7 @@ func (q *QueryResultDirNode) Readdir(ctx context.Context) (fs.DirStream, syscall
 	} else {
 		for i := range msgs {
 			slug := shelley.MessageSlug(&msgs[i], toolMap)
-			base := messageFileBase(msgs[i].SequenceID, slug)
+			base := messageFileBase(msgs[i].SequenceID, slug, maxSeqID)
 			entries = append(entries, fuse.DirEntry{Name: base, Mode: syscall.S_IFLNK})
 		}
 	}
@@ -2210,18 +2210,38 @@ func readAt(data, dest []byte, off int64) []byte {
 // slugSanitizerRe matches non-alphanumeric characters for slug sanitization.
 var slugSanitizerRe = regexp.MustCompile(`[^a-z0-9]+`)
 
-// messageFileBase returns the base name for a message file, e.g. "0-user" or "1-bash-tool".
+// messageFileBase returns the base name for a message file, e.g. "00-user" or "01-bash-tool".
 // The directory name uses 0-based indexing (seqID-1) to match JSON array conventions.
 // The slug parameter should be obtained from shelley.MessageSlug() for proper tool naming.
-func messageFileBase(seqID int, slug string) string {
+// maxSeqID is the highest sequence ID in the conversation, used to determine the
+// zero-padding width so that ls sorts correctly (e.g. maxSeqID=150 → 000 through 149).
+func messageFileBase(seqID int, slug string, maxSeqID int) string {
 	// Sanitize slug: replace any non-alphanumeric characters with hyphens
 	sanitized := slugSanitizerRe.ReplaceAllString(strings.ToLower(slug), "-")
 	sanitized = strings.Trim(sanitized, "-")
 	if sanitized == "" {
 		sanitized = "unknown"
 	}
+	// Calculate padding width from the maximum 0-indexed value (maxSeqID - 1).
+	// This handles non-contiguous sequence IDs correctly.
+	width := 1
+	if maxSeqID > 1 {
+		width = len(strconv.Itoa(maxSeqID - 1))
+	}
 	// Directory names are 0-indexed (seqID - 1) to match JSON array conventions
-	return fmt.Sprintf("%d-%s", seqID-1, sanitized)
+	return fmt.Sprintf("%0*d-%s", width, seqID-1, sanitized)
+}
+
+// maxSeqIDFromMessages returns the highest SequenceID in the message slice.
+// Returns 0 if the slice is empty.
+func maxSeqIDFromMessages(msgs []shelley.Message) int {
+	max := 0
+	for i := range msgs {
+		if msgs[i].SequenceID > max {
+			max = msgs[i].SequenceID
+		}
+	}
+	return max
 }
 
 // messageDirRe matches message directory names like "0-user" or "1-agent".
