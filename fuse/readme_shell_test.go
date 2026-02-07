@@ -1,16 +1,21 @@
 package fuse
 
 import (
+	"context"
 	"os/exec"
 	"strings"
 	"testing"
+	"time"
 )
 
 // runShell executes a shell command and returns stdout, stderr, and any error.
 // The command is run with bash -c in the specified working directory.
+// A 30-second timeout is applied via exec.CommandContext.
 func runShell(t *testing.T, dir, command string) (string, string, error) {
 	t.Helper()
-	cmd := exec.Command("bash", "-c", command)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "bash", "-c", command)
 	cmd.Dir = dir
 	var stdout, stderr strings.Builder
 	cmd.Stdout = &stdout

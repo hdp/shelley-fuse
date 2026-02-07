@@ -1,9 +1,11 @@
 package fuse
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -18,6 +20,31 @@ import (
 	"shelley-fuse/shelley"
 	"shelley-fuse/state"
 )
+
+// TestMain cleans up stale FUSE mounts from previous crashed test runs,
+// then runs all tests. Without this, stale mounts cause new test processes
+// to enter uninterruptible sleep (D state) when t.TempDir() cleanup or
+// other operations touch the dead mount paths.
+func TestMain(m *testing.M) {
+	// Find and lazy-unmount any stale test FUSE mounts
+	out, err := exec.Command("mount").Output()
+	if err == nil {
+		scanner := bufio.NewScanner(strings.NewReader(string(out)))
+		for scanner.Scan() {
+			line := scanner.Text()
+			// Match test FUSE mounts: "rawBridge on /tmp/Test... type fuse.rawBridge ..."
+			if strings.Contains(line, "rawBridge") && strings.Contains(line, "/tmp/Test") {
+				fields := strings.Fields(line)
+				if len(fields) >= 3 {
+					mp := fields[2]
+					log.Printf("Cleaning up stale FUSE mount: %s", mp)
+					exec.Command("fusermount", "-uz", mp).Run()
+				}
+			}
+		}
+	}
+	os.Exit(m.Run())
+}
 
 func skipIfNoFusermount(t *testing.T) {
 	t.Helper()
@@ -107,8 +134,15 @@ func mountTestFSWithStore(t *testing.T, serverURL string, cloneTimeout time.Dura
 		select {
 		case <-done:
 		case <-time.After(5 * time.Second):
-			exec.Command("fusermount", "-u", mountPoint).Run()
-			<-done
+			// Lazy unmount (-z) detaches immediately even if busy,
+			// unblocking any stuck FUSE operations.
+			exec.Command("fusermount", "-uz", mountPoint).Run()
+			select {
+			case <-done:
+			case <-time.After(5 * time.Second):
+				// Don't block forever — the mount is lazy-detached,
+				// the kernel will clean up when fds close.
+			}
 		}
 	})
 	return mountPoint, store
