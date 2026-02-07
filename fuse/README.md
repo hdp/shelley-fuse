@@ -53,13 +53,21 @@ echo "Thanks!" > conversation/$ID/send
           content.md     → markdown rendering
           llm_data/      → unpacked JSON (if present)
           usage_data/    → unpacked JSON (if present)
-        last/{N}         → symlink to Nth-to-last message (../../{NNN-{slug}})
-          last/1         → symlink to last message
-          last/2         → symlink to second-to-last message
+        last/{N}/        → directory containing the last N messages as symlinks
+          {0..N-1}       → ordinal symlinks (0 = oldest, N-1 = newest) → ../../{NNN-{slug}}
+          last/1/         → directory with 1 entry: the last message
+            0             → ../../004-agent
+          last/2/         → directory with 2 entries: the last 2 messages
+            0             → ../../003-user
+            1             → ../../004-agent
           ...
-        since/{slug}/{N} → symlink to Nth message after last {slug} (../../../{NNN-{slug}})
-          since/user/1   → symlink to first message after last user message
-          since/user/2   → symlink to second message after last user message
+        since/{slug}/{N}/ → directory containing messages after the Nth-to-last {slug}
+          {NNN-{slug}}    → message-name symlinks → ../../../{NNN-{slug}}
+          since/user/1/   → messages after the last user message
+            004-agent     → ../../../004-agent
+          since/user/2/   → messages after the second-to-last user message
+            003-user      → ../../../003-user  (the last user message itself, if it follows)
+            004-agent     → ../../../004-agent
           ...
 
 ```
@@ -76,17 +84,18 @@ readlink models/default
 # List conversations
 ls conversation/
 
-# Read the last message
-cat conversation/$ID/messages/last/1/content.md
+# List the last 2 messages
+ls conversation/$ID/messages/last/2/
+# 0 -> ../../003-user
+# 1 -> ../../004-agent
 
-# Read the second-to-last message
-cat conversation/$ID/messages/last/2/content.md
+# Read the content of the very last message (the sole entry in last/1/)
+cat conversation/$ID/messages/last/1/0/content.md
 
-# Read the first message after your last message
-cat conversation/$ID/messages/since/user/1/content.md
-
-# Read the second message after your last message
-cat conversation/$ID/messages/since/user/2/content.md
+# Read all messages since the last user message
+ls conversation/$ID/messages/since/user/1/
+# 004-agent -> ../../../004-agent
+cat conversation/$ID/messages/since/user/1/004-agent/content.md
 
 # Get message count
 cat conversation/$ID/messages/count
