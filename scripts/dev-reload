@@ -1,0 +1,83 @@
+#!/bin/bash
+
+set -euo pipefail
+
+BINARY=shelley-fuse
+MNT=/shelley
+URL=http://localhost:9999
+SLEEP=10
+mkdir -p .cache
+PIDFILE=.cache/.pid
+
+trap "pkill -F '$PIDFILE' 2>/dev/null || true; rm -f '$PIDFILE'" EXIT
+
+add_pid() {
+  mkdir -p "$(dirname "$PIDFILE")"
+  echo "$1" >> "$PIDFILE"
+}
+
+mark_bad() {
+  local target="$1"
+  chmod ugo-x "$target"
+} 
+
+verify_shelley() {
+  local binary="$1"
+  local mnt="$2"
+  "$binary" "$mnt" "$URL" &
+  local pid="$!"
+  if ! cat "$mnt/README.md" >/dev/null || ! ls "$mnt/models" | grep -q .; then
+    kill "$pid"
+  else
+    kill -INT "$pid"
+  fi
+  umount -q -l "$mnt"
+  wait -f "$pid"
+  return $?
+}
+
+start_background_build() {
+  local parent="$$"
+  while true; do
+    COMMIT=$(git rev-list HEAD -n1)
+    HASHED=".cache/$BINARY.$COMMIT"
+
+    if ! [[ -e "$HASHED" ]]; then
+      mkdir -p ".mnt/$COMMIT"
+      if ! just build "$HASHED" && verify_shelley "$HASHED" ".mnt/$COMMIT"; then
+        mark_bad "$HASHED"
+      fi
+    fi
+    LATEST=$(find_latest_build)
+    if ! [[ "$BINARY" -ef "$LATEST" ]]; then
+      local just=$(pgrep -P $parent just)
+      if [[ "$just" ]]; then
+        pkill -INT -P $(pgrep -P $just)
+      fi
+    fi
+    sleep 5
+  done &
+  add_pid "$!"
+}
+
+kill_pids() {
+  if [[ -e "$PIDFILE" ]]; then
+    pkill -F "$PIDFILE"
+    pidwait -F "$PIDFILE" || ! pkill -0 -F "$PIDFILE"
+  fi
+}
+
+find_latest_build() {
+  find .cache -name "$BINARY.*" -type f -executable | xargs ls -t | head -1
+}
+
+kill_pids
+start_background_build 
+
+while true; do
+  LATEST=$(find_latest_build)
+  if ! [[ "$BINARY" -ef "$LATEST" ]]; then
+    ln -svf "$LATEST" "$BINARY"
+  fi
+  just run-dev
+done

@@ -10,8 +10,8 @@ start-work ticket:
     git worktree list | grep -q {{ticket}} || git worktree add ../worktree/shelley-fuse/{{ticket}}
 
 # Build the FUSE binary
-build:
-    go build -o shelley-fuse ./cmd/shelley-fuse
+build binary="./shelley-fuse":
+    go build -o {{binary}} ./cmd/shelley-fuse
 
 # Run all tests
 test:
@@ -24,8 +24,15 @@ test-integration:
 # Start shelley-fuse for manual testing (Ctrl+C to stop and unmount)
 dev mount="/shelley" url="http://localhost:9999":
     just build
+    just run-dev {{mount}} {{url}}
+
+run-dev mount="/shelley" url="http://localhost:9999":
     mkdir -p {{mount}}
     ./shelley-fuse {{mount}} {{url}}
+
+# Start shelley-fuse for manual testing with autoreload
+dev-reload:
+    bash scripts/dev-reload 
 
 # Finish work: close ticket, rebase onto main, ff-merge, remove worktree+branch.
 # Idempotent — safe to run repeatedly until exit 0.
