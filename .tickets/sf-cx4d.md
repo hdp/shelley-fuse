@@ -1,6 +1,6 @@
 ---
 id: sf-cx4d
-status: open
+status: in_progress
 deps: []
 links: []
 created: 2026-02-04T13:00:00Z
