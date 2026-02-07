@@ -27,6 +27,12 @@ just clean
 
 This project uses a CLI ticket system for task management. Run `tk help` when you need to use it.
 
+## Finishing Work
+
+When you're done with a ticket, run `just finish-work` (from any worktree — ticket is auto-detected).
+This closes the ticket, rebases onto main, ff-merges, and removes the worktree and branch.
+It's idempotent — run it repeatedly until it exits 0. If the rebase has conflicts, fix them and re-run.
+
 ## Architecture
 
 ### Core Packages
