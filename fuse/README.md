@@ -14,8 +14,8 @@ echo "model=claude-sonnet-4.5 cwd=$PWD" > conversation/$ID/ctl
 # Send first message (creates conversation on backend)
 echo "Hello, Shelley!" > conversation/$ID/send
 
-# Read the response
-cat conversation/$ID/messages/all.md
+# Read the response(s)
+cat conversation/$ID/messages/since/user/1/*/content.md
 
 # Send follow-up
 echo "Thanks!" > conversation/$ID/send
@@ -37,7 +37,11 @@ echo "Thanks!" > conversation/$ID/send
     {id}/                → directory per conversation
       ctl                → read/write config; read-only after first message
       send               → write here to send messages
+      archived           → present when archived; touch to archive, rm to unarchive
+      model              → symlink to ../../models/{model-id}
+      cwd                → symlink to working directory
       id                 → Shelley server conversation ID
+      fuse_id            → local FUSE conversation ID
       slug               → conversation slug (if set)
       created            → present if created on backend (absence = not created)
       messages/          → all message content
@@ -45,14 +49,10 @@ echo "Thanks!" > conversation/$ID/send
         all.md           → full conversation as Markdown
         count            → number of messages
         000-user/        → message directory (0-indexed, zero-padded, named by slug)
-          message_id     → message UUID
-          conversation_id → conversation ID
-          sequence_id    → sequence number
-          type           → message type (user, agent, etc.)
-          created_at     → timestamp
-          content.md     → markdown rendering
+          content.md     → markdown rendering of the message
           llm_data/      → unpacked JSON (if present)
           usage_data/    → unpacked JSON (if present)
+          ...            → plus metadata: message_id, type, created_at, etc.
         last/{N}/        → directory containing the last N messages as symlinks
           {0..N-1}       → ordinal symlinks (0 = oldest, N-1 = newest) → ../../{NNN-{slug}}
           last/1/         → directory with 1 entry: the last message
@@ -102,4 +102,16 @@ cat conversation/$ID/messages/count
 
 # Check if conversation is created
 test -e conversation/$ID/created && echo created
+
+# Check which model a conversation uses
+readlink conversation/$ID/model
+
+# Archive a conversation
+touch conversation/$ID/archived
+
+# Unarchive a conversation
+rm conversation/$ID/archived
+
+# Check if archived
+test -e conversation/$ID/archived && echo archived
 ```
