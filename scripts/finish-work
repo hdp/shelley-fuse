@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
 #
-# finish-work <ticket-id>
+# finish-work [ticket-id]
 #
 # Idempotent cleanup: close ticket, rebase onto main, ff-merge, remove worktree
 # and branch. Safe to run repeatedly — skips already-completed steps.
+#
+# Can be run from the main worktree or from a ticket's worktree. When run from
+# a worktree, the ticket is inferred from the directory/branch name and the
+# script re-executes itself from the main worktree.
 #
 # Exit codes:
 #   0  — all done
@@ -11,18 +15,41 @@
 #
 set -euo pipefail
 
-ticket="${1:?Usage: finish-work <ticket-id>}"
-
 # ---------------------------------------------------------------------------
-# Resolve paths
+# Resolve main worktree and detect if we're in a non-main worktree
 # ---------------------------------------------------------------------------
 main_wt=$(git worktree list --porcelain | awk '/^worktree /{print $2; exit}')
 current_wt=$(git rev-parse --show-toplevel)
+
 if [ "$current_wt" != "$main_wt" ]; then
-    echo "ERROR: run from the main worktree ($main_wt), not $current_wt" >&2
+    # We're in a worktree — infer ticket from arg, branch name, or directory name
+    if [ -n "${1:-}" ]; then
+        ticket="$1"
+    else
+        ticket=$(git rev-parse --abbrev-ref HEAD 2>/dev/null) || true
+        if [ -z "$ticket" ] || [ "$ticket" = "HEAD" ]; then
+            ticket=$(basename "$current_wt")
+        fi
+    fi
+    echo "Running from worktree — delegating to main worktree ($main_wt)"
+    cd "$main_wt"
+    exec "$main_wt/scripts/finish-work" "$ticket"
+fi
+
+# ---------------------------------------------------------------------------
+# We're in the main worktree from here on
+# ---------------------------------------------------------------------------
+if [ -n "${1:-}" ]; then
+    ticket="$1"
+else
+    echo "ERROR: ticket ID required when running from main worktree" >&2
+    echo "Usage: finish-work <ticket-id>" >&2
     exit 1
 fi
 
+# ---------------------------------------------------------------------------
+# Resolve worktree directory for this ticket
+# ---------------------------------------------------------------------------
 worktree_dir=$(git worktree list --porcelain | awk -v t="$ticket" '/^worktree /{ wt=$2 } /^branch /{ if ($2 ~ t) print wt }')
 # Also check for detached worktrees by path convention
 if [ -z "$worktree_dir" ]; then

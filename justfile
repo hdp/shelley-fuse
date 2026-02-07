@@ -29,7 +29,8 @@ dev mount="/shelley" url="http://localhost:9999":
 
 # Finish work on a ticket: close, rebase onto main, ff-merge, remove worktree+branch
 # Idempotent — safe to run repeatedly. Agents should run until exit 0.
-finish-work ticket:
+# Ticket is optional when run from a worktree (inferred from branch/directory).
+finish-work *ticket:
     ./scripts/finish-work {{ticket}}
 
 # Clean up all worktrees and branches for tickets that are already closed
