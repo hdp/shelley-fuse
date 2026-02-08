@@ -2,7 +2,9 @@ package fuse
 
 import (
 	"context"
+	"fmt"
 	"os/exec"
+	"shelley-fuse/fuse/diag"
 	"strings"
 	"testing"
 	"time"
@@ -35,6 +37,46 @@ func runShellOK(t *testing.T, dir, command string) string {
 	return stdout
 }
 
+// runShellDiag executes a shell command like runShell, but accepts a
+// diag.Tracker. If the command times out (context deadline exceeded),
+// the tracker's Dump output is included in the returned error message
+// to help diagnose stuck FUSE operations.
+func runShellDiag(t *testing.T, dir, command string, tracker *diag.Tracker) (string, string, error) {
+	t.Helper()
+	return runShellDiagTimeout(t, dir, command, tracker, 30*time.Second)
+}
+
+// runShellDiagTimeout is the implementation of runShellDiag with a
+// configurable timeout, used for testing the timeout+dump path.
+func runShellDiagTimeout(t *testing.T, dir, command string, tracker *diag.Tracker, timeout time.Duration) (string, string, error) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "bash", "-c", command)
+	cmd.Dir = dir
+	var stdout, stderr strings.Builder
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	if err != nil && tracker != nil && ctx.Err() == context.DeadlineExceeded {
+		dump := tracker.Dump()
+		return stdout.String(), stderr.String(), fmt.Errorf("%w\n\ndiag dump:\n%s", err, dump)
+	}
+	return stdout.String(), stderr.String(), err
+}
+
+// runShellDiagOK executes a shell command and fails the test if it errors.
+// On timeout, the failure message includes the diag tracker's in-flight
+// operation dump. Returns stdout.
+func runShellDiagOK(t *testing.T, dir, command string, tracker *diag.Tracker) string {
+	t.Helper()
+	stdout, stderr, err := runShellDiag(t, dir, command, tracker)
+	if err != nil {
+		t.Fatalf("Command failed: %s\nstdout: %s\nstderr: %s\nerror: %v", command, stdout, stderr, err)
+	}
+	return stdout
+}
+
 // TestReadmeQuickStart exercises the exact Quick Start flow from the README:
 //
 //	# Allocate a new conversation
@@ -56,11 +98,13 @@ func TestReadmeQuickStart(t *testing.T) {
 	skipIfNoShelley(t)
 
 	serverURL := startShelleyServer(t)
-	mountPoint := mountTestFS(t, serverURL)
+	tm := mountTestFSFull(t, serverURL, time.Hour)
+	mountPoint := tm.MountPoint
+	tracker := tm.Diag
 
 	// Step 1: Allocate a new conversation
 	// ID=$(cat new/clone)
-	stdout := runShellOK(t, mountPoint, "cat new/clone")
+	stdout := runShellDiagOK(t, mountPoint, "cat new/clone", tracker)
 	convID := strings.TrimSpace(stdout)
 	if len(convID) != 8 {
 		t.Fatalf("Expected 8-char conversation ID, got %q", convID)
@@ -70,10 +114,10 @@ func TestReadmeQuickStart(t *testing.T) {
 	// Step 2: Configure model and working directory
 	// echo "model=predictable cwd=/tmp" > conversation/$ID/ctl
 	// (Using predictable model for testing)
-	runShellOK(t, mountPoint, "echo 'model=predictable cwd=/tmp' > conversation/"+convID+"/ctl")
+	runShellDiagOK(t, mountPoint, "echo 'model=predictable cwd=/tmp' > conversation/"+convID+"/ctl", tracker)
 
 	// Verify ctl was written correctly
-	ctlContent := runShellOK(t, mountPoint, "cat conversation/"+convID+"/ctl")
+	ctlContent := runShellDiagOK(t, mountPoint, "cat conversation/"+convID+"/ctl", tracker)
 	if !strings.Contains(ctlContent, "model=predictable") {
 		t.Errorf("Expected ctl to contain model=predictable, got: %s", ctlContent)
 	}
@@ -83,11 +127,11 @@ func TestReadmeQuickStart(t *testing.T) {
 
 	// Step 3: Send first message (creates conversation on backend)
 	// echo "Hello, Shelley!" > conversation/$ID/send
-	runShellOK(t, mountPoint, "echo 'Hello, Shelley!' > conversation/"+convID+"/send")
+	runShellDiagOK(t, mountPoint, "echo 'Hello, Shelley!' > conversation/"+convID+"/send", tracker)
 
 	// Step 4: Read the response
 	// cat conversation/$ID/messages/all.md
-	allMd := runShellOK(t, mountPoint, "cat conversation/"+convID+"/messages/all.md")
+	allMd := runShellDiagOK(t, mountPoint, "cat conversation/"+convID+"/messages/all.md", tracker)
 	if allMd == "" {
 		t.Error("Expected non-empty response from all.md")
 	}
@@ -98,10 +142,10 @@ func TestReadmeQuickStart(t *testing.T) {
 
 	// Step 5: Send follow-up
 	// echo "Thanks!" > conversation/$ID/send
-	runShellOK(t, mountPoint, "echo 'Thanks!' > conversation/"+convID+"/send")
+	runShellDiagOK(t, mountPoint, "echo 'Thanks!' > conversation/"+convID+"/send", tracker)
 
 	// Verify follow-up was added
-	allMdAfter := runShellOK(t, mountPoint, "cat conversation/"+convID+"/messages/all.md")
+	allMdAfter := runShellDiagOK(t, mountPoint, "cat conversation/"+convID+"/messages/all.md", tracker)
 	if len(allMdAfter) <= len(allMd) {
 		t.Error("Expected all.md to grow after follow-up message")
 	}
@@ -323,76 +367,78 @@ func TestReadmeFullWorkflow(t *testing.T) {
 	skipIfNoShelley(t)
 
 	serverURL := startShelleyServer(t)
-	mountPoint := mountTestFS(t, serverURL)
+	tm := mountTestFSFull(t, serverURL, time.Hour)
+	mountPoint := tm.MountPoint
+	tracker := tm.Diag
 
 	// === Quick Start Flow ===
 
 	// 1. Allocate new conversation
-	convID := strings.TrimSpace(runShellOK(t, mountPoint, "cat new/clone"))
+	convID := strings.TrimSpace(runShellDiagOK(t, mountPoint, "cat new/clone", tracker))
 	t.Logf("Step 1 - Allocated ID: %s", convID)
 
 	// 2. Configure model and cwd
-	runShellOK(t, mountPoint, "echo 'model=predictable cwd=/tmp' > conversation/"+convID+"/ctl")
+	runShellDiagOK(t, mountPoint, "echo 'model=predictable cwd=/tmp' > conversation/"+convID+"/ctl", tracker)
 	t.Log("Step 2 - Configured model and cwd")
 
 	// 3. Check created status before sending message
-	_, _, err := runShell(t, mountPoint, "test -e conversation/"+convID+"/created")
+	_, _, err := runShellDiag(t, mountPoint, "test -e conversation/"+convID+"/created", tracker)
 	if err == nil {
 		t.Fatal("Created file should not exist before first message")
 	}
 	t.Log("Step 3 - Verified not created yet")
 
 	// 4. Send first message
-	runShellOK(t, mountPoint, "echo 'Hello from workflow test!' > conversation/"+convID+"/send")
+	runShellDiagOK(t, mountPoint, "echo 'Hello from workflow test!' > conversation/"+convID+"/send", tracker)
 	t.Log("Step 4 - Sent first message")
 
 	// 5. Verify created
-	runShellOK(t, mountPoint, "test -e conversation/"+convID+"/created")
+	runShellDiagOK(t, mountPoint, "test -e conversation/"+convID+"/created", tracker)
 	t.Log("Step 5 - Verified created")
 
 	// 6. Read response
-	allMd := runShellOK(t, mountPoint, "cat conversation/"+convID+"/messages/all.md")
+	allMd := runShellDiagOK(t, mountPoint, "cat conversation/"+convID+"/messages/all.md", tracker)
 	if !strings.Contains(allMd, "Hello from workflow test!") {
 		t.Error("Expected all.md to contain our message")
 	}
 	t.Log("Step 6 - Read response via all.md")
 
 	// 7. Send follow-up
-	runShellOK(t, mountPoint, "echo 'Follow-up message!' > conversation/"+convID+"/send")
+	runShellDiagOK(t, mountPoint, "echo 'Follow-up message!' > conversation/"+convID+"/send", tracker)
 	t.Log("Step 7 - Sent follow-up")
 
 	// === Common Operations ===
 
 	// 8. List models
-	models := runShellOK(t, mountPoint, "ls models/")
+	models := runShellDiagOK(t, mountPoint, "ls models/", tracker)
 	if !strings.Contains(models, "predictable") {
 		t.Error("Expected predictable model in listing")
 	}
 	t.Log("Step 8 - Listed models")
 
 	// 9. Check default model
-	defaultModel := strings.TrimSpace(runShellOK(t, mountPoint, "readlink models/default"))
+	defaultModel := strings.TrimSpace(runShellDiagOK(t, mountPoint, "readlink models/default", tracker))
 	if defaultModel == "" {
 		t.Error("Expected non-empty default model")
 	}
 	t.Logf("Step 9 - Default model: %s", defaultModel)
 
 	// 10. List conversations
-	convs := runShellOK(t, mountPoint, "ls conversation/")
+	convs := runShellDiagOK(t, mountPoint, "ls conversation/", tracker)
 	if !strings.Contains(convs, convID) {
 		t.Errorf("Expected %s in conversation listing", convID)
 	}
 	t.Log("Step 10 - Listed conversations")
 
 	// 11. List last 5 messages
-	last5 := runShellOK(t, mountPoint, "ls conversation/"+convID+"/messages/last/5/")
+	last5 := runShellDiagOK(t, mountPoint, "ls conversation/"+convID+"/messages/last/5/", tracker)
 	if last5 == "" {
 		t.Error("Expected non-empty last/5 listing")
 	}
 	t.Logf("Step 11 - Last 5 messages: %s", strings.TrimSpace(last5))
 
 	// 12. Read last 5 message contents
-	last5Content := runShellOK(t, mountPoint, "cat conversation/"+convID+"/messages/last/5/*/content.md")
+	last5Content := runShellDiagOK(t, mountPoint, "cat conversation/"+convID+"/messages/last/5/*/content.md", tracker)
 	if !strings.Contains(last5Content, "##") {
 		t.Error("Expected markdown headers in last/5/*/content.md")
 	}
@@ -400,18 +446,18 @@ func TestReadmeFullWorkflow(t *testing.T) {
 
 	// 13. List messages since user's last message
 	// This may be empty if user's message is last, but the command should work
-	_, _, _ = runShell(t, mountPoint, "ls conversation/"+convID+"/messages/since/user/1/")
+	_, _, _ = runShellDiag(t, mountPoint, "ls conversation/"+convID+"/messages/since/user/1/", tracker)
 	t.Log("Step 13 - Listed messages since user/1")
 
 	// 14. Get message count
-	count := strings.TrimSpace(runShellOK(t, mountPoint, "cat conversation/"+convID+"/messages/count"))
+	count := strings.TrimSpace(runShellDiagOK(t, mountPoint, "cat conversation/"+convID+"/messages/count", tracker))
 	if count == "0" {
 		t.Error("Expected non-zero message count")
 	}
 	t.Logf("Step 14 - Message count: %s", count)
 
 	// 15. Final created check
-	createdCheck := strings.TrimSpace(runShellOK(t, mountPoint, "test -e conversation/"+convID+"/created && echo created || echo not_created"))
+	createdCheck := strings.TrimSpace(runShellDiagOK(t, mountPoint, "test -e conversation/"+convID+"/created && echo created || echo not_created", tracker))
 	if createdCheck != "created" {
 		t.Errorf("Expected 'created', got: %s", createdCheck)
 	}
