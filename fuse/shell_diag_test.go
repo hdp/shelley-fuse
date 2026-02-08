@@ -8,7 +8,7 @@ import (
 )
 
 // TestRunShellDiagTimeoutIncludesDump verifies that when a command times out,
-// the error includes the diag tracker's in-flight operation dump.
+// the error includes the diag tracker's in-flight operation dump and goroutine stacks.
 func TestRunShellDiagTimeoutIncludesDump(t *testing.T) {
 	tracker := diag.NewTracker()
 
@@ -27,6 +27,12 @@ func TestRunShellDiagTimeoutIncludesDump(t *testing.T) {
 	}
 	if !strings.Contains(errMsg, "SendNode.Write conv=deadbeef") {
 		t.Errorf("diag dump should show stuck op, got: %s", errMsg)
+	}
+	if !strings.Contains(errMsg, "goroutine stacks") {
+		t.Errorf("timeout error should include goroutine stacks, got: %s", errMsg)
+	}
+	if !strings.Contains(errMsg, "goroutine ") {
+		t.Errorf("goroutine stacks should contain actual stack traces, got: %s", errMsg)
 	}
 }
 

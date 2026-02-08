@@ -60,7 +60,8 @@ func runShellDiagTimeout(t *testing.T, dir, command string, tracker *diag.Tracke
 	err := cmd.Run()
 	if err != nil && tracker != nil && ctx.Err() == context.DeadlineExceeded {
 		dump := tracker.Dump()
-		return stdout.String(), stderr.String(), fmt.Errorf("%w\n\ndiag dump:\n%s", err, dump)
+		stacks := diag.GoroutineStacks()
+		return stdout.String(), stderr.String(), fmt.Errorf("%w\n\ndiag dump:\n%s\ngoroutine stacks:\n%s", err, dump, stacks)
 	}
 	return stdout.String(), stderr.String(), err
 }

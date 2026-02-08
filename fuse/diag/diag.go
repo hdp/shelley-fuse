@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -124,4 +125,21 @@ func Track(t *Tracker, node, method, detail string) func() {
 		return func() {}
 	}
 	return t.Track(node, method, detail)
+}
+
+// maxGoroutineStackSize is the maximum size of the goroutine stack dump.
+const maxGoroutineStackSize = 64 * 1024 // 64KB
+
+// GoroutineStacks returns a string containing the stack traces of all
+// goroutines, truncated to 64KB. This is useful for diagnosing hangs
+// that occur in go-fuse internals or the kernel driver rather than in
+// our FUSE method implementations.
+func GoroutineStacks() string {
+	buf := make([]byte, maxGoroutineStackSize)
+	n := runtime.Stack(buf, true)
+	s := string(buf[:n])
+	if n >= maxGoroutineStackSize {
+		s += "\n... truncated at 64KB ...\n"
+	}
+	return s
 }

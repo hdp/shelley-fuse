@@ -318,3 +318,30 @@ func TestHandlerJSONQueryParamNoValue(t *testing.T) {
 		t.Errorf("Content-Type = %q, want application/json", ct)
 	}
 }
+
+func TestGoroutineStacks(t *testing.T) {
+	stacks := GoroutineStacks()
+	if stacks == "" {
+		t.Fatal("expected non-empty goroutine stacks")
+	}
+	// Should contain the current goroutine's stack at minimum.
+	if !strings.Contains(stacks, "goroutine") {
+		t.Errorf("expected 'goroutine' in stacks, got: %.200s...", stacks)
+	}
+	// Should reference this test function.
+	if !strings.Contains(stacks, "TestGoroutineStacks") {
+		t.Errorf("expected 'TestGoroutineStacks' in stacks, got: %.200s...", stacks)
+	}
+}
+
+func TestGoroutineStacksUnderLimit(t *testing.T) {
+	stacks := GoroutineStacks()
+	// In a normal test run, stacks should be well under 64KB.
+	if len(stacks) == 0 {
+		t.Fatal("expected non-empty stacks")
+	}
+	// Should not contain the truncation marker in normal conditions.
+	if strings.Contains(stacks, "truncated at 64KB") {
+		t.Error("did not expect truncation in a normal test")
+	}
+}
