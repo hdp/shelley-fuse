@@ -1,6 +1,6 @@
 ---
 id: sf-n20r
-status: in_progress
+status: closed
 deps: [sf-q2nw, sf-l15g]
 links: []
 created: 2026-02-08T14:53:30Z
