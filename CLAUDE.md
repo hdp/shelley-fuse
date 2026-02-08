@@ -12,11 +12,8 @@ Shelley FUSE is a Go FUSE filesystem that exposes the Shelley API (an AI convers
 # Build the FUSE binary
 just build
 
-# Run all tests
+# Run all tests (requires /usr/local/bin/shelley and fusermount for integration tests)
 just test
-
-# Run integration tests (requires /usr/local/bin/shelley and fusermount)
-just test-integration
 
 # Start for manual testing (Ctrl+C to unmount)
 just dev
