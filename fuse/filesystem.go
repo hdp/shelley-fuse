@@ -35,7 +35,9 @@ type ParsedMessageCache struct {
 type parsedCacheEntry struct {
 	messages []shelley.Message
 	toolMap  map[string]string
+	maxSeqID int    // highest SequenceID (cached to avoid O(N) recomputation)
 	checksum uint64 // FNV-1a hash of the raw data used to produce this entry
+	rawData  []byte // reference to the raw data slice for fast identity checks
 }
 
 // NewParsedMessageCache creates a new content-addressed parse cache.
@@ -58,26 +60,51 @@ func dataChecksum(data []byte) uint64 {
 	return h
 }
 
+// ParseResult holds the result of parsing conversation data.
+type ParseResult struct {
+	Messages []shelley.Message
+	ToolMap  map[string]string
+	MaxSeqID int
+}
+
 // GetOrParse returns cached messages and toolMap for a conversation, or parses the data and caches it.
 // The rawData is the JSON response from GetConversation. The cache returns the previously parsed
-// result only if rawData has the same content (by checksum); otherwise it re-parses and caches.
+// result only if rawData has the same content; otherwise it re-parses and caches.
+// It first checks if rawData is the exact same slice (pointer identity) for O(1) cache hits
+// when the CachingClient returns the same cached bytes, then falls back to FNV checksum comparison.
 func (c *ParsedMessageCache) GetOrParse(conversationID string, rawData []byte) ([]shelley.Message, map[string]string, error) {
-	sum := dataChecksum(rawData)
+	r, err := c.GetOrParseResult(conversationID, rawData)
+	if err != nil {
+		return nil, nil, err
+	}
+	return r.Messages, r.ToolMap, nil
+}
 
+// GetOrParseResult is like GetOrParse but returns the full ParseResult including MaxSeqID.
+func (c *ParsedMessageCache) GetOrParseResult(conversationID string, rawData []byte) (*ParseResult, error) {
 	if c != nil {
 		c.mu.RLock()
 		entry := c.entries[conversationID]
 		c.mu.RUnlock()
 
-		if entry != nil && entry.checksum == sum {
-			return entry.messages, entry.toolMap, nil
+		if entry != nil {
+			// Fast path: pointer identity check. When CachingClient returns
+			// the same cached slice, this avoids computing the checksum entirely.
+			if len(rawData) == len(entry.rawData) && len(rawData) > 0 &&
+				&rawData[0] == &entry.rawData[0] {
+				return &ParseResult{Messages: entry.messages, ToolMap: entry.toolMap, MaxSeqID: entry.maxSeqID}, nil
+			}
+			// Slow path: content-addressed comparison via checksum
+			if entry.checksum == dataChecksum(rawData) {
+				return &ParseResult{Messages: entry.messages, ToolMap: entry.toolMap, MaxSeqID: entry.maxSeqID}, nil
+			}
 		}
 	}
 
 	// Parse the conversation data
 	msgs, err := shelley.ParseMessages(rawData)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 
 	// Build the tool name map
@@ -86,6 +113,7 @@ func (c *ParsedMessageCache) GetOrParse(conversationID string, rawData []byte) (
 		msgPtrs[i] = &msgs[i]
 	}
 	toolMap := shelley.BuildToolNameMap(msgPtrs)
+	maxSeq := maxSeqIDFromMessages(msgs)
 
 	// Cache the result
 	if c != nil {
@@ -93,12 +121,14 @@ func (c *ParsedMessageCache) GetOrParse(conversationID string, rawData []byte) (
 		c.entries[conversationID] = &parsedCacheEntry{
 			messages: msgs,
 			toolMap:  toolMap,
-			checksum: sum,
+			maxSeqID: maxSeq,
+			checksum: dataChecksum(rawData),
+			rawData:  rawData,
 		}
 		c.mu.Unlock()
 	}
 
-	return msgs, toolMap, nil
+	return &ParseResult{Messages: msgs, ToolMap: toolMap, MaxSeqID: maxSeq}, nil
 }
 
 // Invalidate removes the cached entry for a conversation.
@@ -922,20 +952,20 @@ func (c *ConversationNode) Lookup(ctx context.Context, name string, out *fuse.En
 			return nil, syscall.EIO
 		}
 
-		msgs, toolMap, err := c.parsedCache.GetOrParse(cs.ShelleyConversationID, convData)
+		result, err := c.parsedCache.GetOrParseResult(cs.ShelleyConversationID, convData)
 		if err != nil {
 			return nil, syscall.EIO
 		}
 
 		// Analyze conversation to determine if waiting for input
-		status := AnalyzeWaitingForInput(msgs, toolMap)
+		status := AnalyzeWaitingForInput(result.Messages, result.ToolMap)
 		if !status.Waiting {
 			return nil, syscall.ENOENT
 		}
 
 		// Construct the symlink target: messages/{NNN}-agent/llm_data/EndOfTurn
 		// The directory name uses 0-based indexing (seqID-1)
-		agentDirName := messageFileBase(status.LastAgentSeqID, status.LastAgentSlug, maxSeqIDFromMessages(msgs))
+		agentDirName := messageFileBase(status.LastAgentSeqID, status.LastAgentSlug, result.MaxSeqID)
 		target := fmt.Sprintf("messages/%s/llm_data/EndOfTurn", agentDirName)
 
 		return c.NewInode(ctx, &SymlinkNode{target: target, startTime: c.getConversationTime()}, fs.StableAttr{Mode: syscall.S_IFLNK}), 0
@@ -1176,20 +1206,20 @@ func (m *MessagesDirNode) Lookup(ctx context.Context, name string, out *fuse.Ent
 		}
 
 		// Use the parsed message cache for efficient repeated lookups
-		msgs, toolMap, err := m.parsedCache.GetOrParse(cs.ShelleyConversationID, convData)
+		result, err := m.parsedCache.GetOrParseResult(cs.ShelleyConversationID, convData)
 		if err != nil {
 			return nil, syscall.EIO
 		}
 
 		// Find the message by sequence number
-		msg := shelley.GetMessage(msgs, seqNum)
+		msg := shelley.GetMessage(result.Messages, seqNum)
 		if msg == nil {
 			return nil, syscall.ENOENT
 		}
 
 		// Compute expected slug using the cached toolMap
-		expectedSlug := shelley.MessageSlug(msg, toolMap)
-		expectedName := messageFileBase(seqNum, expectedSlug, maxSeqIDFromMessages(msgs))
+		expectedSlug := shelley.MessageSlug(msg, result.ToolMap)
+		expectedName := messageFileBase(seqNum, expectedSlug, result.MaxSeqID)
 
 		// Verify the directory name matches the expected slug
 		if name != expectedName {
@@ -1198,7 +1228,7 @@ func (m *MessagesDirNode) Lookup(ctx context.Context, name string, out *fuse.Ent
 
 		return m.NewInode(ctx, &MessageDirNode{
 			message:   *msg,
-			toolMap:   toolMap,
+			toolMap:   result.ToolMap,
 			startTime: m.startTime,
 		}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
 	}
@@ -1222,11 +1252,11 @@ func (m *MessagesDirNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Er
 		convData, err := m.client.GetConversation(cs.ShelleyConversationID)
 		if err == nil {
 			// Use the parsed message cache for efficiency
-			msgs, toolMap, err := m.parsedCache.GetOrParse(cs.ShelleyConversationID, convData)
+			result, err := m.parsedCache.GetOrParseResult(cs.ShelleyConversationID, convData)
 			if err == nil {
-				for i := range msgs {
-					slug := shelley.MessageSlug(&msgs[i], toolMap)
-					base := messageFileBase(msgs[i].SequenceID, slug, maxSeqIDFromMessages(msgs))
+				for i := range result.Messages {
+					slug := shelley.MessageSlug(&result.Messages[i], result.ToolMap)
+					base := messageFileBase(result.Messages[i].SequenceID, slug, result.MaxSeqID)
 					entries = append(entries, fuse.DirEntry{Name: base, Mode: fuse.S_IFDIR})
 				}
 			}
@@ -1829,12 +1859,12 @@ func (c *ConvContentNode) Open(ctx context.Context, flags uint32) (fs.FileHandle
 	if err != nil {
 		return &ConvContentFileHandle{errno: syscall.EIO}, fuse.FOPEN_DIRECT_IO, 0
 	}
-	msgs, _, err := c.parsedCache.GetOrParse(cs.ShelleyConversationID, convData)
+	msgs, toolMap, err := c.parsedCache.GetOrParse(cs.ShelleyConversationID, convData)
 	if err != nil {
 		return &ConvContentFileHandle{errno: syscall.EIO}, fuse.FOPEN_DIRECT_IO, 0
 	}
 
-	data, errno := c.formatResult(msgs)
+	data, errno := c.formatResult(msgs, toolMap)
 	if errno != 0 {
 		// Return handle that will report the error on read (preserves original behavior)
 		return &ConvContentFileHandle{errno: errno}, fuse.FOPEN_DIRECT_IO, 0
@@ -1857,7 +1887,7 @@ func (h *ConvContentFileHandle) Read(ctx context.Context, dest []byte, off int64
 	return fuse.ReadResultData(readAt(h.content, dest, off)), 0
 }
 
-func (c *ConvContentNode) formatResult(msgs []shelley.Message) ([]byte, syscall.Errno) {
+func (c *ConvContentNode) formatResult(msgs []shelley.Message, toolMap map[string]string) ([]byte, syscall.Errno) {
 	var filtered []shelley.Message
 
 	switch c.query.kind {
@@ -1872,7 +1902,7 @@ func (c *ConvContentNode) formatResult(msgs []shelley.Message) ([]byte, syscall.
 	case queryLast:
 		filtered = shelley.FilterLast(msgs, c.query.n)
 	case querySince:
-		filtered = shelley.FilterSince(msgs, c.query.person, c.query.n)
+		filtered = shelley.FilterSinceWithToolMap(msgs, c.query.person, c.query.n, toolMap)
 		if filtered == nil {
 			return nil, syscall.ENOENT
 		}
@@ -1970,7 +2000,7 @@ func (q *QueryDirNode) getSymlinkTarget(n int) (string, syscall.Errno) {
 		return "", syscall.EIO
 	}
 
-	msgs, toolMap, err := q.parsedCache.GetOrParse(cs.ShelleyConversationID, convData)
+	result, err := q.parsedCache.GetOrParseResult(cs.ShelleyConversationID, convData)
 	if err != nil {
 		return "", syscall.EIO
 	}
@@ -1981,11 +2011,11 @@ func (q *QueryDirNode) getSymlinkTarget(n int) (string, syscall.Errno) {
 	switch q.kind {
 	case queryLast:
 		// last/{N} -> Nth-to-last message
-		targetMsg = shelley.GetNthLast(msgs, n)
+		targetMsg = shelley.GetNthLast(result.Messages, n)
 		prefix = "../../" // up from last/, up from messages/
 	case querySince:
 		// since/{person}/{N} -> Nth message after the last message from person
-		targetMsg = shelley.GetNthSince(msgs, q.person, n)
+		targetMsg = shelley.GetNthSinceWithToolMap(result.Messages, q.person, n, result.ToolMap)
 		prefix = "../../../" // up from {N}/, up from {person}/, up from since/, into messages/
 	}
 
@@ -1993,8 +2023,8 @@ func (q *QueryDirNode) getSymlinkTarget(n int) (string, syscall.Errno) {
 		return "", syscall.ENOENT
 	}
 
-	slug := shelley.MessageSlug(targetMsg, toolMap)
-	base := messageFileBase(targetMsg.SequenceID, slug, maxSeqIDFromMessages(msgs))
+	slug := shelley.MessageSlug(targetMsg, result.ToolMap)
+	base := messageFileBase(targetMsg.SequenceID, slug, result.MaxSeqID)
 	return prefix + base, 0
 }
 
@@ -2029,6 +2059,23 @@ type QueryResultDirNode struct {
 	startTime   time.Time
 	parsedCache *ParsedMessageCache
 	diag        *diag.Tracker
+
+	// Cached filtered results to avoid redundant filtering during ls -l.
+	// When Readdir and subsequent Lookups happen on the same node within
+	// a single ls -l, the cached result is reused if the underlying
+	// conversation data hasn't changed (checked via parsedCache identity).
+	cacheMu       sync.Mutex
+	cachedMsgs    []shelley.Message    // the full parsed messages (from parsedCache)
+	cachedToolMap map[string]string    // tool map from parsedCache
+	cachedResult  *queryResultSnapshot // filtered result + name index
+}
+
+// queryResultSnapshot holds pre-computed filtered messages and a name→index
+// map for O(1) Lookup by entry name.
+type queryResultSnapshot struct {
+	filtered []shelley.Message
+	maxSeqID int
+	nameIdx  map[string]int // entry name → index in filtered (for since/ queries)
 }
 
 var _ = (fs.NodeLookuper)((*QueryResultDirNode)(nil))
@@ -2037,30 +2084,64 @@ var _ = (fs.NodeGetattrer)((*QueryResultDirNode)(nil))
 
 // getFilteredMessages returns the messages that match the query, along with the max
 // sequence ID in the conversation (needed for consistent zero-padding of directory names).
-func (q *QueryResultDirNode) getFilteredMessages() (filtered []shelley.Message, toolMap map[string]string, maxSeqID int, err error) {
+// Results are cached on the node and reused when the underlying conversation data
+// hasn't changed, avoiding redundant API calls and filtering during ls -l operations.
+func (q *QueryResultDirNode) getFilteredMessages() (snap *queryResultSnapshot, toolMap map[string]string, err error) {
 	cs := q.state.Get(q.localID)
 	if cs == nil || !cs.Created || cs.ShelleyConversationID == "" {
-		return nil, nil, 0, nil
+		return nil, nil, nil
 	}
 
 	convData, err := q.client.GetConversation(cs.ShelleyConversationID)
 	if err != nil {
-		return nil, nil, 0, err
+		return nil, nil, err
 	}
 
-	msgs, toolMap, err := q.parsedCache.GetOrParse(cs.ShelleyConversationID, convData)
+	result, err := q.parsedCache.GetOrParseResult(cs.ShelleyConversationID, convData)
 	if err != nil {
-		return nil, nil, 0, err
+		return nil, nil, err
 	}
 
+	// Fast path: if the parsedCache returned the same slice (same conversation
+	// data), reuse the cached filtered result. This avoids redundant FilterSince
+	// calls during ls -l where Readdir + N Lookups all hit the same data.
+	q.cacheMu.Lock()
+	defer q.cacheMu.Unlock()
+
+	if q.cachedResult != nil && q.cachedMsgs != nil &&
+		len(q.cachedMsgs) == len(result.Messages) &&
+		len(result.Messages) > 0 && &q.cachedMsgs[0] == &result.Messages[0] {
+		return q.cachedResult, q.cachedToolMap, nil
+	}
+
+	// Slow path: filter and build the snapshot
+	var filtered []shelley.Message
 	switch q.kind {
 	case queryLast:
-		filtered = shelley.FilterLast(msgs, q.n)
+		filtered = shelley.FilterLast(result.Messages, q.n)
 	case querySince:
-		filtered = shelley.FilterSince(msgs, q.person, q.n)
+		filtered = shelley.FilterSinceWithToolMap(result.Messages, q.person, q.n, result.ToolMap)
 	}
 
-	return filtered, toolMap, maxSeqIDFromMessages(msgs), nil
+	snap = &queryResultSnapshot{
+		filtered: filtered,
+		maxSeqID: result.MaxSeqID,
+	}
+
+	// Build name index for since/ queries to enable O(1) lookup by name
+	if q.kind == querySince && filtered != nil {
+		snap.nameIdx = make(map[string]int, len(filtered))
+		for i := range filtered {
+			slug := shelley.MessageSlug(&filtered[i], result.ToolMap)
+			base := messageFileBase(filtered[i].SequenceID, slug, snap.maxSeqID)
+			snap.nameIdx[base] = i
+		}
+	}
+
+	q.cachedMsgs = result.Messages
+	q.cachedToolMap = result.ToolMap
+	q.cachedResult = snap
+	return snap, result.ToolMap, nil
 }
 
 // symlinkPrefix returns the relative path prefix for symlinks.
@@ -2075,11 +2156,11 @@ func (q *QueryResultDirNode) symlinkPrefix() string {
 
 func (q *QueryResultDirNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
 	defer diag.Track(q.diag, "QueryResultDirNode", "Lookup", q.localID+"/"+name)()
-	msgs, toolMap, maxSeqID, err := q.getFilteredMessages()
+	snap, toolMap, err := q.getFilteredMessages()
 	if err != nil {
 		return nil, syscall.EIO
 	}
-	if msgs == nil {
+	if snap == nil || snap.filtered == nil {
 		return nil, syscall.ENOENT
 	}
 
@@ -2088,23 +2169,20 @@ func (q *QueryResultDirNode) Lookup(ctx context.Context, name string, out *fuse.
 	if q.kind == queryLast {
 		// Parse the ordinal index
 		idx, err := strconv.Atoi(name)
-		if err != nil || idx < 0 || idx >= len(msgs) {
+		if err != nil || idx < 0 || idx >= len(snap.filtered) {
 			return nil, syscall.ENOENT
 		}
 		// idx 0 is oldest, idx len-1 is newest (msgs are already in oldest-first order from FilterLast)
-		slug := shelley.MessageSlug(&msgs[idx], toolMap)
-		base := messageFileBase(msgs[idx].SequenceID, slug, maxSeqID)
+		slug := shelley.MessageSlug(&snap.filtered[idx], toolMap)
+		base := messageFileBase(snap.filtered[idx].SequenceID, slug, snap.maxSeqID)
 		target := q.symlinkPrefix() + base
 		return q.NewInode(ctx, &SymlinkNode{target: target, startTime: q.startTime}, fs.StableAttr{Mode: syscall.S_IFLNK}), 0
 	}
 
-	// For since/{person}/{N}, look for a message matching the name
-	for i := range msgs {
-		slug := shelley.MessageSlug(&msgs[i], toolMap)
-		base := messageFileBase(msgs[i].SequenceID, slug, maxSeqID)
-		if base == name {
-			// Found the message - return a symlink to it
-			target := q.symlinkPrefix() + base
+	// For since/{person}/{N}, use the pre-built name index for O(1) lookup
+	if snap.nameIdx != nil {
+		if _, ok := snap.nameIdx[name]; ok {
+			target := q.symlinkPrefix() + name
 			return q.NewInode(ctx, &SymlinkNode{target: target, startTime: q.startTime}, fs.StableAttr{Mode: syscall.S_IFLNK}), 0
 		}
 	}
@@ -2114,22 +2192,25 @@ func (q *QueryResultDirNode) Lookup(ctx context.Context, name string, out *fuse.
 
 func (q *QueryResultDirNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
 	defer diag.Track(q.diag, "QueryResultDirNode", "Readdir", q.localID)()
-	msgs, toolMap, maxSeqID, err := q.getFilteredMessages()
+	snap, toolMap, err := q.getFilteredMessages()
 	if err != nil {
 		return nil, syscall.EIO
 	}
+	if snap == nil {
+		return fs.NewListDirStream(nil), 0
+	}
 
-	entries := make([]fuse.DirEntry, 0, len(msgs))
+	entries := make([]fuse.DirEntry, 0, len(snap.filtered))
 	// For last/{N}, entries are ordinal (0, 1, 2, ...)
 	// For since/{person}/{N}, entries are message base names
 	if q.kind == queryLast {
-		for i := range msgs {
+		for i := range snap.filtered {
 			entries = append(entries, fuse.DirEntry{Name: strconv.Itoa(i), Mode: syscall.S_IFLNK})
 		}
 	} else {
-		for i := range msgs {
-			slug := shelley.MessageSlug(&msgs[i], toolMap)
-			base := messageFileBase(msgs[i].SequenceID, slug, maxSeqID)
+		for i := range snap.filtered {
+			slug := shelley.MessageSlug(&snap.filtered[i], toolMap)
+			base := messageFileBase(snap.filtered[i].SequenceID, slug, snap.maxSeqID)
 			entries = append(entries, fuse.DirEntry{Name: base, Mode: syscall.S_IFLNK})
 		}
 	}

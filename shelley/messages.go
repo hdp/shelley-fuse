@@ -365,13 +365,20 @@ func GetNthLast(messages []Message, n int) *Message {
 // n=2 returns the second message after the last message from person.
 // Returns nil if person is not found or n is out of range.
 func GetNthSince(messages []Message, person string, n int) *Message {
+	return GetNthSinceWithToolMap(messages, person, n, nil)
+}
+
+// GetNthSinceWithToolMap is like GetNthSince but accepts a pre-built tool name map.
+// If toolMap is nil, it builds one from the messages.
+func GetNthSinceWithToolMap(messages []Message, person string, n int, toolMap map[string]string) *Message {
 	if n <= 0 {
 		return nil
 	}
 	person = strings.ToLower(person)
 
-	// Build tool map for slug computation
-	toolMap := buildToolMapFromSlice(messages)
+	if toolMap == nil {
+		toolMap = buildToolMapFromSlice(messages)
+	}
 
 	// Find the last message from this person
 	refIdx := -1
@@ -400,13 +407,20 @@ func GetNthSince(messages []Message, person string, n int) *Message {
 // This means "user" matches actual user messages but not tool results (which have slug like "bash-result").
 // n=1 means messages after the last message from that person, n=2 means after the second-to-last, etc.
 func FilterSince(messages []Message, person string, n int) []Message {
+	return FilterSinceWithToolMap(messages, person, n, nil)
+}
+
+// FilterSinceWithToolMap is like FilterSince but accepts a pre-built tool name map.
+// If toolMap is nil, it builds one from the messages.
+func FilterSinceWithToolMap(messages []Message, person string, n int, toolMap map[string]string) []Message {
 	if n <= 0 {
 		return nil
 	}
 	person = strings.ToLower(person)
 
-	// Build tool map for slug computation
-	toolMap := buildToolMapFromSlice(messages)
+	if toolMap == nil {
+		toolMap = buildToolMapFromSlice(messages)
+	}
 
 	// Find the nth-to-last message from this person
 	count := 0
@@ -428,13 +442,20 @@ func FilterSince(messages []Message, person string, n int) []Message {
 // This means "user" matches actual user messages but not tool results (which have slug like "bash-result").
 // n=1 means the most recent message from that person.
 func FilterFrom(messages []Message, person string, n int) *Message {
+	return FilterFromWithToolMap(messages, person, n, nil)
+}
+
+// FilterFromWithToolMap is like FilterFrom but accepts a pre-built tool name map.
+// If toolMap is nil, it builds one from the messages.
+func FilterFromWithToolMap(messages []Message, person string, n int, toolMap map[string]string) *Message {
 	if n <= 0 {
 		return nil
 	}
 	person = strings.ToLower(person)
 
-	// Build tool map for slug computation
-	toolMap := buildToolMapFromSlice(messages)
+	if toolMap == nil {
+		toolMap = buildToolMapFromSlice(messages)
+	}
 
 	count := 0
 	for i := len(messages) - 1; i >= 0; i-- {

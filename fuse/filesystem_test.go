@@ -4769,3 +4769,99 @@ func TestWaitingForInputSymlink_ToolCallCompletedNoFollowUp(t *testing.T) {
 		t.Errorf("Symlink target: expected %q, got %q", expectedTarget, target)
 	}
 }
+
+// TestSinceDirLsDoesNotMakeExcessiveAPICalls verifies that `ls -l` on
+// since/user/1/ does not make O(N) GetConversation API calls where N is the
+// number of messages. This catches a performance regression where every Lookup
+// during readdir+stat re-fetched the conversation from the backend.
+func TestSinceDirLsDoesNotMakeExcessiveAPICalls(t *testing.T) {
+	convID := "conv-since-perf"
+	numMessages := 100
+
+	// Build a conversation: 1 user message, then (numMessages-1) agent replies
+	msgs := []shelley.Message{
+		{MessageID: "m1", ConversationID: convID, SequenceID: 1, Type: "user", UserData: strPtr(`{"Content":[{"Type":2,"Text":"Hello"}]}`)},
+	}
+	for i := 2; i <= numMessages; i++ {
+		msgs = append(msgs, shelley.Message{
+			MessageID:      fmt.Sprintf("m%d", i),
+			ConversationID: convID,
+			SequenceID:     i,
+			Type:           "shelley",
+			LLMData:        strPtr(fmt.Sprintf(`{"Content":[{"Type":2,"Text":"Reply %d"}]}`, i)),
+		})
+	}
+
+	var fetchCount int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/conversation/"+convID {
+			atomic.AddInt32(&fetchCount, 1)
+			data, _ := json.Marshal(struct {
+				Messages []shelley.Message `json:"messages"`
+			}{Messages: msgs})
+			w.Write(data)
+			return
+		}
+		if r.URL.Path == "/api/conversations" {
+			data, _ := json.Marshal([]shelley.Conversation{{ConversationID: convID}})
+			w.Write(data)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	// Use CachingClient like production
+	baseClient := shelley.NewClient(server.URL)
+	cachingClient := shelley.NewCachingClient(baseClient, 5*time.Second)
+	store := testStore(t)
+
+	localID, _ := store.Clone()
+	store.MarkCreated(localID, convID, "")
+
+	shelleyFS := NewFS(cachingClient, store, time.Hour)
+
+	tmpDir, err := ioutil.TempDir("", "shelley-fuse-since-perf-test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	opts := &fs.Options{}
+	entryTimeout := time.Duration(0)
+	attrTimeout := time.Duration(0)
+	negativeTimeout := time.Duration(0)
+	opts.EntryTimeout = &entryTimeout
+	opts.AttrTimeout = &attrTimeout
+	opts.NegativeTimeout = &negativeTimeout
+
+	fssrv, err := fs.Mount(tmpDir, shelleyFS, opts)
+	if err != nil {
+		t.Fatalf("Mount failed: %v", err)
+	}
+	defer fssrv.Unmount()
+
+	// Reset counter after mount
+	atomic.StoreInt32(&fetchCount, 0)
+
+	// ls -l since/user/1/ — should list (numMessages-1) agent messages
+	sincePath := filepath.Join(tmpDir, "conversation", localID, "messages", "since", "user", "1")
+	entries, err := ioutil.ReadDir(sincePath)
+	if err != nil {
+		t.Fatalf("ReadDir on since/user/1/ failed: %v", err)
+	}
+	expected := numMessages - 1
+	if len(entries) != expected {
+		t.Fatalf("Expected %d entries in since/user/1/, got %d", expected, len(entries))
+	}
+
+	// The key assertion: API calls should be bounded, not O(N).
+	// With proper caching, we expect at most a small constant number of fetches
+	// (1 for the conversation data, possibly a couple more for cache misses).
+	// Without the fix, this would be ~100+ fetches.
+	fetches := atomic.LoadInt32(&fetchCount)
+	t.Logf("GetConversation calls for ls -l since/user/1/ with %d entries: %d", expected, fetches)
+	if fetches > 5 {
+		t.Errorf("Too many GetConversation calls: %d (expected <= 5 with caching)", fetches)
+	}
+}

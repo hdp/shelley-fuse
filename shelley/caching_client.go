@@ -55,6 +55,7 @@ func (e *cacheEntry) isValid() bool {
 
 // GetConversation retrieves a conversation, using cache if available.
 // Uses singleflight to coalesce duplicate requests without holding locks during HTTP calls.
+// The returned byte slice must not be modified by callers.
 func (c *CachingClient) GetConversation(conversationID string) ([]byte, error) {
 	// Fast path: check cache with read lock
 	if c.cacheTTL > 0 {
@@ -63,10 +64,11 @@ func (c *CachingClient) GetConversation(conversationID string) ([]byte, error) {
 		c.mu.RUnlock()
 
 		if entry.isValid() {
-			// Return a copy to prevent mutation
-			result := make([]byte, len(entry.data))
-			copy(result, entry.data)
-			return result, nil
+			// Return cached slice directly — callers must not mutate.
+			// Returning the same slice enables downstream caches
+			// (e.g. ParsedMessageCache) to use pointer identity for
+			// fast cache-hit detection.
+			return entry.data, nil
 		}
 	}
 
@@ -99,6 +101,7 @@ func (c *CachingClient) GetConversation(conversationID string) ([]byte, error) {
 
 // ListConversations lists all conversations, using cache if available.
 // Uses singleflight to coalesce duplicate requests without holding locks during HTTP calls.
+// The returned byte slice must not be modified by callers.
 func (c *CachingClient) ListConversations() ([]byte, error) {
 	// Fast path: check cache with read lock
 	if c.cacheTTL > 0 {
@@ -107,10 +110,7 @@ func (c *CachingClient) ListConversations() ([]byte, error) {
 		c.mu.RUnlock()
 
 		if entry.isValid() {
-			// Return a copy to prevent mutation
-			result := make([]byte, len(entry.data))
-			copy(result, entry.data)
-			return result, nil
+			return entry.data, nil
 		}
 	}
 
@@ -143,6 +143,7 @@ func (c *CachingClient) ListConversations() ([]byte, error) {
 
 // ListArchivedConversations lists all archived conversations, using cache if available.
 // Uses singleflight to coalesce duplicate requests without holding locks during HTTP calls.
+// The returned byte slice must not be modified by callers.
 func (c *CachingClient) ListArchivedConversations() ([]byte, error) {
 	// Fast path: check cache with read lock
 	if c.cacheTTL > 0 {
@@ -151,10 +152,7 @@ func (c *CachingClient) ListArchivedConversations() ([]byte, error) {
 		c.mu.RUnlock()
 
 		if entry.isValid() {
-			// Return a copy to prevent mutation
-			result := make([]byte, len(entry.data))
-			copy(result, entry.data)
-			return result, nil
+			return entry.data, nil
 		}
 	}
 
