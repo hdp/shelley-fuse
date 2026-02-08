@@ -1,6 +1,6 @@
 ---
 id: sf-q2nw
-status: open
+status: in_progress
 deps: [sf-g5ah]
 links: []
 created: 2026-02-08T14:53:11Z
