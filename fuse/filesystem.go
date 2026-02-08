@@ -15,6 +15,7 @@ import (
 
 	"github.com/hanwen/go-fuse/v2/fs"
 	"github.com/hanwen/go-fuse/v2/fuse"
+	"shelley-fuse/fuse/diag"
 	"shelley-fuse/jsonfs"
 	"shelley-fuse/metadata"
 	"shelley-fuse/shelley"
@@ -127,6 +128,7 @@ type FS struct {
 	cloneTimeout time.Duration
 	startTime    time.Time
 	parsedCache  *ParsedMessageCache // caches parsed messages and toolMaps
+	Diag         *diag.Tracker       // tracks in-flight FUSE I/O operations
 }
 
 // NewFS creates a new Shelley FUSE filesystem.
@@ -138,6 +140,7 @@ func NewFS(client shelley.ShelleyClient, store *state.Store, cloneTimeout time.D
 		cloneTimeout: cloneTimeout,
 		startTime:    time.Now(),
 		parsedCache:  NewParsedMessageCache(5 * time.Second), // same as typical HTTP cache TTL
+		Diag:         diag.NewTracker(),
 	}
 }
 
@@ -149,6 +152,7 @@ func NewFSWithCacheTTL(client shelley.ShelleyClient, store *state.Store, cloneTi
 		cloneTimeout: cloneTimeout,
 		startTime:    time.Now(),
 		parsedCache:  NewParsedMessageCache(cacheTTL),
+		Diag:         diag.NewTracker(),
 	}
 }
 
@@ -165,11 +169,11 @@ var _ = (fs.NodeGetattrer)((*FS)(nil))
 func (f *FS) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
 	switch name {
 	case "models":
-		return f.NewInode(ctx, &ModelsDirNode{client: f.client, startTime: f.startTime}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
+		return f.NewInode(ctx, &ModelsDirNode{client: f.client, startTime: f.startTime, diag: f.Diag}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
 	case "new":
-		return f.NewInode(ctx, &NewDirNode{state: f.state, startTime: f.startTime}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
+		return f.NewInode(ctx, &NewDirNode{state: f.state, startTime: f.startTime, diag: f.Diag}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
 	case "conversation":
-		return f.NewInode(ctx, &ConversationListNode{client: f.client, state: f.state, cloneTimeout: f.cloneTimeout, startTime: f.startTime, parsedCache: f.parsedCache}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
+		return f.NewInode(ctx, &ConversationListNode{client: f.client, state: f.state, cloneTimeout: f.cloneTimeout, startTime: f.startTime, parsedCache: f.parsedCache, diag: f.Diag}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
 	case "README.md":
 		return f.NewInode(ctx, &ReadmeNode{startTime: f.startTime}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
 	}
@@ -230,6 +234,7 @@ type ModelsDirNode struct {
 	fs.Inode
 	client    shelley.ShelleyClient
 	startTime time.Time
+	diag      *diag.Tracker
 }
 
 var _ = (fs.NodeLookuper)((*ModelsDirNode)(nil))
@@ -237,6 +242,7 @@ var _ = (fs.NodeReaddirer)((*ModelsDirNode)(nil))
 var _ = (fs.NodeGetattrer)((*ModelsDirNode)(nil))
 
 func (m *ModelsDirNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
+	defer diag.Track(m.diag, "ModelsDirNode", "Lookup", name)()
 	result, err := m.client.ListModels()
 	if err != nil {
 		return nil, syscall.EIO
@@ -259,6 +265,7 @@ func (m *ModelsDirNode) Lookup(ctx context.Context, name string, out *fuse.Entry
 }
 
 func (m *ModelsDirNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
+	defer diag.Track(m.diag, "ModelsDirNode", "Readdir", "")()
 	result, err := m.client.ListModels()
 	if err != nil {
 		return nil, syscall.EIO
@@ -388,6 +395,7 @@ type NewDirNode struct {
 	fs.Inode
 	state     *state.Store
 	startTime time.Time
+	diag      *diag.Tracker
 }
 
 var _ = (fs.NodeLookuper)((*NewDirNode)(nil))
@@ -396,7 +404,7 @@ var _ = (fs.NodeGetattrer)((*NewDirNode)(nil))
 
 func (n *NewDirNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
 	if name == "clone" {
-		return n.NewInode(ctx, &CloneNode{state: n.state, startTime: n.startTime}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
+		return n.NewInode(ctx, &CloneNode{state: n.state, startTime: n.startTime, diag: n.diag}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
 	}
 	return nil, syscall.ENOENT
 }
@@ -419,17 +427,19 @@ type CloneNode struct {
 	fs.Inode
 	state     *state.Store
 	startTime time.Time
+	diag      *diag.Tracker
 }
 
 var _ = (fs.NodeOpener)((*CloneNode)(nil))
 var _ = (fs.NodeGetattrer)((*CloneNode)(nil))
 
 func (c *CloneNode) Open(ctx context.Context, flags uint32) (fs.FileHandle, uint32, syscall.Errno) {
+	defer diag.Track(c.diag, "CloneNode", "Open", "")()
 	id, err := c.state.Clone()
 	if err != nil {
 		return nil, 0, syscall.EIO
 	}
-	return &CloneFileHandle{id: id}, fuse.FOPEN_DIRECT_IO, 0
+	return &CloneFileHandle{id: id, diag: c.diag}, fuse.FOPEN_DIRECT_IO, 0
 }
 
 func (c *CloneNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
@@ -439,12 +449,14 @@ func (c *CloneNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.Attr
 }
 
 type CloneFileHandle struct {
-	id string
+	id   string
+	diag *diag.Tracker
 }
 
 var _ = (fs.FileReader)((*CloneFileHandle)(nil))
 
 func (h *CloneFileHandle) Read(ctx context.Context, dest []byte, off int64) (fuse.ReadResult, syscall.Errno) {
+	defer diag.Track(h.diag, "CloneFileHandle", "Read", h.id)()
 	data := []byte(h.id + "\n")
 	return fuse.ReadResultData(readAt(data, dest, off)), 0
 }
@@ -458,6 +470,7 @@ type ConversationListNode struct {
 	cloneTimeout time.Duration
 	startTime    time.Time
 	parsedCache  *ParsedMessageCache
+	diag         *diag.Tracker
 }
 
 var _ = (fs.NodeLookuper)((*ConversationListNode)(nil))
@@ -465,6 +478,7 @@ var _ = (fs.NodeReaddirer)((*ConversationListNode)(nil))
 var _ = (fs.NodeGetattrer)((*ConversationListNode)(nil))
 
 func (c *ConversationListNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
+	defer diag.Track(c.diag, "ConversationListNode", "Lookup", name)()
 	// First check if it's a known local ID (the common case after Readdir adoption)
 	cs := c.state.Get(name)
 	if cs != nil {
@@ -474,6 +488,7 @@ func (c *ConversationListNode) Lookup(ctx context.Context, name string, out *fus
 			state:       c.state,
 			startTime:   c.startTime,
 			parsedCache: c.parsedCache,
+			diag:        c.diag,
 		}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
 	}
 
@@ -587,6 +602,7 @@ func (c *ConversationListNode) getConversationTimestamps(localID string) metadat
 }
 
 func (c *ConversationListNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
+	defer diag.Track(c.diag, "ConversationListNode", "Readdir", "")()
 	// Adopt any server conversations that aren't tracked locally, and update
 	// slugs for already-tracked conversations (slugs are always provided immediately).
 	serverConvs, err := c.fetchServerConversations()
@@ -731,6 +747,7 @@ type ConversationNode struct {
 	state       *state.Store
 	startTime   time.Time // FS start time, used as fallback
 	parsedCache *ParsedMessageCache
+	diag        *diag.Tracker
 }
 
 var _ = (fs.NodeLookuper)((*ConversationNode)(nil))
@@ -817,14 +834,15 @@ func (c *ConversationNode) buildConversationJSONMap() map[string]any {
 }
 
 func (c *ConversationNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
+	defer diag.Track(c.diag, "ConversationNode", "Lookup", c.localID+"/"+name)()
 	// Special files with custom behavior
 	switch name {
 	case "ctl":
 		return c.NewInode(ctx, &CtlNode{localID: c.localID, state: c.state, startTime: c.startTime}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
 	case "send":
-		return c.NewInode(ctx, &ConvSendNode{localID: c.localID, client: c.client, state: c.state, startTime: c.startTime, parsedCache: c.parsedCache}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
+		return c.NewInode(ctx, &ConvSendNode{localID: c.localID, client: c.client, state: c.state, startTime: c.startTime, parsedCache: c.parsedCache, diag: c.diag}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
 	case "messages":
-		return c.NewInode(ctx, &MessagesDirNode{localID: c.localID, client: c.client, state: c.state, startTime: c.startTime, parsedCache: c.parsedCache}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
+		return c.NewInode(ctx, &MessagesDirNode{localID: c.localID, client: c.client, state: c.state, startTime: c.startTime, parsedCache: c.parsedCache, diag: c.diag}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
 	case "fuse_id":
 		return c.NewInode(ctx, &ConvStatusFieldNode{localID: c.localID, client: c.client, state: c.state, field: "fuse_id", startTime: c.startTime}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
 	case "created":
@@ -924,6 +942,7 @@ func (c *ConversationNode) Lookup(ctx context.Context, name string, out *fuse.En
 }
 
 func (c *ConversationNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
+	defer diag.Track(c.diag, "ConversationNode", "Readdir", c.localID)()
 	// Special files always present
 	entries := []fuse.DirEntry{
 		{Name: "ctl", Mode: fuse.S_IFREG},
@@ -988,6 +1007,7 @@ func (c *ConversationNode) Getattr(ctx context.Context, f fs.FileHandle, out *fu
 // Create handles creating files in the conversation directory.
 // Only "archived" can be created, which archives the conversation.
 func (c *ConversationNode) Create(ctx context.Context, name string, flags uint32, mode uint32, out *fuse.EntryOut) (*fs.Inode, fs.FileHandle, uint32, syscall.Errno) {
+	defer diag.Track(c.diag, "ConversationNode", "Create", c.localID+"/"+name)()
 	if name != "archived" {
 		return nil, nil, 0, syscall.EPERM
 	}
@@ -1017,6 +1037,7 @@ func (c *ConversationNode) Create(ctx context.Context, name string, flags uint32
 // Unlink handles removing files from the conversation directory.
 // Only "archived" can be removed, which unarchives the conversation.
 func (c *ConversationNode) Unlink(ctx context.Context, name string) syscall.Errno {
+	defer diag.Track(c.diag, "ConversationNode", "Unlink", c.localID+"/"+name)()
 	if name != "archived" {
 		return syscall.EPERM
 	}
@@ -1052,6 +1073,7 @@ type MessagesDirNode struct {
 	state       *state.Store
 	startTime   time.Time
 	parsedCache *ParsedMessageCache
+	diag        *diag.Tracker
 }
 
 var _ = (fs.NodeLookuper)((*MessagesDirNode)(nil))
@@ -1092,11 +1114,12 @@ func (m *MessagesDirNode) getConversationTime() time.Time {
 }
 
 func (m *MessagesDirNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
+	defer diag.Track(m.diag, "MessagesDirNode", "Lookup", m.localID+"/"+name)()
 	switch name {
 	case "last":
-		return m.NewInode(ctx, &QueryDirNode{localID: m.localID, client: m.client, state: m.state, kind: queryLast, startTime: m.startTime}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
+		return m.NewInode(ctx, &QueryDirNode{localID: m.localID, client: m.client, state: m.state, kind: queryLast, startTime: m.startTime, diag: m.diag}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
 	case "since":
-		return m.NewInode(ctx, &QueryDirNode{localID: m.localID, client: m.client, state: m.state, kind: querySince, startTime: m.startTime}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
+		return m.NewInode(ctx, &QueryDirNode{localID: m.localID, client: m.client, state: m.state, kind: querySince, startTime: m.startTime, diag: m.diag}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
 	case "count":
 		return m.NewInode(ctx, &MessageCountNode{localID: m.localID, client: m.client, state: m.state, startTime: m.startTime}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
 	}
@@ -1109,6 +1132,7 @@ func (m *MessagesDirNode) Lookup(ctx context.Context, name string, out *fuse.Ent
 			return m.NewInode(ctx, &ConvContentNode{
 				localID: m.localID, client: m.client, state: m.state,
 				query: contentQuery{kind: queryAll, format: format}, startTime: m.startTime,
+				diag: m.diag,
 			}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
 		}
 	}
@@ -1159,6 +1183,7 @@ func (m *MessagesDirNode) Lookup(ctx context.Context, name string, out *fuse.Ent
 }
 
 func (m *MessagesDirNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
+	defer diag.Track(m.diag, "MessagesDirNode", "Readdir", m.localID)()
 	entries := []fuse.DirEntry{
 		{Name: "all.json", Mode: fuse.S_IFREG},
 		{Name: "all.md", Mode: fuse.S_IFREG},
@@ -1482,6 +1507,7 @@ type ConvSendNode struct {
 	state       *state.Store
 	startTime   time.Time // fallback if conversation has no CreatedAt
 	parsedCache *ParsedMessageCache
+	diag        *diag.Tracker
 }
 
 var _ = (fs.NodeOpener)((*ConvSendNode)(nil))
@@ -1518,6 +1544,7 @@ func (h *ConvSendFileHandle) Write(ctx context.Context, data []byte, off int64) 
 // the message is sent. This ensures the conversation is created before close returns.
 // Note: Flush may be called multiple times for dup'd file descriptors.
 func (h *ConvSendFileHandle) Flush(ctx context.Context) syscall.Errno {
+	defer diag.Track(h.node.diag, "ConvSendFileHandle", "Flush", h.node.localID)()
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
@@ -1736,12 +1763,14 @@ type ConvContentNode struct {
 	query       contentQuery
 	startTime   time.Time // fallback if conversation has no CreatedAt
 	messageTime time.Time // timestamp of specific message (for queryBySeq)
+	diag        *diag.Tracker
 }
 
 var _ = (fs.NodeOpener)((*ConvContentNode)(nil))
 var _ = (fs.NodeGetattrer)((*ConvContentNode)(nil))
 
 func (c *ConvContentNode) Open(ctx context.Context, flags uint32) (fs.FileHandle, uint32, syscall.Errno) {
+	defer diag.Track(c.diag, "ConvContentNode", "Open", c.localID)()
 	// Fetch and cache content at open time to ensure consistent reads.
 	// Without caching, multiple read() calls would regenerate data each time,
 	// and if the conversation changed between reads, the result would be corrupted.
@@ -1845,6 +1874,7 @@ type QueryDirNode struct {
 	kind      queryKind // queryLast or querySince
 	person    string    // set for since/{person}/
 	startTime time.Time // fallback if conversation has no CreatedAt
+	diag      *diag.Tracker
 }
 
 var _ = (fs.NodeLookuper)((*QueryDirNode)(nil))
@@ -1852,11 +1882,12 @@ var _ = (fs.NodeReaddirer)((*QueryDirNode)(nil))
 var _ = (fs.NodeGetattrer)((*QueryDirNode)(nil))
 
 func (q *QueryDirNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
+	defer diag.Track(q.diag, "QueryDirNode", "Lookup", q.localID+"/"+name)()
 	// If this is since/ (no person set), the child is a person directory
 	if q.kind == querySince && q.person == "" {
 		return q.NewInode(ctx, &QueryDirNode{
 			localID: q.localID, client: q.client, state: q.state,
-			kind: q.kind, person: name, startTime: q.startTime,
+			kind: q.kind, person: name, startTime: q.startTime, diag: q.diag,
 		}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
 	}
 
@@ -1874,6 +1905,7 @@ func (q *QueryDirNode) Lookup(ctx context.Context, name string, out *fuse.EntryO
 		n:         n,
 		person:    q.person,
 		startTime: q.startTime,
+		diag:      q.diag,
 	}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
 }
 
@@ -1955,6 +1987,7 @@ type QueryResultDirNode struct {
 	n         int       // the N in last/{N} or since/{person}/{N}
 	person    string    // set for since/{person}/{N}
 	startTime time.Time
+	diag      *diag.Tracker
 }
 
 var _ = (fs.NodeLookuper)((*QueryResultDirNode)(nil))
@@ -2007,6 +2040,7 @@ func (q *QueryResultDirNode) symlinkPrefix() string {
 }
 
 func (q *QueryResultDirNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
+	defer diag.Track(q.diag, "QueryResultDirNode", "Lookup", q.localID+"/"+name)()
 	msgs, toolMap, maxSeqID, err := q.getFilteredMessages()
 	if err != nil {
 		return nil, syscall.EIO
@@ -2045,6 +2079,7 @@ func (q *QueryResultDirNode) Lookup(ctx context.Context, name string, out *fuse.
 }
 
 func (q *QueryResultDirNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
+	defer diag.Track(q.diag, "QueryResultDirNode", "Readdir", q.localID)()
 	msgs, toolMap, maxSeqID, err := q.getFilteredMessages()
 	if err != nil {
 		return nil, syscall.EIO
