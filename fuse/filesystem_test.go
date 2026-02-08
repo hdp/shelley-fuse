@@ -3252,8 +3252,7 @@ func TestParsedMessageCacheReducesParsing(t *testing.T) {
 		{"message_id":"m3","sequence_id":3,"type":"user","user_data":"{\"Content\":[{\"Type\":6,\"ToolUseID\":\"tool1\",\"ToolResult\":[{\"Text\":\"output\"}]}]}"}
 	]}`)
 
-	// Test with caching enabled
-	cache := NewParsedMessageCache(5 * time.Second)
+	cache := NewParsedMessageCache()
 
 	// First call should parse
 	msgs1, toolMap1, err := cache.GetOrParse("conv-123", convData)
@@ -3270,28 +3269,43 @@ func TestParsedMessageCacheReducesParsing(t *testing.T) {
 		t.Errorf("Expected toolMap[tool1]=bash, got %q", toolMap1["tool1"])
 	}
 
-	// Second call should return cached data (same pointers)
+	// Second call with same data should return cached data (same pointers)
 	msgs2, toolMap2, err := cache.GetOrParse("conv-123", convData)
 	if err != nil {
 		t.Fatalf("Second GetOrParse failed: %v", err)
 	}
-	// Verify we got the same slice back (cached)
 	if &msgs1[0] != &msgs2[0] {
-		t.Error("Expected cached messages slice to be returned")
+		t.Error("Expected cached messages slice to be returned for same data")
 	}
 	if toolMap2["tool1"] != "bash" {
 		t.Errorf("Expected cached toolMap[tool1]=bash, got %q", toolMap2["tool1"])
 	}
 
-	// Invalidate and verify next call re-parses
-	cache.Invalidate("conv-123")
-
-	msgs3, _, err := cache.GetOrParse("conv-123", convData)
+	// Call with different data should re-parse (content-addressed)
+	newData := []byte(`{"messages":[
+		{"message_id":"m1","sequence_id":1,"type":"user","user_data":"{\"Content\":[{\"Type\":0,\"Text\":\"Hello\"}]}"},
+		{"message_id":"m2","sequence_id":2,"type":"shelley","llm_data":"{\"Content\":[{\"Type\":5,\"ID\":\"tool1\",\"ToolName\":\"bash\",\"ToolInput\":{}}]}"},
+		{"message_id":"m3","sequence_id":3,"type":"user","user_data":"{\"Content\":[{\"Type\":6,\"ToolUseID\":\"tool1\",\"ToolResult\":[{\"Text\":\"output\"}]}"},
+		{"message_id":"m4","sequence_id":4,"type":"shelley","llm_data":"{\"Content\":[{\"Type\":2,\"Text\":\"Done\"}]}"}
+	]}`)
+	msgs3, _, err := cache.GetOrParse("conv-123", newData)
 	if err != nil {
 		t.Fatalf("Third GetOrParse failed: %v", err)
 	}
-	// Should be a new slice after invalidation
+	if len(msgs3) != 4 {
+		t.Errorf("Expected 4 messages after new data, got %d", len(msgs3))
+	}
 	if &msgs1[0] == &msgs3[0] {
+		t.Error("Expected fresh parse for new data, but got same slice")
+	}
+
+	// Invalidate and verify next call re-parses even with same data
+	cache.Invalidate("conv-123")
+	msgs4, _, err := cache.GetOrParse("conv-123", newData)
+	if err != nil {
+		t.Fatalf("Fourth GetOrParse failed: %v", err)
+	}
+	if &msgs3[0] == &msgs4[0] {
 		t.Error("Expected fresh parse after invalidation, but got same slice")
 	}
 }
@@ -3318,9 +3332,9 @@ func TestParsedMessageCacheNilSafe(t *testing.T) {
 	cache.Invalidate("conv-123") // Should not panic
 }
 
-// TestParsedMessageCacheZeroTTL verifies that caching is disabled with zero TTL.
-func TestParsedMessageCacheZeroTTL(t *testing.T) {
-	cache := NewParsedMessageCache(0)
+// TestParsedMessageCacheContentAddressed verifies that the cache is keyed by data content.
+func TestParsedMessageCacheContentAddressed(t *testing.T) {
+	cache := NewParsedMessageCache()
 
 	convData := []byte(`{"messages":[{"message_id":"m1","sequence_id":1,"type":"user","user_data":"Hello"}]}`)
 
@@ -3330,15 +3344,88 @@ func TestParsedMessageCacheZeroTTL(t *testing.T) {
 		t.Fatalf("GetOrParse failed: %v", err)
 	}
 
-	// Second call should return a new slice (not cached)
+	// Second call with same data should return cached slice
 	msgs2, _, err := cache.GetOrParse("conv-123", convData)
 	if err != nil {
 		t.Fatalf("Second GetOrParse failed: %v", err)
 	}
+	if &msgs1[0] != &msgs2[0] {
+		t.Error("Expected cached result for same data, but got different slice")
+	}
 
-	// With zero TTL, we should get fresh parses each time
-	if &msgs1[0] == &msgs2[0] {
-		t.Error("Expected fresh parse with zero TTL, but got same slice")
+	// Third call with different data should re-parse
+	newData := []byte(`{"messages":[{"message_id":"m1","sequence_id":1,"type":"user","user_data":"Hello"},{"message_id":"m2","sequence_id":2,"type":"shelley","llm_data":"{}"}]}`)
+	msgs3, _, err := cache.GetOrParse("conv-123", newData)
+	if err != nil {
+		t.Fatalf("Third GetOrParse failed: %v", err)
+	}
+	if len(msgs3) != 2 {
+		t.Errorf("Expected 2 messages, got %d", len(msgs3))
+	}
+	if &msgs1[0] == &msgs3[0] {
+		t.Error("Expected fresh parse for different data, but got same slice")
+	}
+}
+
+// TestParsedMessageCacheConsistencyAcrossCallers verifies that multiple callers
+// sharing a ParsedMessageCache see the same snapshot, preventing the bug where
+// messages/ and messages/last/ could return different data.
+func TestParsedMessageCacheConsistencyAcrossCallers(t *testing.T) {
+	cache := NewParsedMessageCache()
+
+	// Simulate CachingClient returning the same bytes to two callers
+	convData := []byte(`{"messages":[
+		{"message_id":"m1","sequence_id":1,"type":"user","user_data":"{\"Content\":[{\"Type\":0,\"Text\":\"Hello\"}]}"},
+		{"message_id":"m2","sequence_id":2,"type":"shelley","llm_data":"{\"Content\":[{\"Type\":2,\"Text\":\"Hi\"}]}"}
+	]}`)
+
+	// Caller 1: MessagesDirNode.Readdir
+	msgs1, toolMap1, err := cache.GetOrParse("conv-1", convData)
+	if err != nil {
+		t.Fatalf("Caller 1 GetOrParse failed: %v", err)
+	}
+
+	// Caller 2: QueryResultDirNode.getFilteredMessages (last/)
+	msgs2, toolMap2, err := cache.GetOrParse("conv-1", convData)
+	if err != nil {
+		t.Fatalf("Caller 2 GetOrParse failed: %v", err)
+	}
+
+	// Both callers must see the exact same data
+	if len(msgs1) != len(msgs2) {
+		t.Errorf("Inconsistent message counts: caller1=%d, caller2=%d", len(msgs1), len(msgs2))
+	}
+	if &msgs1[0] != &msgs2[0] {
+		t.Error("Expected same slice from shared cache")
+	}
+	_ = toolMap1
+	_ = toolMap2
+
+	// Now simulate CachingClient returning NEW data (cache expired upstream)
+	newData := []byte(`{"messages":[
+		{"message_id":"m1","sequence_id":1,"type":"user","user_data":"{\"Content\":[{\"Type\":0,\"Text\":\"Hello\"}]}"},
+		{"message_id":"m2","sequence_id":2,"type":"shelley","llm_data":"{\"Content\":[{\"Type\":2,\"Text\":\"Hi\"}]}"},
+		{"message_id":"m3","sequence_id":3,"type":"user","user_data":"{\"Content\":[{\"Type\":0,\"Text\":\"More\"}]}"}
+	]}`)
+
+	// Both callers get the new data and must see consistent results
+	msgs3, _, err := cache.GetOrParse("conv-1", newData)
+	if err != nil {
+		t.Fatalf("Caller 1 with new data failed: %v", err)
+	}
+	msgs4, _, err := cache.GetOrParse("conv-1", newData)
+	if err != nil {
+		t.Fatalf("Caller 2 with new data failed: %v", err)
+	}
+
+	if len(msgs3) != 3 {
+		t.Errorf("Expected 3 messages, got %d", len(msgs3))
+	}
+	if len(msgs3) != len(msgs4) {
+		t.Errorf("Inconsistent after update: caller1=%d, caller2=%d", len(msgs3), len(msgs4))
+	}
+	if &msgs3[0] != &msgs4[0] {
+		t.Error("Expected same slice from shared cache after update")
 	}
 }
 

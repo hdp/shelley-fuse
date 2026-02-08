@@ -22,40 +22,54 @@ import (
 	"shelley-fuse/state"
 )
 
-// ParsedMessageCache caches parsed messages and toolMaps at the conversation level.
-// This avoids re-parsing the same conversation data for every file lookup in messages/.
-// The cache is invalidated when a message is sent to a conversation.
+// ParsedMessageCache caches parsed messages and toolMaps, keyed by conversation ID.
+// The cache is content-addressed: it stores a checksum of the raw data and only
+// returns the cached result if the raw data hasn't changed. This ensures that
+// all nodes see consistent data — when the upstream CachingClient returns the
+// same bytes, parsing is skipped; when it returns new bytes, the cache re-parses.
 type ParsedMessageCache struct {
 	mu      sync.RWMutex
 	entries map[string]*parsedCacheEntry
-	ttl     time.Duration
 }
 
 type parsedCacheEntry struct {
-	messages  []shelley.Message
-	toolMap   map[string]string
-	expiresAt time.Time
+	messages []shelley.Message
+	toolMap  map[string]string
+	checksum uint64 // FNV-1a hash of the raw data used to produce this entry
 }
 
-// NewParsedMessageCache creates a new cache with the given TTL.
-// A TTL of 0 disables caching.
-func NewParsedMessageCache(ttl time.Duration) *ParsedMessageCache {
+// NewParsedMessageCache creates a new content-addressed parse cache.
+func NewParsedMessageCache() *ParsedMessageCache {
 	return &ParsedMessageCache{
 		entries: make(map[string]*parsedCacheEntry),
-		ttl:     ttl,
 	}
 }
 
+// dataChecksum computes a fast FNV-1a hash of the raw data.
+func dataChecksum(data []byte) uint64 {
+	// FNV-1a 64-bit
+	const offset64 = 14695981039346656037
+	const prime64 = 1099511628211
+	h := uint64(offset64)
+	for _, b := range data {
+		h ^= uint64(b)
+		h *= prime64
+	}
+	return h
+}
+
 // GetOrParse returns cached messages and toolMap for a conversation, or parses the data and caches it.
-// The rawData is the JSON response from GetConversation.
-// If c is nil or caching is disabled (ttl=0), it parses without caching.
+// The rawData is the JSON response from GetConversation. The cache returns the previously parsed
+// result only if rawData has the same content (by checksum); otherwise it re-parses and caches.
 func (c *ParsedMessageCache) GetOrParse(conversationID string, rawData []byte) ([]shelley.Message, map[string]string, error) {
-	if c != nil && c.ttl > 0 {
+	sum := dataChecksum(rawData)
+
+	if c != nil {
 		c.mu.RLock()
 		entry := c.entries[conversationID]
 		c.mu.RUnlock()
 
-		if entry != nil && time.Now().Before(entry.expiresAt) {
+		if entry != nil && entry.checksum == sum {
 			return entry.messages, entry.toolMap, nil
 		}
 	}
@@ -74,12 +88,12 @@ func (c *ParsedMessageCache) GetOrParse(conversationID string, rawData []byte) (
 	toolMap := shelley.BuildToolNameMap(msgPtrs)
 
 	// Cache the result
-	if c != nil && c.ttl > 0 {
+	if c != nil {
 		c.mu.Lock()
 		c.entries[conversationID] = &parsedCacheEntry{
-			messages:  msgs,
-			toolMap:   toolMap,
-			expiresAt: time.Now().Add(c.ttl),
+			messages: msgs,
+			toolMap:  toolMap,
+			checksum: sum,
 		}
 		c.mu.Unlock()
 	}
@@ -88,10 +102,9 @@ func (c *ParsedMessageCache) GetOrParse(conversationID string, rawData []byte) (
 }
 
 // Invalidate removes the cached entry for a conversation.
-// Invalidate removes the cached entry for a conversation.
 // Safe to call on nil receiver.
 func (c *ParsedMessageCache) Invalidate(conversationID string) {
-	if c != nil && c.ttl > 0 {
+	if c != nil {
 		c.mu.Lock()
 		delete(c.entries, conversationID)
 		c.mu.Unlock()
@@ -139,7 +152,7 @@ func NewFS(client shelley.ShelleyClient, store *state.Store, cloneTimeout time.D
 		state:        store,
 		cloneTimeout: cloneTimeout,
 		startTime:    time.Now(),
-		parsedCache:  NewParsedMessageCache(5 * time.Second), // same as typical HTTP cache TTL
+		parsedCache:  NewParsedMessageCache(),
 		Diag:         diag.NewTracker(),
 	}
 }
@@ -151,7 +164,7 @@ func NewFSWithCacheTTL(client shelley.ShelleyClient, store *state.Store, cloneTi
 		state:        store,
 		cloneTimeout: cloneTimeout,
 		startTime:    time.Now(),
-		parsedCache:  NewParsedMessageCache(cacheTTL),
+		parsedCache:  NewParsedMessageCache(),
 		Diag:         diag.NewTracker(),
 	}
 }
@@ -1128,11 +1141,11 @@ func (m *MessagesDirNode) Lookup(ctx context.Context, name string, out *fuse.Ent
 	defer diag.Track(m.diag, "MessagesDirNode", "Lookup", m.localID+"/"+name)()
 	switch name {
 	case "last":
-		return m.NewInode(ctx, &QueryDirNode{localID: m.localID, client: m.client, state: m.state, kind: queryLast, startTime: m.startTime, diag: m.diag}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
+		return m.NewInode(ctx, &QueryDirNode{localID: m.localID, client: m.client, state: m.state, kind: queryLast, startTime: m.startTime, parsedCache: m.parsedCache, diag: m.diag}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
 	case "since":
-		return m.NewInode(ctx, &QueryDirNode{localID: m.localID, client: m.client, state: m.state, kind: querySince, startTime: m.startTime, diag: m.diag}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
+		return m.NewInode(ctx, &QueryDirNode{localID: m.localID, client: m.client, state: m.state, kind: querySince, startTime: m.startTime, parsedCache: m.parsedCache, diag: m.diag}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
 	case "count":
-		return m.NewInode(ctx, &MessageCountNode{localID: m.localID, client: m.client, state: m.state, startTime: m.startTime}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
+		return m.NewInode(ctx, &MessageCountNode{localID: m.localID, client: m.client, state: m.state, startTime: m.startTime, parsedCache: m.parsedCache}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
 	}
 
 	// all.json, all.md
@@ -1143,7 +1156,7 @@ func (m *MessagesDirNode) Lookup(ctx context.Context, name string, out *fuse.Ent
 			return m.NewInode(ctx, &ConvContentNode{
 				localID: m.localID, client: m.client, state: m.state,
 				query: contentQuery{kind: queryAll, format: format}, startTime: m.startTime,
-				diag: m.diag,
+				parsedCache: m.parsedCache, diag: m.diag,
 			}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
 		}
 	}
@@ -1382,10 +1395,11 @@ func (m *MessageFieldNode) Getattr(ctx context.Context, f fs.FileHandle, out *fu
 
 type MessageCountNode struct {
 	fs.Inode
-	localID   string
-	client    shelley.ShelleyClient
-	state     *state.Store
-	startTime time.Time
+	localID     string
+	client      shelley.ShelleyClient
+	state       *state.Store
+	startTime   time.Time
+	parsedCache *ParsedMessageCache
 }
 
 var _ = (fs.NodeOpener)((*MessageCountNode)(nil))
@@ -1402,7 +1416,7 @@ func (m *MessageCountNode) Read(ctx context.Context, f fs.FileHandle, dest []byt
 	if cs != nil && cs.Created && cs.ShelleyConversationID != "" {
 		convData, err := m.client.GetConversation(cs.ShelleyConversationID)
 		if err == nil {
-			msgs, err := shelley.ParseMessages(convData)
+			msgs, _, err := m.parsedCache.GetOrParse(cs.ShelleyConversationID, convData)
 			if err == nil {
 				value = strconv.Itoa(len(msgs))
 			}
@@ -1793,6 +1807,7 @@ type ConvContentNode struct {
 	query       contentQuery
 	startTime   time.Time // fallback if conversation has no CreatedAt
 	messageTime time.Time // timestamp of specific message (for queryBySeq)
+	parsedCache *ParsedMessageCache
 	diag        *diag.Tracker
 }
 
@@ -1814,7 +1829,7 @@ func (c *ConvContentNode) Open(ctx context.Context, flags uint32) (fs.FileHandle
 	if err != nil {
 		return &ConvContentFileHandle{errno: syscall.EIO}, fuse.FOPEN_DIRECT_IO, 0
 	}
-	msgs, err := shelley.ParseMessages(convData)
+	msgs, _, err := c.parsedCache.GetOrParse(cs.ShelleyConversationID, convData)
 	if err != nil {
 		return &ConvContentFileHandle{errno: syscall.EIO}, fuse.FOPEN_DIRECT_IO, 0
 	}
@@ -1898,13 +1913,14 @@ func (c *ConvContentNode) Getattr(ctx context.Context, f fs.FileHandle, out *fus
 
 type QueryDirNode struct {
 	fs.Inode
-	localID   string
-	client    shelley.ShelleyClient
-	state     *state.Store
-	kind      queryKind // queryLast or querySince
-	person    string    // set for since/{person}/
-	startTime time.Time // fallback if conversation has no CreatedAt
-	diag      *diag.Tracker
+	localID     string
+	client      shelley.ShelleyClient
+	state       *state.Store
+	kind        queryKind // queryLast or querySince
+	person      string    // set for since/{person}/
+	startTime   time.Time // fallback if conversation has no CreatedAt
+	parsedCache *ParsedMessageCache
+	diag        *diag.Tracker
 }
 
 var _ = (fs.NodeLookuper)((*QueryDirNode)(nil))
@@ -1917,7 +1933,7 @@ func (q *QueryDirNode) Lookup(ctx context.Context, name string, out *fuse.EntryO
 	if q.kind == querySince && q.person == "" {
 		return q.NewInode(ctx, &QueryDirNode{
 			localID: q.localID, client: q.client, state: q.state,
-			kind: q.kind, person: name, startTime: q.startTime, diag: q.diag,
+			kind: q.kind, person: name, startTime: q.startTime, parsedCache: q.parsedCache, diag: q.diag,
 		}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
 	}
 
@@ -1928,14 +1944,15 @@ func (q *QueryDirNode) Lookup(ctx context.Context, name string, out *fuse.EntryO
 	}
 
 	return q.NewInode(ctx, &QueryResultDirNode{
-		localID:   q.localID,
-		client:    q.client,
-		state:     q.state,
-		kind:      q.kind,
-		n:         n,
-		person:    q.person,
-		startTime: q.startTime,
-		diag:      q.diag,
+		localID:     q.localID,
+		client:      q.client,
+		state:       q.state,
+		kind:        q.kind,
+		n:           n,
+		person:      q.person,
+		startTime:   q.startTime,
+		parsedCache: q.parsedCache,
+		diag:        q.diag,
 	}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
 }
 
@@ -1953,17 +1970,10 @@ func (q *QueryDirNode) getSymlinkTarget(n int) (string, syscall.Errno) {
 		return "", syscall.EIO
 	}
 
-	msgs, err := shelley.ParseMessages(convData)
+	msgs, toolMap, err := q.parsedCache.GetOrParse(cs.ShelleyConversationID, convData)
 	if err != nil {
 		return "", syscall.EIO
 	}
-
-	// Build toolMap for slug computation
-	msgPtrs := make([]*shelley.Message, len(msgs))
-	for i := range msgs {
-		msgPtrs[i] = &msgs[i]
-	}
-	toolMap := shelley.BuildToolNameMap(msgPtrs)
 
 	var targetMsg *shelley.Message
 	var prefix string
@@ -2010,14 +2020,15 @@ func (q *QueryDirNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.A
 
 type QueryResultDirNode struct {
 	fs.Inode
-	localID   string
-	client    shelley.ShelleyClient
-	state     *state.Store
-	kind      queryKind // queryLast or querySince
-	n         int       // the N in last/{N} or since/{person}/{N}
-	person    string    // set for since/{person}/{N}
-	startTime time.Time
-	diag      *diag.Tracker
+	localID     string
+	client      shelley.ShelleyClient
+	state       *state.Store
+	kind        queryKind // queryLast or querySince
+	n           int       // the N in last/{N} or since/{person}/{N}
+	person      string    // set for since/{person}/{N}
+	startTime   time.Time
+	parsedCache *ParsedMessageCache
+	diag        *diag.Tracker
 }
 
 var _ = (fs.NodeLookuper)((*QueryResultDirNode)(nil))
@@ -2037,17 +2048,10 @@ func (q *QueryResultDirNode) getFilteredMessages() (filtered []shelley.Message, 
 		return nil, nil, 0, err
 	}
 
-	msgs, err := shelley.ParseMessages(convData)
+	msgs, toolMap, err := q.parsedCache.GetOrParse(cs.ShelleyConversationID, convData)
 	if err != nil {
 		return nil, nil, 0, err
 	}
-
-	// Build toolMap for slug computation
-	msgPtrs := make([]*shelley.Message, len(msgs))
-	for i := range msgs {
-		msgPtrs[i] = &msgs[i]
-	}
-	toolMap = shelley.BuildToolNameMap(msgPtrs)
 
 	switch q.kind {
 	case queryLast:
