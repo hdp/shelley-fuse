@@ -1,6 +1,6 @@
 ---
 id: sf-l15g
-status: in_progress
+status: closed
 deps: [sf-g5ah]
 links: []
 created: 2026-02-08T14:53:20Z

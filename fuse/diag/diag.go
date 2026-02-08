@@ -2,7 +2,9 @@
 package diag
 
 import (
+	"encoding/json"
 	"fmt"
+	"net/http"
 	"sort"
 	"strings"
 	"sync"
@@ -89,6 +91,30 @@ func (t *Tracker) Dump() string {
 		}
 	}
 	return b.String()
+}
+
+// Handler returns an http.Handler that serves diagnostic information.
+// By default it returns human-readable text. With the ?json query parameter,
+// it returns a JSON array of in-flight operations.
+func (t *Tracker) Handler() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, wantJSON := r.URL.Query()["json"]
+		if wantJSON {
+			w.Header().Set("Content-Type", "application/json")
+			ops := t.InFlight()
+			if err := json.NewEncoder(w).Encode(ops); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+			}
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		ops := t.InFlight()
+		if len(ops) == 0 {
+			fmt.Fprint(w, "no in-flight FUSE operations\n")
+			return
+		}
+		fmt.Fprint(w, t.Dump())
+	})
 }
 
 // Track is a package-level helper that is nil-safe: if t is nil, it returns

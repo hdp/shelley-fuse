@@ -1,6 +1,9 @@
 package diag
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -200,5 +203,118 @@ func TestIDsAreUnique(t *testing.T) {
 	}
 	for _, d := range dones {
 		d()
+	}
+}
+
+func TestHandlerTextEmpty(t *testing.T) {
+	tr := NewTracker()
+	handler := tr.Handler()
+
+	req := httptest.NewRequest(http.MethodGet, "/diag", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "text/plain; charset=utf-8" {
+		t.Errorf("Content-Type = %q, want text/plain; charset=utf-8", ct)
+	}
+	body := rec.Body.String()
+	if body != "no in-flight FUSE operations\n" {
+		t.Errorf("body = %q, want %q", body, "no in-flight FUSE operations\n")
+	}
+}
+
+func TestHandlerTextWithOps(t *testing.T) {
+	tr := NewTracker()
+	d := tr.Track("SendNode", "Write", "conv=abc")
+	defer d()
+
+	handler := tr.Handler()
+	req := httptest.NewRequest(http.MethodGet, "/diag", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "1 in-flight operation(s):") {
+		t.Errorf("expected count line, got: %q", body)
+	}
+	if !strings.Contains(body, "SendNode.Write conv=abc") {
+		t.Errorf("expected op detail, got: %q", body)
+	}
+}
+
+func TestHandlerJSONEmpty(t *testing.T) {
+	tr := NewTracker()
+	handler := tr.Handler()
+
+	req := httptest.NewRequest(http.MethodGet, "/diag?json", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
+		t.Errorf("Content-Type = %q, want application/json", ct)
+	}
+	var ops []Op
+	if err := json.NewDecoder(rec.Body).Decode(&ops); err != nil {
+		t.Fatalf("decode error: %v", err)
+	}
+	if len(ops) != 0 {
+		t.Errorf("expected empty array, got %d ops", len(ops))
+	}
+}
+
+func TestHandlerJSONWithOps(t *testing.T) {
+	tr := NewTracker()
+	d1 := tr.Track("CtlNode", "Read", "")
+	d2 := tr.Track("SendNode", "Write", "conv=xyz")
+	defer d1()
+	defer d2()
+
+	handler := tr.Handler()
+	req := httptest.NewRequest(http.MethodGet, "/diag?json", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	var ops []Op
+	if err := json.NewDecoder(rec.Body).Decode(&ops); err != nil {
+		t.Fatalf("decode error: %v", err)
+	}
+	if len(ops) != 2 {
+		t.Fatalf("expected 2 ops, got %d", len(ops))
+	}
+	// Should be sorted by start time (same as InFlight)
+	if ops[0].Node != "CtlNode" {
+		t.Errorf("ops[0].Node = %q, want CtlNode", ops[0].Node)
+	}
+	if ops[1].Node != "SendNode" {
+		t.Errorf("ops[1].Node = %q, want SendNode", ops[1].Node)
+	}
+	if ops[1].Detail != "conv=xyz" {
+		t.Errorf("ops[1].Detail = %q, want conv=xyz", ops[1].Detail)
+	}
+}
+
+func TestHandlerJSONQueryParamNoValue(t *testing.T) {
+	// ?json (no value) should still trigger JSON response
+	tr := NewTracker()
+	handler := tr.Handler()
+
+	req := httptest.NewRequest(http.MethodGet, "/diag?json", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
+		t.Errorf("Content-Type = %q, want application/json", ct)
 	}
 }
