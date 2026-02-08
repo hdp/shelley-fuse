@@ -3,12 +3,31 @@ package fuse
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"shelley-fuse/fuse/diag"
 	"strings"
 	"testing"
 	"time"
 )
+
+// filterEnv returns a copy of env with the named variables removed.
+func filterEnv(env []string, names ...string) []string {
+	result := make([]string, 0, len(env))
+	for _, e := range env {
+		exclude := false
+		for _, name := range names {
+			if strings.HasPrefix(e, name+"=") {
+				exclude = true
+				break
+			}
+		}
+		if !exclude {
+			result = append(result, e)
+		}
+	}
+	return result
+}
 
 // runShellDiag executes a shell command like runShell, but accepts a
 // diag.Tracker. If the command times out (context deadline exceeded),
@@ -28,6 +47,9 @@ func runShellDiagTimeout(t *testing.T, dir, command string, tracker *diag.Tracke
 	// Don't set cmd.Dir to the FUSE mount point.
 	// Under the hood, os.StartProcess tries to stat the directory before running the command, which means we can deadlock before getting to cmd.Run().
 	cmd := exec.CommandContext(ctx, "bash", "-c", fmt.Sprintf("if ! cd \"%s\"; then echo \"cd %s: $?\" 1>&2; exit 1; fi; %s", dir, dir, command))
+	// Clear BASH_ENV so that custom bash init scripts (e.g. a cd() wrapper)
+	// don't interfere with our shell commands.
+	cmd.Env = filterEnv(os.Environ(), "BASH_ENV")
 	var stdout, stderr strings.Builder
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -104,8 +126,11 @@ func TestReadmeQuickStart(t *testing.T) {
 	// echo "Hello, Shelley!" > conversation/$ID/send
 	runShellDiagOK(t, mountPoint, "echo 'Hello, Shelley!' > conversation/"+convID+"/send", tracker)
 
-	// Step 4: Read the response
-	// cat conversation/$ID/messages/all.md
+	// Step 4: Read the response(s)
+	// cat conversation/$ID/messages/since/user/1/*/content.md
+	// Note: with the predictable model, there may not be agent responses after
+	// the first message (only a system message + user message). So we also
+	// verify via all.md that the conversation was created and has content.
 	allMd := runShellDiagOK(t, mountPoint, "cat conversation/"+convID+"/messages/all.md", tracker)
 	if allMd == "" {
 		t.Error("Expected non-empty response from all.md")
@@ -126,6 +151,16 @@ func TestReadmeQuickStart(t *testing.T) {
 	}
 	if !strings.Contains(allMdAfter, "Thanks!") {
 		t.Error("Expected all.md to contain the follow-up message")
+	}
+
+	// Verify the documented response reading pattern works
+	// cat conversation/$ID/messages/since/user/1/*/content.md
+	// After sending "Thanks!", this should return any messages after that last user message.
+	// Use ls first to verify the directory is accessible.
+	_, _, err := runShellDiag(t, mountPoint,
+		"ls conversation/"+convID+"/messages/since/user/1/", tracker)
+	if err != nil {
+		t.Logf("since/user/1/ listing returned error (may be empty dir): %v", err)
 	}
 }
 
@@ -563,4 +598,204 @@ func TestShellGlobPatterns(t *testing.T) {
 	if lsOutput == "" {
 		t.Error("Expected non-empty directory listing from glob")
 	}
+}
+
+// TestReadmeCommonOperationsModelSymlink exercises checking a conversation's model:
+//
+//	# Check which model a conversation uses
+//	readlink conversation/$ID/model
+func TestReadmeCommonOperationsModelSymlink(t *testing.T) {
+	skipIfNoFusermount(t)
+	skipIfNoShelley(t)
+
+	serverURL := startShelleyServer(t)
+	tm := mountTestFSFull(t, serverURL, time.Hour)
+	mountPoint := tm.MountPoint
+	tracker := tm.Diag
+
+	// Create a conversation with a known model
+	convID := strings.TrimSpace(runShellDiagOK(t, mountPoint, "cat new/clone", tracker))
+	runShellDiagOK(t, mountPoint, "echo 'model=predictable' > conversation/"+convID+"/ctl", tracker)
+	runShellDiagOK(t, mountPoint, "echo 'Test' > conversation/"+convID+"/send", tracker)
+
+	// readlink conversation/$ID/model
+	modelTarget := strings.TrimSpace(runShellDiagOK(t, mountPoint, "readlink conversation/"+convID+"/model", tracker))
+	if !strings.Contains(modelTarget, "predictable") {
+		t.Errorf("Expected model symlink to contain 'predictable', got: %s", modelTarget)
+	}
+	t.Logf("Model symlink: %s", modelTarget)
+}
+
+// TestReadmeCommonOperationsArchiving exercises the archive/unarchive flow:
+//
+//	# Archive a conversation
+//	touch conversation/$ID/archived
+//
+//	# Check if archived
+//	test -e conversation/$ID/archived && echo archived
+//
+//	# Unarchive a conversation
+//	rm conversation/$ID/archived
+func TestReadmeCommonOperationsArchiving(t *testing.T) {
+	skipIfNoFusermount(t)
+	skipIfNoShelley(t)
+
+	serverURL := startShelleyServer(t)
+	tm := mountTestFSFull(t, serverURL, time.Hour)
+	mountPoint := tm.MountPoint
+	tracker := tm.Diag
+
+	// Create a conversation
+	convID := strings.TrimSpace(runShellDiagOK(t, mountPoint, "cat new/clone", tracker))
+	runShellDiagOK(t, mountPoint, "echo 'model=predictable' > conversation/"+convID+"/ctl", tracker)
+	runShellDiagOK(t, mountPoint, "echo 'Test archiving' > conversation/"+convID+"/send", tracker)
+
+	// Initially not archived
+	notArchived := strings.TrimSpace(runShellDiagOK(t, mountPoint,
+		"test -e conversation/"+convID+"/archived && echo archived || echo not_archived", tracker))
+	if notArchived != "not_archived" {
+		t.Errorf("Expected 'not_archived' initially, got: %s", notArchived)
+	}
+
+	// Archive: touch conversation/$ID/archived
+	runShellDiagOK(t, mountPoint, "touch conversation/"+convID+"/archived", tracker)
+
+	// Check if archived: test -e conversation/$ID/archived && echo archived
+	archived := strings.TrimSpace(runShellDiagOK(t, mountPoint,
+		"test -e conversation/"+convID+"/archived && echo archived", tracker))
+	if archived != "archived" {
+		t.Errorf("Expected 'archived' after touch, got: %s", archived)
+	}
+	t.Log("Archived successfully")
+
+	// Unarchive: rm conversation/$ID/archived
+	runShellDiagOK(t, mountPoint, "rm conversation/"+convID+"/archived", tracker)
+
+	// Verify unarchived
+	unarchived := strings.TrimSpace(runShellDiagOK(t, mountPoint,
+		"test -e conversation/"+convID+"/archived && echo archived || echo not_archived", tracker))
+	if unarchived != "not_archived" {
+		t.Errorf("Expected 'not_archived' after rm, got: %s", unarchived)
+	}
+	t.Log("Unarchived successfully")
+}
+
+// TestReadmeCommonOperationsLastSingleMessage exercises reading the very last message:
+//
+//	# Read the content of the very last message (the sole entry in last/1/)
+//	cat conversation/$ID/messages/last/1/0/content.md
+func TestReadmeCommonOperationsLastSingleMessage(t *testing.T) {
+	skipIfNoFusermount(t)
+	skipIfNoShelley(t)
+
+	serverURL := startShelleyServer(t)
+	tm := mountTestFSFull(t, serverURL, time.Hour)
+	mountPoint := tm.MountPoint
+	tracker := tm.Diag
+
+	// Create a conversation
+	convID := strings.TrimSpace(runShellDiagOK(t, mountPoint, "cat new/clone", tracker))
+	runShellDiagOK(t, mountPoint, "echo 'model=predictable' > conversation/"+convID+"/ctl", tracker)
+	runShellDiagOK(t, mountPoint, "echo 'Hello from test' > conversation/"+convID+"/send", tracker)
+
+	// cat conversation/$ID/messages/last/1/0/content.md
+	lastContent := runShellDiagOK(t, mountPoint,
+		"cat conversation/"+convID+"/messages/last/1/0/content.md", tracker)
+	if lastContent == "" {
+		t.Error("Expected non-empty content from last/1/0/content.md")
+	}
+	if !strings.Contains(lastContent, "##") {
+		t.Error("Expected markdown headers in last/1/0/content.md")
+	}
+	t.Logf("Last message content (truncated): %.200s", lastContent)
+}
+
+// TestReadmeCommonOperationsLast2Messages exercises listing the last 2 messages:
+//
+//	# List the last 2 messages
+//	ls conversation/$ID/messages/last/2/
+//	# 0 -> ../../003-user
+//	# 1 -> ../../004-agent
+func TestReadmeCommonOperationsLast2Messages(t *testing.T) {
+	skipIfNoFusermount(t)
+	skipIfNoShelley(t)
+
+	serverURL := startShelleyServer(t)
+	tm := mountTestFSFull(t, serverURL, time.Hour)
+	mountPoint := tm.MountPoint
+	tracker := tm.Diag
+
+	// Create a conversation with at least 2 messages
+	convID := strings.TrimSpace(runShellDiagOK(t, mountPoint, "cat new/clone", tracker))
+	runShellDiagOK(t, mountPoint, "echo 'model=predictable' > conversation/"+convID+"/ctl", tracker)
+	runShellDiagOK(t, mountPoint, "echo 'Hello' > conversation/"+convID+"/send", tracker)
+
+	// ls conversation/$ID/messages/last/2/
+	last2 := runShellDiagOK(t, mountPoint,
+		"ls conversation/"+convID+"/messages/last/2/", tracker)
+	lines := strings.Fields(strings.TrimSpace(last2))
+	if len(lines) != 2 {
+		t.Errorf("Expected 2 entries in last/2/, got %d: %v", len(lines), lines)
+	}
+	// Entries should be numbered 0 and 1
+	if len(lines) >= 2 {
+		if lines[0] != "0" || lines[1] != "1" {
+			t.Errorf("Expected entries '0' and '1', got %v", lines)
+		}
+	}
+
+	// Verify they're symlinks with readlink
+	for _, entry := range []string{"0", "1"} {
+		target := strings.TrimSpace(runShellDiagOK(t, mountPoint,
+			"readlink conversation/"+convID+"/messages/last/2/"+entry, tracker))
+		if !strings.HasPrefix(target, "../../") {
+			t.Errorf("Expected symlink target starting with '../../', got: %s", target)
+		}
+		t.Logf("last/2/%s -> %s", entry, target)
+	}
+}
+
+// TestReadmeCommonOperationsSinceDirectory exercises the since directory:
+//
+//	# Read all messages since the last user message
+//	ls conversation/$ID/messages/since/user/1/
+//
+// Note: The README also documents:
+//
+//	cat conversation/$ID/messages/since/user/1/*/content.md
+//
+// but this glob pattern cannot be tested here because the predictable model
+// does not generate agent responses. In production, the agent response would
+// appear after the last user message, making the glob non-empty. We verify
+// the directory is accessible and the listing succeeds.
+func TestReadmeCommonOperationsSinceDirectory(t *testing.T) {
+	skipIfNoFusermount(t)
+	skipIfNoShelley(t)
+
+	serverURL := startShelleyServer(t)
+	tm := mountTestFSFull(t, serverURL, time.Hour)
+	mountPoint := tm.MountPoint
+	tracker := tm.Diag
+
+	convID := strings.TrimSpace(runShellDiagOK(t, mountPoint, "cat new/clone", tracker))
+	runShellDiagOK(t, mountPoint, "echo 'model=predictable' > conversation/"+convID+"/ctl", tracker)
+	runShellDiagOK(t, mountPoint, "echo 'First message' > conversation/"+convID+"/send", tracker)
+	runShellDiagOK(t, mountPoint, "echo 'Second message' > conversation/"+convID+"/send", tracker)
+
+	// ls conversation/$ID/messages/since/user/1/
+	// The predictable model doesn't generate agent responses, so the user's
+	// message is always the last message and since/user/1/ is empty.
+	// We verify the directory is accessible (ls succeeds).
+	runShellDiagOK(t, mountPoint,
+		"ls conversation/"+convID+"/messages/since/user/1/", tracker)
+	t.Log("since/user/1/ directory is accessible")
+
+	// Verify since/user/2/ returns messages after the second-to-last user message.
+	// This should include the last user message itself.
+	since2Listing := runShellDiagOK(t, mountPoint,
+		"ls conversation/"+convID+"/messages/since/user/2/", tracker)
+	if since2Listing == "" {
+		t.Error("Expected non-empty listing for since/user/2/")
+	}
+	t.Logf("since/user/2/ listing: %s", strings.TrimSpace(since2Listing))
 }

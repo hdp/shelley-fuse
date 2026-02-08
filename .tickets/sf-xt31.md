@@ -1,6 +1,6 @@
 ---
 id: sf-xt31
-status: in_progress
+status: closed
 deps: []
 links: []
 created: 2026-02-05T04:54:35Z
@@ -80,3 +80,17 @@ With N agents running tests concurrently across N worktrees:
 ### Immediate Cleanup Done
 
 Lazy-unmounted all 13 stale test mounts and killed all hung processes.
+
+**2026-02-08T21:09:47Z**
+
+## Pre-existing Issues Found
+
+1. **BASH_ENV breaks shell tests**: The VM has BASH_ENV=/home/exedev/.bash_env which sources a custom cd() function. This cd() returns exit code 1 when there's no .venv in parent dirs (because `[[ "$venv" ]] && source ...` returns 1 when $venv is empty). This causes all runShellDiag calls to fail because `cd <tmpdir>` returns 1. Fix: clear BASH_ENV in spawned commands.
+
+2. **TestRunShellDiagOKSuccess and TestRunShellDiagTimeoutIncludesDump are broken** by the BASH_ENV issue. These aren't integration tests (no FUSE needed) but they still fail because cd() returns 1.
+
+3. **Quick Start test doesn't exercise since/user/1/*/content.md** as documented - it reads all.md instead.
+
+Plan:
+- Fix BASH_ENV issue in runShellDiagTimeout by clearing it in cmd.Env
+- Add missing shell tests for README operations: readlink model, touch/rm archived, last/1/0/content.md, since/user/1/*/content.md
