@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/hanwen/go-fuse/v2/fs"
+	"shelley-fuse/fuse/diag"
 	"shelley-fuse/shelley"
 	"shelley-fuse/state"
 )
@@ -100,12 +101,26 @@ func startShelleyServer(t *testing.T) string {
 	return ""
 }
 
+// testMount holds the resources created by mountTestFSFull: the FUSE mount,
+// state store, filesystem, and a diagnostics HTTP server.
+type testMount struct {
+	MountPoint string
+	Store      *state.Store
+	FS         *FS
+	Diag       *diag.Tracker
+	DiagURL    string // e.g. "http://localhost:12345/diag"
+}
+
 func mountTestFS(t *testing.T, serverURL string) string {
-	mp, _ := mountTestFSWithStore(t, serverURL, time.Hour)
-	return mp
+	return mountTestFSFull(t, serverURL, time.Hour).MountPoint
 }
 
 func mountTestFSWithStore(t *testing.T, serverURL string, cloneTimeout time.Duration) (string, *state.Store) {
+	tm := mountTestFSFull(t, serverURL, cloneTimeout)
+	return tm.MountPoint, tm.Store
+}
+
+func mountTestFSFull(t *testing.T, serverURL string, cloneTimeout time.Duration) *testMount {
 	t.Helper()
 	tmpDir := t.TempDir()
 	mountPoint := filepath.Join(tmpDir, "mount")
@@ -128,7 +143,21 @@ func mountTestFSWithStore(t *testing.T, serverURL string, cloneTimeout time.Dura
 	if err != nil {
 		t.Fatalf("Mount failed: %v", err)
 	}
+
+	// Start a diag HTTP server on a random port.
+	diagListener, err := net.Listen("tcp", "localhost:0")
+	if err != nil {
+		t.Fatalf("Failed to listen for diag server: %v", err)
+	}
+	diagMux := http.NewServeMux()
+	diagMux.Handle("/diag", shelleyFS.Diag.Handler())
+	diagSrv := &http.Server{Handler: diagMux}
+	go diagSrv.Serve(diagListener)
+	diagURL := fmt.Sprintf("http://%s/diag", diagListener.Addr().String())
+
 	t.Cleanup(func() {
+		diagSrv.Close()
+
 		done := make(chan struct{})
 		go func() { fssrv.Unmount(); close(done) }()
 		select {
@@ -145,7 +174,13 @@ func mountTestFSWithStore(t *testing.T, serverURL string, cloneTimeout time.Dura
 			}
 		}
 	})
-	return mountPoint, store
+	return &testMount{
+		MountPoint: mountPoint,
+		Store:      store,
+		FS:         shelleyFS,
+		Diag:       shelleyFS.Diag,
+		DiagURL:    diagURL,
+	}
 }
 
 // createConversation is a helper that clones, configures, and creates a conversation.
