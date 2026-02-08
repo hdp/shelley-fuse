@@ -88,8 +88,8 @@ func runShellDiagOK(t *testing.T, dir, command string, tracker *diag.Tracker) st
 //	# Send first message (creates conversation on backend)
 //	echo "Hello, Shelley!" > conversation/$ID/send
 //
-//	# Read the response
-//	cat conversation/$ID/messages/all.md
+//	# Read the response(s)
+//	cat conversation/$ID/messages/since/user/1/*/content.md
 //
 //	# Send follow-up
 //	echo "Thanks!" > conversation/$ID/send
