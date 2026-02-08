@@ -80,15 +80,14 @@ fi
 status=$(tk show "$ticket" 2>/dev/null | awk '/^status:/{print $2}') || true
 if [ -n "$status" ] && [ "$status" != "closed" ]; then
     step "Closing ticket $ticket"
-    tk close "$ticket"
     # Commit the status change wherever the file lives
     ticket_file=".tickets/${ticket}.md"
     if worktree_exists; then
-        git -C "$worktree_dir" add "$ticket_file" 2>/dev/null \
-            && git -C "$worktree_dir" commit -m "Close ticket ${ticket}" -- "$ticket_file" 2>/dev/null || true
+        (cd "$worktree_dir" && tk close "$ticket") \
+            && git -C "$worktree_dir" commit --amend --no-edit -- "$ticket_file" 2>/dev/null || true
     elif [ -f "$ticket_file" ]; then
-        git add "$ticket_file" 2>/dev/null \
-            && git commit -m "Close ticket ${ticket}" -- "$ticket_file" 2>/dev/null || true
+        tk close "$ticket" \
+            && git commit --amend --no-edit -- "$ticket_file" 2>/dev/null || true
     fi
 fi
 
