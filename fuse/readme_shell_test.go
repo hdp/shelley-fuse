@@ -10,33 +10,6 @@ import (
 	"time"
 )
 
-// runShell executes a shell command and returns stdout, stderr, and any error.
-// The command is run with bash -c in the specified working directory.
-// A 30-second timeout is applied via exec.CommandContext.
-func runShell(t *testing.T, dir, command string) (string, string, error) {
-	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, "bash", "-c", command)
-	cmd.Dir = dir
-	var stdout, stderr strings.Builder
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	err := cmd.Run()
-	return stdout.String(), stderr.String(), err
-}
-
-// runShellOK executes a shell command and fails the test if it errors.
-// Returns stdout.
-func runShellOK(t *testing.T, dir, command string) string {
-	t.Helper()
-	stdout, stderr, err := runShell(t, dir, command)
-	if err != nil {
-		t.Fatalf("Command failed: %s\nstdout: %s\nstderr: %s\nerror: %v", command, stdout, stderr, err)
-	}
-	return stdout
-}
-
 // runShellDiag executes a shell command like runShell, but accepts a
 // diag.Tracker. If the command times out (context deadline exceeded),
 // the tracker's Dump output is included in the returned error message
@@ -167,10 +140,12 @@ func TestReadmeCommonOperationsModels(t *testing.T) {
 	skipIfNoShelley(t)
 
 	serverURL := startShelleyServer(t)
-	mountPoint := mountTestFS(t, serverURL)
+	tm := mountTestFSFull(t, serverURL, time.Hour)
+	mountPoint := tm.MountPoint
+	tracker := tm.Diag
 
 	// List available models: ls models/
-	modelsOutput := runShellOK(t, mountPoint, "ls models/")
+	modelsOutput := runShellDiagOK(t, mountPoint, "ls models/", tracker)
 	if modelsOutput == "" {
 		t.Error("Expected non-empty models listing")
 	}
@@ -180,7 +155,7 @@ func TestReadmeCommonOperationsModels(t *testing.T) {
 	t.Logf("Models: %s", strings.TrimSpace(modelsOutput))
 
 	// Check default model: readlink models/default
-	defaultModel := runShellOK(t, mountPoint, "readlink models/default")
+	defaultModel := runShellDiagOK(t, mountPoint, "readlink models/default", tracker)
 	defaultModel = strings.TrimSpace(defaultModel)
 	if defaultModel == "" {
 		t.Error("Expected non-empty default model symlink target")
@@ -197,15 +172,17 @@ func TestReadmeCommonOperationsConversationListing(t *testing.T) {
 	skipIfNoShelley(t)
 
 	serverURL := startShelleyServer(t)
-	mountPoint := mountTestFS(t, serverURL)
+	tm := mountTestFSFull(t, serverURL, time.Hour)
+	mountPoint := tm.MountPoint
+	tracker := tm.Diag
 
 	// Create a conversation first so there's something to list
-	convID := strings.TrimSpace(runShellOK(t, mountPoint, "cat new/clone"))
-	runShellOK(t, mountPoint, "echo 'model=predictable' > conversation/"+convID+"/ctl")
-	runShellOK(t, mountPoint, "echo 'Test message' > conversation/"+convID+"/send")
+	convID := strings.TrimSpace(runShellDiagOK(t, mountPoint, "cat new/clone", tracker))
+	runShellDiagOK(t, mountPoint, "echo 'model=predictable' > conversation/"+convID+"/ctl", tracker)
+	runShellDiagOK(t, mountPoint, "echo 'Test message' > conversation/"+convID+"/send", tracker)
 
 	// List conversations: ls conversation/
-	convListing := runShellOK(t, mountPoint, "ls conversation/")
+	convListing := runShellDiagOK(t, mountPoint, "ls conversation/", tracker)
 	if !strings.Contains(convListing, convID) {
 		t.Errorf("Expected conversation %s in listing, got: %s", convID, convListing)
 	}
@@ -224,24 +201,26 @@ func TestReadmeCommonOperationsLastMessages(t *testing.T) {
 	skipIfNoShelley(t)
 
 	serverURL := startShelleyServer(t)
-	mountPoint := mountTestFS(t, serverURL)
+	tm := mountTestFSFull(t, serverURL, time.Hour)
+	mountPoint := tm.MountPoint
+	tracker := tm.Diag
 
 	// Create a conversation with multiple messages
-	convID := strings.TrimSpace(runShellOK(t, mountPoint, "cat new/clone"))
-	runShellOK(t, mountPoint, "echo 'model=predictable' > conversation/"+convID+"/ctl")
-	runShellOK(t, mountPoint, "echo 'First message' > conversation/"+convID+"/send")
-	runShellOK(t, mountPoint, "echo 'Second message' > conversation/"+convID+"/send")
-	runShellOK(t, mountPoint, "echo 'Third message' > conversation/"+convID+"/send")
+	convID := strings.TrimSpace(runShellDiagOK(t, mountPoint, "cat new/clone", tracker))
+	runShellDiagOK(t, mountPoint, "echo 'model=predictable' > conversation/"+convID+"/ctl", tracker)
+	runShellDiagOK(t, mountPoint, "echo 'First message' > conversation/"+convID+"/send", tracker)
+	runShellDiagOK(t, mountPoint, "echo 'Second message' > conversation/"+convID+"/send", tracker)
+	runShellDiagOK(t, mountPoint, "echo 'Third message' > conversation/"+convID+"/send", tracker)
 
 	// List last 5 messages: ls conversation/$ID/messages/last/5/
-	last5Listing := runShellOK(t, mountPoint, "ls conversation/"+convID+"/messages/last/5/")
+	last5Listing := runShellDiagOK(t, mountPoint, "ls conversation/"+convID+"/messages/last/5/", tracker)
 	if last5Listing == "" {
 		t.Error("Expected non-empty listing for last/5/")
 	}
 	t.Logf("Last 5 messages listing: %s", strings.TrimSpace(last5Listing))
 
 	// Read content of all last 5 messages: cat conversation/$ID/messages/last/5/*/content.md
-	last5Content := runShellOK(t, mountPoint, "cat conversation/"+convID+"/messages/last/5/*/content.md")
+	last5Content := runShellDiagOK(t, mountPoint, "cat conversation/"+convID+"/messages/last/5/*/content.md", tracker)
 	if last5Content == "" {
 		t.Error("Expected non-empty content from last/5/*/content.md")
 	}
@@ -261,18 +240,20 @@ func TestReadmeCommonOperationsSinceMessages(t *testing.T) {
 	skipIfNoShelley(t)
 
 	serverURL := startShelleyServer(t)
-	mountPoint := mountTestFS(t, serverURL)
+	tm := mountTestFSFull(t, serverURL, time.Hour)
+	mountPoint := tm.MountPoint
+	tracker := tm.Diag
 
 	// Create a conversation - after sending a user message, the agent responds
 	// So since/user/1 should return messages after the last user message
-	convID := strings.TrimSpace(runShellOK(t, mountPoint, "cat new/clone"))
-	runShellOK(t, mountPoint, "echo 'model=predictable' > conversation/"+convID+"/ctl")
-	runShellOK(t, mountPoint, "echo 'Hello agent' > conversation/"+convID+"/send")
+	convID := strings.TrimSpace(runShellDiagOK(t, mountPoint, "cat new/clone", tracker))
+	runShellDiagOK(t, mountPoint, "echo 'model=predictable' > conversation/"+convID+"/ctl", tracker)
+	runShellDiagOK(t, mountPoint, "echo 'Hello agent' > conversation/"+convID+"/send", tracker)
 
 	// List messages since user's last message: ls conversation/$ID/messages/since/user/1/
 	// Note: The command may return empty if user's message is the last one,
 	// but the command should succeed
-	stdout, stderr, err := runShell(t, mountPoint, "ls conversation/"+convID+"/messages/since/user/1/")
+	stdout, stderr, err := runShellDiag(t, mountPoint, "ls conversation/"+convID+"/messages/since/user/1/", tracker)
 	if err != nil {
 		// ls returns error if directory is empty, which is valid
 		t.Logf("since/user/1/ listing (may be empty): stdout=%q stderr=%q", stdout, stderr)
@@ -281,10 +262,10 @@ func TestReadmeCommonOperationsSinceMessages(t *testing.T) {
 	}
 
 	// Send another message to get an agent response, then check again
-	runShellOK(t, mountPoint, "echo 'Another message' > conversation/"+convID+"/send")
+	runShellDiagOK(t, mountPoint, "echo 'Another message' > conversation/"+convID+"/send", tracker)
 
 	// The directory should be accessible (even if empty when user message is last)
-	_, _, _ = runShell(t, mountPoint, "ls conversation/"+convID+"/messages/since/user/1/ 2>/dev/null || true")
+	_, _, _ = runShellDiag(t, mountPoint, "ls conversation/"+convID+"/messages/since/user/1/ 2>/dev/null || true", tracker)
 }
 
 // TestReadmeCommonOperationsMessageCount exercises the message count operation:
@@ -296,24 +277,26 @@ func TestReadmeCommonOperationsMessageCount(t *testing.T) {
 	skipIfNoShelley(t)
 
 	serverURL := startShelleyServer(t)
-	mountPoint := mountTestFS(t, serverURL)
+	tm := mountTestFSFull(t, serverURL, time.Hour)
+	mountPoint := tm.MountPoint
+	tracker := tm.Diag
 
 	// Create a conversation
-	convID := strings.TrimSpace(runShellOK(t, mountPoint, "cat new/clone"))
-	runShellOK(t, mountPoint, "echo 'model=predictable' > conversation/"+convID+"/ctl")
+	convID := strings.TrimSpace(runShellDiagOK(t, mountPoint, "cat new/clone", tracker))
+	runShellDiagOK(t, mountPoint, "echo 'model=predictable' > conversation/"+convID+"/ctl", tracker)
 
 	// Check count before any messages (uncreated conversation)
-	countBefore := runShellOK(t, mountPoint, "cat conversation/"+convID+"/messages/count")
+	countBefore := runShellDiagOK(t, mountPoint, "cat conversation/"+convID+"/messages/count", tracker)
 	countBefore = strings.TrimSpace(countBefore)
 	if countBefore != "0" {
 		t.Errorf("Expected count=0 before first message, got: %s", countBefore)
 	}
 
 	// Send a message
-	runShellOK(t, mountPoint, "echo 'Test message' > conversation/"+convID+"/send")
+	runShellDiagOK(t, mountPoint, "echo 'Test message' > conversation/"+convID+"/send", tracker)
 
 	// Get message count: cat conversation/$ID/messages/count
-	count := runShellOK(t, mountPoint, "cat conversation/"+convID+"/messages/count")
+	count := runShellDiagOK(t, mountPoint, "cat conversation/"+convID+"/messages/count", tracker)
 	count = strings.TrimSpace(count)
 	if count == "0" {
 		t.Error("Expected non-zero message count after sending message")
@@ -330,31 +313,33 @@ func TestReadmeCommonOperationsCreatedCheck(t *testing.T) {
 	skipIfNoShelley(t)
 
 	serverURL := startShelleyServer(t)
-	mountPoint := mountTestFS(t, serverURL)
+	tm := mountTestFSFull(t, serverURL, time.Hour)
+	mountPoint := tm.MountPoint
+	tracker := tm.Diag
 
 	// Allocate a conversation but don't create it yet
-	convID := strings.TrimSpace(runShellOK(t, mountPoint, "cat new/clone"))
-	runShellOK(t, mountPoint, "echo 'model=predictable' > conversation/"+convID+"/ctl")
+	convID := strings.TrimSpace(runShellDiagOK(t, mountPoint, "cat new/clone", tracker))
+	runShellDiagOK(t, mountPoint, "echo 'model=predictable' > conversation/"+convID+"/ctl", tracker)
 
 	// Check if created before sending message - should NOT exist
 	// test -e returns exit code 1 if file doesn't exist
-	_, _, err := runShell(t, mountPoint, "test -e conversation/"+convID+"/created")
+	_, _, err := runShellDiag(t, mountPoint, "test -e conversation/"+convID+"/created", tracker)
 	if err == nil {
 		t.Error("Expected 'created' to NOT exist before first message")
 	}
 
 	// Check with the documented pattern
-	notCreatedOutput := runShellOK(t, mountPoint, "test -e conversation/"+convID+"/created && echo created || echo not_created")
+	notCreatedOutput := runShellDiagOK(t, mountPoint, "test -e conversation/"+convID+"/created && echo created || echo not_created", tracker)
 	if strings.TrimSpace(notCreatedOutput) != "not_created" {
 		t.Errorf("Expected 'not_created' before first message, got: %s", notCreatedOutput)
 	}
 
 	// Send first message to create conversation
-	runShellOK(t, mountPoint, "echo 'Hello!' > conversation/"+convID+"/send")
+	runShellDiagOK(t, mountPoint, "echo 'Hello!' > conversation/"+convID+"/send", tracker)
 
 	// Check if created after sending message - should exist
 	// test -e conversation/$ID/created && echo created
-	createdOutput := runShellOK(t, mountPoint, "test -e conversation/"+convID+"/created && echo created")
+	createdOutput := runShellDiagOK(t, mountPoint, "test -e conversation/"+convID+"/created && echo created", tracker)
 	if strings.TrimSpace(createdOutput) != "created" {
 		t.Errorf("Expected 'created' after first message, got: %s", createdOutput)
 	}
@@ -474,16 +459,18 @@ func TestShellPipeToSend(t *testing.T) {
 	skipIfNoShelley(t)
 
 	serverURL := startShelleyServer(t)
-	mountPoint := mountTestFS(t, serverURL)
+	tm := mountTestFSFull(t, serverURL, time.Hour)
+	mountPoint := tm.MountPoint
+	tracker := tm.Diag
 
-	convID := strings.TrimSpace(runShellOK(t, mountPoint, "cat new/clone"))
-	runShellOK(t, mountPoint, "echo 'model=predictable' > conversation/"+convID+"/ctl")
+	convID := strings.TrimSpace(runShellDiagOK(t, mountPoint, "cat new/clone", tracker))
+	runShellDiagOK(t, mountPoint, "echo 'model=predictable' > conversation/"+convID+"/ctl", tracker)
 
 	// Use shell pipe pattern
-	runShellOK(t, mountPoint, "echo 'Piped message' | cat > conversation/"+convID+"/send")
+	runShellDiagOK(t, mountPoint, "echo 'Piped message' | cat > conversation/"+convID+"/send", tracker)
 
 	// Verify the message was received
-	allMd := runShellOK(t, mountPoint, "cat conversation/"+convID+"/messages/all.md")
+	allMd := runShellDiagOK(t, mountPoint, "cat conversation/"+convID+"/messages/all.md", tracker)
 	if !strings.Contains(allMd, "Piped message") {
 		t.Error("Expected piped message in all.md")
 	}
@@ -496,10 +483,12 @@ func TestShellHeredocToSend(t *testing.T) {
 	skipIfNoShelley(t)
 
 	serverURL := startShelleyServer(t)
-	mountPoint := mountTestFS(t, serverURL)
+	tm := mountTestFSFull(t, serverURL, time.Hour)
+	mountPoint := tm.MountPoint
+	tracker := tm.Diag
 
-	convID := strings.TrimSpace(runShellOK(t, mountPoint, "cat new/clone"))
-	runShellOK(t, mountPoint, "echo 'model=predictable' > conversation/"+convID+"/ctl")
+	convID := strings.TrimSpace(runShellDiagOK(t, mountPoint, "cat new/clone", tracker))
+	runShellDiagOK(t, mountPoint, "echo 'model=predictable' > conversation/"+convID+"/ctl", tracker)
 
 	// Use heredoc pattern for multiline input
 	heredocCmd := `cat > conversation/` + convID + `/send << 'EOF'
@@ -507,10 +496,10 @@ Line 1 of heredoc
 Line 2 of heredoc
 Line 3 of heredoc
 EOF`
-	runShellOK(t, mountPoint, heredocCmd)
+	runShellDiagOK(t, mountPoint, heredocCmd, tracker)
 
 	// Verify all lines were received as a single message
-	allMd := runShellOK(t, mountPoint, "cat conversation/"+convID+"/messages/all.md")
+	allMd := runShellDiagOK(t, mountPoint, "cat conversation/"+convID+"/messages/all.md", tracker)
 	if !strings.Contains(allMd, "Line 1") || !strings.Contains(allMd, "Line 2") || !strings.Contains(allMd, "Line 3") {
 		t.Error("Expected all heredoc lines in all.md")
 	}
@@ -523,7 +512,9 @@ func TestShellVariableSubstitution(t *testing.T) {
 	skipIfNoShelley(t)
 
 	serverURL := startShelleyServer(t)
-	mountPoint := mountTestFS(t, serverURL)
+	tm := mountTestFSFull(t, serverURL, time.Hour)
+	mountPoint := tm.MountPoint
+	tracker := tm.Diag
 
 	// This mirrors the exact documented pattern:
 	// ID=$(cat new/clone)
@@ -534,7 +525,7 @@ echo "model=predictable" > conversation/$ID/ctl
 echo "Variable substitution test" > conversation/$ID/send
 cat conversation/$ID/messages/all.md
 `
-	output := runShellOK(t, mountPoint, script)
+	output := runShellDiagOK(t, mountPoint, script, tracker)
 	if !strings.Contains(output, "Variable substitution test") {
 		t.Error("Expected output to contain our test message")
 	}
@@ -550,22 +541,24 @@ func TestShellGlobPatterns(t *testing.T) {
 	skipIfNoShelley(t)
 
 	serverURL := startShelleyServer(t)
-	mountPoint := mountTestFS(t, serverURL)
+	tm := mountTestFSFull(t, serverURL, time.Hour)
+	mountPoint := tm.MountPoint
+	tracker := tm.Diag
 
 	// Create conversation with messages
-	convID := strings.TrimSpace(runShellOK(t, mountPoint, "cat new/clone"))
-	runShellOK(t, mountPoint, "echo 'model=predictable' > conversation/"+convID+"/ctl")
-	runShellOK(t, mountPoint, "echo 'Message one' > conversation/"+convID+"/send")
-	runShellOK(t, mountPoint, "echo 'Message two' > conversation/"+convID+"/send")
+	convID := strings.TrimSpace(runShellDiagOK(t, mountPoint, "cat new/clone", tracker))
+	runShellDiagOK(t, mountPoint, "echo 'model=predictable' > conversation/"+convID+"/ctl", tracker)
+	runShellDiagOK(t, mountPoint, "echo 'Message one' > conversation/"+convID+"/send", tracker)
+	runShellDiagOK(t, mountPoint, "echo 'Message two' > conversation/"+convID+"/send", tracker)
 
 	// Test glob pattern for last N messages
-	globOutput := runShellOK(t, mountPoint, "cat conversation/"+convID+"/messages/last/5/*/content.md")
+	globOutput := runShellDiagOK(t, mountPoint, "cat conversation/"+convID+"/messages/last/5/*/content.md", tracker)
 	if globOutput == "" {
 		t.Error("Expected non-empty output from glob pattern")
 	}
 
 	// Test that we can also use glob to list message directories
-	lsOutput := runShellOK(t, mountPoint, "ls -d conversation/"+convID+"/messages/last/5/*/")
+	lsOutput := runShellDiagOK(t, mountPoint, "ls -d conversation/"+convID+"/messages/last/5/*/", tracker)
 	if lsOutput == "" {
 		t.Error("Expected non-empty directory listing from glob")
 	}
