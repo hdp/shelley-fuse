@@ -16,7 +16,7 @@ import (
 // to help diagnose stuck FUSE operations.
 func runShellDiag(t *testing.T, dir, command string, tracker *diag.Tracker) (string, string, error) {
 	t.Helper()
-	return runShellDiagTimeout(t, dir, command, tracker, 30*time.Second)
+	return runShellDiagTimeout(t, dir, command, tracker, 1*time.Second)
 }
 
 // runShellDiagTimeout is the implementation of runShellDiag with a
@@ -25,8 +25,9 @@ func runShellDiagTimeout(t *testing.T, dir, command string, tracker *diag.Tracke
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "bash", "-c", command)
-	cmd.Dir = dir
+	// Don't set cmd.Dir to the FUSE mount point.
+	// Under the hood, os.StartProcess tries to stat the directory before running the command, which means we can deadlock before getting to cmd.Run().
+	cmd := exec.CommandContext(ctx, "bash", "-c", fmt.Sprintf("if ! cd \"%s\"; then echo \"cd %s: $?\" 1>&2; exit 1; fi; %s", dir, dir, command))
 	var stdout, stderr strings.Builder
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
