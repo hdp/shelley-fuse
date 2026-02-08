@@ -227,3 +227,146 @@ func TestListConversations(t *testing.T) {
 		t.Errorf("Expected '%s', got '%s'", expectedData, string(data))
 	}
 }
+func TestModelName(t *testing.T) {
+	tests := []struct {
+		name     string
+		model    Model
+		wantName string
+	}{
+		{"display name set", Model{ID: "custom-abc123", DisplayName: "my-model"}, "my-model"},
+		{"display name empty", Model{ID: "predictable"}, "predictable"},
+		{"id and display same", Model{ID: "claude-sonnet", DisplayName: "claude-sonnet"}, "claude-sonnet"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.model.Name(); got != tt.wantName {
+				t.Errorf("Name() = %q, want %q", got, tt.wantName)
+			}
+		})
+	}
+}
+
+func TestModelsResultFindByName(t *testing.T) {
+	result := &ModelsResult{
+		Models: []Model{
+			{ID: "predictable", Ready: true},
+			{ID: "custom-f999b9b0", DisplayName: "kimi-2.5-fireworks", Ready: true},
+			{ID: "claude-sonnet", DisplayName: "claude-sonnet", Ready: true},
+		},
+		DefaultModel: "predictable",
+	}
+
+	// Find by display name
+	m := result.FindByName("kimi-2.5-fireworks")
+	if m == nil || m.ID != "custom-f999b9b0" {
+		t.Errorf("FindByName(kimi-2.5-fireworks) = %v, want custom-f999b9b0", m)
+	}
+
+	// Find built-in model by ID (which is also its display name)
+	m = result.FindByName("predictable")
+	if m == nil || m.ID != "predictable" {
+		t.Errorf("FindByName(predictable) = %v, want predictable", m)
+	}
+
+	// Find by internal ID (fallback)
+	m = result.FindByName("custom-f999b9b0")
+	if m == nil || m.ID != "custom-f999b9b0" {
+		t.Errorf("FindByName(custom-f999b9b0) = %v, want custom-f999b9b0", m)
+	}
+
+	// Display name takes priority over ID match
+	// If a model's display name matches, it should be returned even if another model's ID matches
+	m = result.FindByName("claude-sonnet")
+	if m == nil || m.ID != "claude-sonnet" {
+		t.Errorf("FindByName(claude-sonnet) = %v, want claude-sonnet", m)
+	}
+
+	// Not found
+	m = result.FindByName("nonexistent")
+	if m != nil {
+		t.Errorf("FindByName(nonexistent) = %v, want nil", m)
+	}
+}
+
+func TestModelsResultDefaultModelName(t *testing.T) {
+	// Default model is a custom model with display name
+	result := &ModelsResult{
+		Models: []Model{
+			{ID: "predictable", Ready: true},
+			{ID: "custom-abc", DisplayName: "my-custom", Ready: true},
+		},
+		DefaultModel: "custom-abc",
+	}
+	if got := result.DefaultModelName(); got != "my-custom" {
+		t.Errorf("DefaultModelName() = %q, want %q", got, "my-custom")
+	}
+
+	// Default model is a built-in (no display name)
+	result.DefaultModel = "predictable"
+	if got := result.DefaultModelName(); got != "predictable" {
+		t.Errorf("DefaultModelName() = %q, want %q", got, "predictable")
+	}
+
+	// No default model
+	result.DefaultModel = ""
+	if got := result.DefaultModelName(); got != "" {
+		t.Errorf("DefaultModelName() = %q, want %q", got, "")
+	}
+
+	// Default model ID not found in list
+	result.DefaultModel = "nonexistent"
+	if got := result.DefaultModelName(); got != "" {
+		t.Errorf("DefaultModelName() = %q, want %q", got, "")
+	}
+}
+
+func TestListModelsDisplayName(t *testing.T) {
+	// Create a test server that returns model data with display_name
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.Write([]byte(`<html><head>
+			<script>window.__SHELLEY_INIT__={"models":[{"id":"predictable","ready":true},{"id":"custom-abc123","display_name":"kimi-2.5-fireworks","ready":true}],"default_model":"custom-abc123"};</script>
+		</head></html>`))
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL)
+	result, err := client.ListModels()
+	if err != nil {
+		t.Fatalf("ListModels failed: %v", err)
+	}
+
+	if len(result.Models) != 2 {
+		t.Fatalf("Expected 2 models, got %d", len(result.Models))
+	}
+
+	// Built-in model: no display name, Name() returns ID
+	if result.Models[0].ID != "predictable" {
+		t.Errorf("Models[0].ID = %q, want predictable", result.Models[0].ID)
+	}
+	if result.Models[0].DisplayName != "" {
+		t.Errorf("Models[0].DisplayName = %q, want empty", result.Models[0].DisplayName)
+	}
+	if result.Models[0].Name() != "predictable" {
+		t.Errorf("Models[0].Name() = %q, want predictable", result.Models[0].Name())
+	}
+
+	// Custom model: has display name
+	if result.Models[1].ID != "custom-abc123" {
+		t.Errorf("Models[1].ID = %q, want custom-abc123", result.Models[1].ID)
+	}
+	if result.Models[1].DisplayName != "kimi-2.5-fireworks" {
+		t.Errorf("Models[1].DisplayName = %q, want kimi-2.5-fireworks", result.Models[1].DisplayName)
+	}
+	if result.Models[1].Name() != "kimi-2.5-fireworks" {
+		t.Errorf("Models[1].Name() = %q, want kimi-2.5-fireworks", result.Models[1].Name())
+	}
+
+	// Default model resolves to display name
+	if result.DefaultModel != "custom-abc123" {
+		t.Errorf("DefaultModel = %q, want custom-abc123", result.DefaultModel)
+	}
+	if got := result.DefaultModelName(); got != "kimi-2.5-fireworks" {
+		t.Errorf("DefaultModelName() = %q, want kimi-2.5-fireworks", got)
+	}
+}

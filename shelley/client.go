@@ -61,14 +61,54 @@ type Message struct {
 
 // Model represents an available model
 type Model struct {
-	ID    string `json:"id"`
-	Ready bool   `json:"ready"`
+	ID          string `json:"id"`
+	DisplayName string `json:"display_name"`
+	Ready       bool   `json:"ready"`
+}
+
+// Name returns the user-facing name for this model.
+// It returns DisplayName when available, falling back to ID.
+func (m Model) Name() string {
+	if m.DisplayName != "" {
+		return m.DisplayName
+	}
+	return m.ID
 }
 
 // ModelsResult holds the result of listing models
 type ModelsResult struct {
 	Models       []Model
 	DefaultModel string
+}
+
+// FindByName looks up a model by display name first, then by ID.
+// Returns nil if no model matches.
+func (r *ModelsResult) FindByName(name string) *Model {
+	for i := range r.Models {
+		if r.Models[i].Name() == name {
+			return &r.Models[i]
+		}
+	}
+	for i := range r.Models {
+		if r.Models[i].ID == name {
+			return &r.Models[i]
+		}
+	}
+	return nil
+}
+
+// DefaultModelName returns the display name of the default model.
+// Returns empty string if no default is configured or the default model is not found.
+func (r *ModelsResult) DefaultModelName() string {
+	if r.DefaultModel == "" {
+		return ""
+	}
+	for _, m := range r.Models {
+		if m.ID == r.DefaultModel {
+			return m.Name()
+		}
+	}
+	return ""
 }
 
 // StartConversationResult holds the response from starting a new conversation
@@ -238,8 +278,9 @@ func (c *Client) ListModels() (ModelsResult, error) {
 				for _, m := range models {
 					if modelMap, ok := m.(map[string]interface{}); ok {
 						model := Model{
-							ID:    getString(modelMap, "id"),
-							Ready: getBool(modelMap, "ready"),
+							ID:          getString(modelMap, "id"),
+							DisplayName: getString(modelMap, "display_name"),
+							Ready:       getBool(modelMap, "ready"),
 						}
 						result.Models = append(result.Models, model)
 					}

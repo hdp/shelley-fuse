@@ -248,17 +248,25 @@ func (m *ModelsDirNode) Lookup(ctx context.Context, name string, out *fuse.Entry
 		return nil, syscall.EIO
 	}
 	
-	// Handle "default" symlink
+	// Handle "default" symlink — target uses display name
 	if name == "default" {
-		if result.DefaultModel == "" {
+		defName := result.DefaultModelName()
+		if defName == "" {
 			return nil, syscall.ENOENT
 		}
-		return m.NewInode(ctx, &SymlinkNode{target: result.DefaultModel, startTime: m.startTime}, fs.StableAttr{Mode: syscall.S_IFLNK}), 0
+		return m.NewInode(ctx, &SymlinkNode{target: defName, startTime: m.startTime}, fs.StableAttr{Mode: syscall.S_IFLNK}), 0
 	}
 	
+	// Primary lookup: match by display name
 	for _, model := range result.Models {
-		if model.ID == name {
+		if model.Name() == name {
 			return m.NewInode(ctx, &ModelNode{model: model, startTime: m.startTime}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
+		}
+	}
+	// Fallback: match by internal ID — return symlink to display name
+	for _, model := range result.Models {
+		if model.ID != model.Name() && model.ID == name {
+			return m.NewInode(ctx, &SymlinkNode{target: model.Name(), startTime: m.startTime}, fs.StableAttr{Mode: syscall.S_IFLNK}), 0
 		}
 	}
 	return nil, syscall.ENOENT
@@ -271,17 +279,20 @@ func (m *ModelsDirNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Errn
 		return nil, syscall.EIO
 	}
 	
-	// Capacity for models + optional default symlink
-	entries := make([]fuse.DirEntry, 0, len(result.Models)+1)
+	// Capacity for models + optional default symlink + ID alias symlinks
+	entries := make([]fuse.DirEntry, 0, len(result.Models)*2+1)
 	
 	// Add "default" symlink if default model is set
 	if result.DefaultModel != "" {
 		entries = append(entries, fuse.DirEntry{Name: "default", Mode: syscall.S_IFLNK})
 	}
 	
-	// Add all model directories
+	// Add model directories using display names, plus ID symlinks where they differ
 	for _, model := range result.Models {
-		entries = append(entries, fuse.DirEntry{Name: model.ID, Mode: fuse.S_IFDIR})
+		entries = append(entries, fuse.DirEntry{Name: model.Name(), Mode: fuse.S_IFDIR})
+		if model.ID != model.Name() {
+			entries = append(entries, fuse.DirEntry{Name: model.ID, Mode: syscall.S_IFLNK})
+		}
 	}
 	return fs.NewListDirStream(entries), 0
 }
@@ -838,7 +849,7 @@ func (c *ConversationNode) Lookup(ctx context.Context, name string, out *fuse.En
 	// Special files with custom behavior
 	switch name {
 	case "ctl":
-		return c.NewInode(ctx, &CtlNode{localID: c.localID, state: c.state, startTime: c.startTime}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
+		return c.NewInode(ctx, &CtlNode{localID: c.localID, client: c.client, state: c.state, startTime: c.startTime}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
 	case "send":
 		return c.NewInode(ctx, &ConvSendNode{localID: c.localID, client: c.client, state: c.state, startTime: c.startTime, parsedCache: c.parsedCache, diag: c.diag}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
 	case "messages":
@@ -1417,6 +1428,7 @@ func (m *MessageCountNode) Getattr(ctx context.Context, f fs.FileHandle, out *fu
 type CtlNode struct {
 	fs.Inode
 	localID   string
+	client    shelley.ShelleyClient
 	state     *state.Store
 	startTime time.Time // fallback if conversation has no CreatedAt
 }
@@ -1467,8 +1479,26 @@ func (c *CtlNode) Write(ctx context.Context, f fs.FileHandle, data []byte, off i
 		if !ok {
 			return 0, syscall.EINVAL
 		}
-		if err := c.state.SetCtl(c.localID, k, v); err != nil {
-			return 0, syscall.EINVAL
+		if k == "model" {
+			// Resolve model name to display name + internal ID.
+			// Users write display names (e.g. "kimi-2.5-fireworks");
+			// we store both the display name and internal ID.
+			result, err := c.client.ListModels()
+			if err != nil {
+				log.Printf("CtlNode.Write: ListModels failed: %v", err)
+				return 0, syscall.EIO
+			}
+			model := result.FindByName(v)
+			if model == nil {
+				return 0, syscall.EINVAL
+			}
+			if err := c.state.SetModel(c.localID, model.Name(), model.ID); err != nil {
+				return 0, syscall.EINVAL
+			}
+		} else {
+			if err := c.state.SetCtl(c.localID, k, v); err != nil {
+				return 0, syscall.EINVAL
+			}
 		}
 	}
 	return uint32(len(data)), 0
@@ -1567,7 +1597,7 @@ func (h *ConvSendFileHandle) Flush(ctx context.Context) syscall.Errno {
 
 	if !cs.Created {
 		// First write: create the conversation on the Shelley backend
-		result, err := h.node.client.StartConversation(message, cs.Model, cs.Cwd)
+		result, err := h.node.client.StartConversation(message, cs.EffectiveModelID(), cs.Cwd)
 		if err != nil {
 			log.Printf("StartConversation failed for %s: %v", h.node.localID, err)
 			return syscall.EIO
@@ -1579,8 +1609,8 @@ func (h *ConvSendFileHandle) Flush(ctx context.Context) syscall.Errno {
 		h.node.parsedCache.Invalidate(result.ConversationID)
 	} else {
 		// Subsequent writes: send message to existing conversation
-		// Pass the model from state to ensure we use the same model as the conversation
-		if err := h.node.client.SendMessage(cs.ShelleyConversationID, message, cs.Model); err != nil {
+		// Pass the internal model ID to ensure we use the correct API identifier
+		if err := h.node.client.SendMessage(cs.ShelleyConversationID, message, cs.EffectiveModelID()); err != nil {
 			log.Printf("SendMessage failed for conversation %s: %v", cs.ShelleyConversationID, err)
 			return syscall.EIO
 		}

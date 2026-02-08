@@ -856,3 +856,101 @@ func TestAdoptWithMetadataPersistence(t *testing.T) {
 		t.Errorf("expected APIUpdatedAt persisted, got %s", cs.APIUpdatedAt)
 	}
 }
+
+func TestSetModel(t *testing.T) {
+	s, err := NewStore(tempStatePath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	id, _ := s.Clone()
+
+	// Set model with display name and internal ID
+	if err := s.SetModel(id, "kimi-2.5-fireworks", "custom-f999b9b0"); err != nil {
+		t.Fatal(err)
+	}
+
+	cs := s.Get(id)
+	if cs.Model != "kimi-2.5-fireworks" {
+		t.Errorf("Model = %q, want %q", cs.Model, "kimi-2.5-fireworks")
+	}
+	if cs.ModelID != "custom-f999b9b0" {
+		t.Errorf("ModelID = %q, want %q", cs.ModelID, "custom-f999b9b0")
+	}
+}
+
+func TestSetModelReadOnlyAfterCreated(t *testing.T) {
+	s, err := NewStore(tempStatePath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	id, _ := s.Clone()
+	_ = s.SetModel(id, "predictable", "predictable")
+	_ = s.MarkCreated(id, "shelley-123", "")
+
+	if err := s.SetModel(id, "other", "other"); err == nil {
+		t.Error("expected error when setting model on created conversation")
+	}
+}
+
+func TestSetModelNotFound(t *testing.T) {
+	s, err := NewStore(tempStatePath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.SetModel("nonexistent", "x", "x"); err == nil {
+		t.Error("expected error for nonexistent conversation")
+	}
+}
+
+func TestEffectiveModelID(t *testing.T) {
+	// When ModelID is set, use it
+	cs := &ConversationState{Model: "kimi-2.5-fireworks", ModelID: "custom-f999b9b0"}
+	if got := cs.EffectiveModelID(); got != "custom-f999b9b0" {
+		t.Errorf("EffectiveModelID() = %q, want %q", got, "custom-f999b9b0")
+	}
+
+	// When ModelID is empty, fall back to Model
+	cs = &ConversationState{Model: "predictable"}
+	if got := cs.EffectiveModelID(); got != "predictable" {
+		t.Errorf("EffectiveModelID() = %q, want %q", got, "predictable")
+	}
+
+	// Both empty
+	cs = &ConversationState{}
+	if got := cs.EffectiveModelID(); got != "" {
+		t.Errorf("EffectiveModelID() = %q, want empty", got)
+	}
+}
+
+func TestSetModelPersistence(t *testing.T) {
+	path := tempStatePath(t)
+	s, err := NewStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	id, _ := s.Clone()
+	if err := s.SetModel(id, "kimi-2.5-fireworks", "custom-abc"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Reload from disk
+	s2, err := NewStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cs := s2.Get(id)
+	if cs == nil {
+		t.Fatal("conversation not found after reload")
+	}
+	if cs.Model != "kimi-2.5-fireworks" {
+		t.Errorf("Model = %q, want %q", cs.Model, "kimi-2.5-fireworks")
+	}
+	if cs.ModelID != "custom-abc" {
+		t.Errorf("ModelID = %q, want %q", cs.ModelID, "custom-abc")
+	}
+}

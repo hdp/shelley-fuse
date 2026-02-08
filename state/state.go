@@ -18,6 +18,10 @@ type ConversationState struct {
 	ShelleyConversationID string    `json:"shelley_conversation_id,omitempty"`
 	Slug                  string    `json:"slug,omitempty"`
 	Model                 string    `json:"model,omitempty"`
+	// ModelID is the internal API model ID (e.g. "custom-f999b9b0").
+	// When set, this is sent to the API instead of Model (the display name).
+	// For built-in models where ID == display name, this may be empty.
+	ModelID               string    `json:"model_id,omitempty"`
 	Cwd                   string    `json:"cwd,omitempty"`
 	Created               bool      `json:"created"`
 	CreatedAt             time.Time `json:"created_at,omitempty"`
@@ -27,6 +31,15 @@ type ConversationState struct {
 	// APIUpdatedAt is the server's updated_at timestamp (RFC3339 string).
 	// This is the last modification time from the Shelley API.
 	APIUpdatedAt string `json:"api_updated_at,omitempty"`
+}
+
+// EffectiveModelID returns the model ID to use for API calls.
+// Returns ModelID if set (for custom models), otherwise falls back to Model.
+func (cs *ConversationState) EffectiveModelID() string {
+	if cs.ModelID != "" {
+		return cs.ModelID
+	}
+	return cs.Model
 }
 
 // Store manages local conversation state, persisted to a JSON file.
@@ -82,6 +95,26 @@ func (s *Store) Get(id string) *ConversationState {
 	return s.Conversations[id]
 }
 
+// SetModel sets the model display name and internal ID on an unconversed conversation.
+// displayName is the user-facing name; internalID is the API model ID.
+// Returns an error if the conversation doesn't exist or is already created.
+func (s *Store) SetModel(id, displayName, internalID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	cs, ok := s.Conversations[id]
+	if !ok {
+		return fmt.Errorf("conversation %s not found", id)
+	}
+	if cs.Created {
+		return fmt.Errorf("conversation %s already created, ctl is read-only", id)
+	}
+
+	cs.Model = displayName
+	cs.ModelID = internalID
+	return s.saveLocked()
+}
+
 // SetCtl sets a key=value pair on an unconversed conversation.
 // Returns an error if the conversation doesn't exist or is already created.
 func (s *Store) SetCtl(id, key, value string) error {
@@ -98,7 +131,10 @@ func (s *Store) SetCtl(id, key, value string) error {
 
 	switch key {
 	case "model":
+		// For backwards compatibility, SetCtl("model", v) sets both fields to the same value.
+		// Prefer SetModel() for proper display name / internal ID separation.
 		cs.Model = value
+		cs.ModelID = value
 	case "cwd":
 		cs.Cwd = value
 	default:
