@@ -292,7 +292,7 @@ func (f *FS) Getattr(ctx context.Context, fh fs.FileHandle, out *fuse.AttrOut) s
 // --- ReadmeNode: /README.md file with usage documentation ---
 
 // readmeContent contains the embedded documentation for the FUSE filesystem.
-// This makes the filesystem self-documenting — users can `cat /shelley/README.md`.
+// This makes the filesystem self-documenting — users can `cat README.md` from the mount point.
 //
 //go:embed README.md
 var readmeContent string
