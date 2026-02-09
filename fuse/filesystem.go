@@ -2092,16 +2092,44 @@ func (c *ConvContentNode) Open(ctx context.Context, flags uint32) (fs.FileHandle
 		// Return handle that will report the error on read (preserves original behavior)
 		return &ConvContentFileHandle{errno: errno}, fuse.FOPEN_DIRECT_IO, 0
 	}
+
+	// Individual message content is immutable — use FOPEN_KEEP_CACHE so the
+	// kernel can serve repeated reads from its page cache. FileGetattrer on
+	// the handle reports the real size (Getattr on the node returns 0 since
+	// content isn't fetched until Open).
+	if c.query.kind == queryBySeq {
+		return &ConvContentFileHandle{content: data, messageTime: c.messageTime, startTime: c.startTime, localID: c.localID, state: c.state}, fuse.FOPEN_KEEP_CACHE, 0
+	}
 	return &ConvContentFileHandle{content: data}, fuse.FOPEN_DIRECT_IO, 0
 }
 
 // ConvContentFileHandle caches content for consistent reads across multiple read() calls
 type ConvContentFileHandle struct {
-	content []byte
-	errno   syscall.Errno
+	content     []byte
+	errno       syscall.Errno
+	messageTime time.Time      // for Getattr timestamp (queryBySeq only)
+	startTime   time.Time      // fallback timestamp
+	localID     string         // for looking up conversation creation time
+	state       *state.Store   // for looking up conversation creation time
 }
 
 var _ = (fs.FileReader)((*ConvContentFileHandle)(nil))
+var _ = (fs.FileGetattrer)((*ConvContentFileHandle)(nil))
+
+func (h *ConvContentFileHandle) Getattr(ctx context.Context, out *fuse.AttrOut) syscall.Errno {
+	out.Mode = fuse.S_IFREG | 0444
+	out.Size = uint64(len(h.content))
+	if !h.messageTime.IsZero() {
+		setTimestamps(&out.Attr, h.messageTime)
+	} else if h.state != nil {
+		if cs := h.state.Get(h.localID); cs != nil && !cs.CreatedAt.IsZero() {
+			setTimestamps(&out.Attr, cs.CreatedAt)
+		} else {
+			setTimestamps(&out.Attr, h.startTime)
+		}
+	}
+	return 0
+}
 
 func (h *ConvContentFileHandle) Read(ctx context.Context, dest []byte, off int64) (fuse.ReadResult, syscall.Errno) {
 	if h.errno != 0 {
