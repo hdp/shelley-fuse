@@ -139,6 +139,16 @@ if branch_exists; then
 fi
 
 # ---------------------------------------------------------------------------
+# 6. Archive conversation
+# ---------------------------------------------------------------------------
+if [[ -e "/shelley" ]]; then
+    fgrep -l "$worktree_dir" /shelley/conversation/*/ctl | \
+        xargs basename -a | head -1 | while read id; do
+        touch /shelley/conversation/"$id"/archived
+    done
+fi
+
+# ---------------------------------------------------------------------------
 # Done
 # ---------------------------------------------------------------------------
 echo ""
