@@ -33,7 +33,7 @@ const (
 	cacheTTLImmutable = 1 * time.Hour
 
 	// cacheTTLStatic is for nodes that essentially never change:
-	// FS root, NewDirNode, ReadmeNode.
+	// FS root, ReadmeNode, /new symlink.
 	cacheTTLStatic = 1 * time.Hour
 
 	// cacheTTLModels is for model-related nodes that change very rarely:
@@ -262,7 +262,7 @@ func (f *FS) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.I
 		return f.NewInode(ctx, &ModelsDirNode{client: f.client, state: f.state, startTime: f.startTime, diag: f.Diag}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
 	case "new":
 		setEntryTimeout(out, cacheTTLStatic)
-		return f.NewInode(ctx, &NewDirNode{state: f.state, startTime: f.startTime, diag: f.Diag}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
+		return f.NewInode(ctx, &SymlinkNode{target: "models/default/new", startTime: f.startTime}, fs.StableAttr{Mode: syscall.S_IFLNK}), 0
 	case "conversation":
 		setEntryTimeout(out, cacheTTLConversation)
 		return f.NewInode(ctx, &ConversationListNode{client: f.client, state: f.state, cloneTimeout: f.cloneTimeout, startTime: f.startTime, parsedCache: f.parsedCache, diag: f.Diag}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
@@ -277,7 +277,7 @@ func (f *FS) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
 	return fs.NewListDirStream([]fuse.DirEntry{
 		{Name: "README.md", Mode: fuse.S_IFREG},
 		{Name: "models", Mode: fuse.S_IFDIR},
-		{Name: "new", Mode: fuse.S_IFDIR},
+		{Name: "new", Mode: syscall.S_IFLNK},
 		{Name: "conversation", Mode: fuse.S_IFDIR},
 	}), 0
 }
@@ -581,71 +581,7 @@ func (c *ModelCloneNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse
 	return 0
 }
 
-// --- NewDirNode: /new/ directory containing clone ---
-
-type NewDirNode struct {
-	fs.Inode
-	state     *state.Store
-	startTime time.Time
-	diag      *diag.Tracker
-}
-
-var _ = (fs.NodeLookuper)((*NewDirNode)(nil))
-var _ = (fs.NodeReaddirer)((*NewDirNode)(nil))
-var _ = (fs.NodeGetattrer)((*NewDirNode)(nil))
-
-func (n *NewDirNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
-	setEntryTimeout(out, cacheTTLStatic)
-	switch name {
-	case "clone":
-		return n.NewInode(ctx, &CloneNode{state: n.state, startTime: n.startTime, diag: n.diag}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
-	case "start":
-		return n.NewInode(ctx, &StartNode{startTime: n.startTime}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
-	}
-	return nil, syscall.ENOENT
-}
-
-func (n *NewDirNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
-	return fs.NewListDirStream([]fuse.DirEntry{
-		{Name: "clone", Mode: fuse.S_IFREG},
-		{Name: "start", Mode: fuse.S_IFREG},
-	}), 0
-}
-
-func (n *NewDirNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
-	out.Mode = fuse.S_IFDIR | 0755
-	setTimestamps(&out.Attr, n.startTime)
-	out.SetTimeout(cacheTTLStatic)
-	return 0
-}
-
-// --- CloneNode: each Open generates a new conversation ID ---
-
-type CloneNode struct {
-	fs.Inode
-	state     *state.Store
-	startTime time.Time
-	diag      *diag.Tracker
-}
-
-var _ = (fs.NodeOpener)((*CloneNode)(nil))
-var _ = (fs.NodeGetattrer)((*CloneNode)(nil))
-
-func (c *CloneNode) Open(ctx context.Context, flags uint32) (fs.FileHandle, uint32, syscall.Errno) {
-	defer diag.Track(c.diag, "CloneNode", "Open", "")()
-	id, err := c.state.Clone()
-	if err != nil {
-		return nil, 0, syscall.EIO
-	}
-	return &CloneFileHandle{id: id, diag: c.diag}, fuse.FOPEN_DIRECT_IO, 0
-}
-
-func (c *CloneNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
-	out.Mode = fuse.S_IFREG | 0444
-	setTimestamps(&out.Attr, c.startTime)
-	out.SetTimeout(cacheTTLStatic)
-	return 0
-}
+// --- CloneFileHandle: shared file handle for clone nodes ---
 
 type CloneFileHandle struct {
 	id   string
@@ -660,51 +596,12 @@ func (h *CloneFileHandle) Read(ctx context.Context, dest []byte, off int64) (fus
 	return fuse.ReadResultData(readAt(data, dest, off)), 0
 }
 
-// --- StartNode: /new/start — executable shell script that clones, configures, and sends ---
+// --- ModelStartNode: /models/{model}/new/start — executable shell script that creates a conversation ---
 
-// startScript is the shell script returned by /new/start.
-// It reads a message from stdin, clones a new conversation, sets cwd to the
-// caller's working directory, sends the message, and prints the conversation ID.
-const startScript = `#!/bin/sh
-set -e
-MOUNT="$(cd "$(dirname "$0")/.." && pwd)"
-MSG="$(cat)"
-[ -z "$MSG" ] && { echo "error: no message provided on stdin" >&2; exit 1; }
-ID="$(cat "$MOUNT/new/clone")"
-printf 'cwd=%s\n' "$PWD" > "$MOUNT/conversation/$ID/ctl"
-printf '%s' "$MSG" > "$MOUNT/conversation/$ID/send"
-echo "$ID"
-`
-
-type StartNode struct {
-	fs.Inode
-	startTime time.Time
-}
-
-var _ = (fs.NodeOpener)((*StartNode)(nil))
-var _ = (fs.NodeReader)((*StartNode)(nil))
-var _ = (fs.NodeGetattrer)((*StartNode)(nil))
-
-func (n *StartNode) Open(ctx context.Context, flags uint32) (fs.FileHandle, uint32, syscall.Errno) {
-	return nil, fuse.FOPEN_DIRECT_IO, 0
-}
-
-func (n *StartNode) Read(ctx context.Context, f fs.FileHandle, dest []byte, off int64) (fuse.ReadResult, syscall.Errno) {
-	data := []byte(startScript)
-	return fuse.ReadResultData(readAt(data, dest, off)), 0
-}
-
-func (n *StartNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
-	out.Mode = fuse.S_IFREG | 0555
-	out.Size = uint64(len(startScript))
-	setTimestamps(&out.Attr, n.startTime)
-	return 0
-}
-
-// --- ModelStartNode: /models/{model}/new/start — like StartNode but uses model-specific clone ---
-
-// modelStartScriptTemplate is the shell script template for /models/{model}/new/start.
-// It uses the model-specific clone file in the same directory.
+// modelStartScriptTemplate is the shell script for /models/{model}/new/start.
+// It reads a message from stdin, clones a new conversation using the model-specific
+// clone file, sets cwd to the caller's working directory, sends the message,
+// and prints the conversation ID.
 const modelStartScriptTemplate = `#!/bin/sh
 set -e
 DIR="$(cd "$(dirname "$0")" && pwd)"

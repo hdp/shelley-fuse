@@ -92,6 +92,52 @@ func TestBasicMount(t *testing.T) {
 	}
 }
 
+func TestNewIsSymlinkToModelsDefaultNew(t *testing.T) {
+	client := shelley.NewClient("http://localhost:11002")
+	store := testStore(t)
+	shelleyFS := NewFS(client, store, time.Hour)
+
+	tmpDir, err := ioutil.TempDir("", "shelley-fuse-new-symlink-test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	opts := &fs.Options{}
+	entryTimeout := time.Duration(0)
+	attrTimeout := time.Duration(0)
+	negativeTimeout := time.Duration(0)
+	opts.EntryTimeout = &entryTimeout
+	opts.AttrTimeout = &attrTimeout
+	opts.NegativeTimeout = &negativeTimeout
+
+	fssrv, err := fs.Mount(tmpDir, shelleyFS, opts)
+	if err != nil {
+		t.Fatalf("Mount failed: %v", err)
+	}
+	defer fssrv.Unmount()
+
+	newPath := filepath.Join(tmpDir, "new")
+
+	// Verify /new is a symlink
+	info, err := os.Lstat(newPath)
+	if err != nil {
+		t.Fatalf("Lstat /new failed: %v", err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("/new should be a symlink, got mode %v", info.Mode())
+	}
+
+	// Verify symlink target
+	target, err := os.Readlink(newPath)
+	if err != nil {
+		t.Fatalf("Readlink /new failed: %v", err)
+	}
+	if target != "models/default/new" {
+		t.Errorf("/new symlink target = %q, want %q", target, "models/default/new")
+	}
+}
+
 // --- Tests for ConversationListNode with server conversations ---
 
 // mockConversationsServer creates a test server that returns mock conversation data
@@ -2087,19 +2133,22 @@ func TestTimestamps_StaticNodesUseStartTime(t *testing.T) {
 		}
 	})
 
-	// Test new directory timestamp
-	t.Run("NewDirectory", func(t *testing.T) {
-		info, err := os.Stat(filepath.Join(tmpDir, "new"))
+	// Test new symlink timestamp
+	t.Run("NewSymlink", func(t *testing.T) {
+		info, err := os.Lstat(filepath.Join(tmpDir, "new"))
 		if err != nil {
-			t.Fatalf("Failed to stat new: %v", err)
+			t.Fatalf("Failed to lstat new: %v", err)
+		}
+		if info.Mode()&os.ModeSymlink == 0 {
+			t.Fatal("/new should be a symlink")
 		}
 		mtime := info.ModTime()
 		diff := mtime.Sub(startTime)
 		if diff < -time.Second || diff > time.Second {
-			t.Errorf("New mtime %v differs from startTime %v by %v", mtime, startTime, diff)
+			t.Errorf("New symlink mtime %v differs from startTime %v by %v", mtime, startTime, diff)
 		}
 		if mtime.Unix() == 0 {
-			t.Error("New mtime is zero (1970)")
+			t.Error("New symlink mtime is zero (1970)")
 		}
 	})
 
@@ -2135,19 +2184,19 @@ func TestTimestamps_StaticNodesUseStartTime(t *testing.T) {
 		}
 	})
 
-	// Test clone file timestamp
-	t.Run("CloneFile", func(t *testing.T) {
-		info, err := os.Stat(filepath.Join(tmpDir, "new", "clone"))
+	// Test model clone file timestamp
+	t.Run("ModelCloneFile", func(t *testing.T) {
+		info, err := os.Stat(filepath.Join(tmpDir, "models", "test-model", "new", "clone"))
 		if err != nil {
-			t.Fatalf("Failed to stat clone: %v", err)
+			t.Fatalf("Failed to stat models/test-model/new/clone: %v", err)
 		}
 		mtime := info.ModTime()
 		diff := mtime.Sub(startTime)
 		if diff < -time.Second || diff > time.Second {
-			t.Errorf("Clone mtime %v differs from startTime %v by %v", mtime, startTime, diff)
+			t.Errorf("ModelClone mtime %v differs from startTime %v by %v", mtime, startTime, diff)
 		}
 		if mtime.Unix() == 0 {
-			t.Error("Clone mtime is zero (1970)")
+			t.Error("ModelClone mtime is zero (1970)")
 		}
 	})
 
@@ -2481,13 +2530,13 @@ func TestTimestamps_NeverZero(t *testing.T) {
 	// Check various paths - none should have zero timestamp
 	// Note: "created" is not checked because it uses presence/absence semantics
 	// and only exists when conversation is created on backend
-	pathsToCheck := []string{
+	// Paths checked via os.Stat (follows symlinks)
+	statPaths := []string{
 		tmpDir,                                            // root
 		filepath.Join(tmpDir, "models"),                   // models dir
 		filepath.Join(tmpDir, "models", "test-model"),     // model dir
 		filepath.Join(tmpDir, "models", "test-model", "id"), // model file
-		filepath.Join(tmpDir, "new"),                      // new dir
-		filepath.Join(tmpDir, "new", "clone"),             // clone file
+		filepath.Join(tmpDir, "models", "test-model", "new", "clone"), // model clone file
 		filepath.Join(tmpDir, "conversation"),             // conversation list
 		filepath.Join(tmpDir, "conversation", convID),     // conversation dir
 		filepath.Join(tmpDir, "conversation", convID, "ctl"),
@@ -2499,7 +2548,7 @@ func TestTimestamps_NeverZero(t *testing.T) {
 		filepath.Join(tmpDir, "conversation", convID, "messages", "since"),
 	}
 
-	for _, path := range pathsToCheck {
+	for _, path := range statPaths {
 		info, err := os.Stat(path)
 		if err != nil {
 			t.Errorf("Failed to stat %s: %v", path, err)
@@ -2512,6 +2561,20 @@ func TestTimestamps_NeverZero(t *testing.T) {
 		// Also check it's a reasonable recent time (within last hour)
 		if time.Since(mtime) > time.Hour {
 			t.Errorf("Path %s has mtime %v which is more than 1 hour ago", path, mtime)
+		}
+	}
+
+	// /new is a symlink — check via Lstat
+	info, err := os.Lstat(filepath.Join(tmpDir, "new"))
+	if err != nil {
+		t.Errorf("Failed to lstat /new: %v", err)
+	} else {
+		mtime := info.ModTime()
+		if mtime.Unix() == 0 {
+			t.Errorf("/new symlink has zero mtime (1970)")
+		}
+		if time.Since(mtime) > time.Hour {
+			t.Errorf("/new symlink has mtime %v which is more than 1 hour ago", mtime)
 		}
 	}
 }
@@ -5422,58 +5485,7 @@ func TestSinceDirPerformanceRegression(t *testing.T) {
 	}
 }
 
-// --- Tests for StartNode ---
-
-func TestStartNode_Read(t *testing.T) {
-	node := &StartNode{startTime: time.Now()}
-
-	_, flags, errno := node.Open(context.Background(), 0)
-	if errno != 0 {
-		t.Fatalf("Open failed with errno %d", errno)
-	}
-	if flags&fuse.FOPEN_DIRECT_IO == 0 {
-		t.Error("expected FOPEN_DIRECT_IO flag")
-	}
-
-	result, errno := node.Read(context.Background(), nil, make([]byte, 4096), 0)
-	if errno != 0 {
-		t.Fatalf("Read failed with errno %d", errno)
-	}
-	data, _ := result.Bytes(make([]byte, 4096))
-	script := string(data)
-
-	if !strings.HasPrefix(script, "#!/bin/sh") {
-		t.Error("start script should begin with #!/bin/sh shebang")
-	}
-	if !strings.Contains(script, "new/clone") {
-		t.Error("start script should reference new/clone")
-	}
-	if !strings.Contains(script, "/ctl") {
-		t.Error("start script should write to ctl")
-	}
-	if !strings.Contains(script, "/send") {
-		t.Error("start script should write to send")
-	}
-}
-
-func TestStartNode_Getattr(t *testing.T) {
-	node := &StartNode{startTime: time.Now()}
-	var out fuse.AttrOut
-	errno := node.Getattr(context.Background(), nil, &out)
-	if errno != 0 {
-		t.Fatalf("Getattr failed with errno %d", errno)
-	}
-	// Should be executable by all
-	if out.Mode&0111 == 0 {
-		t.Error("start script should be executable")
-	}
-	if out.Mode&fuse.S_IFREG == 0 {
-		t.Error("start script should be a regular file")
-	}
-	if out.Size == 0 {
-		t.Error("start script should have non-zero size")
-	}
-}
+// --- Tests for ModelStartNode ---
 
 func TestModelStartNode_Read(t *testing.T) {
 	node := &ModelStartNode{model: shelley.Model{ID: "test-model"}, startTime: time.Now()}

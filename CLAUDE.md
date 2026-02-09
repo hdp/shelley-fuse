@@ -53,9 +53,7 @@ The filesystem follows a Plan 9-inspired control file model. There are no host d
       new/
         clone                           → read to allocate a new conversation with this model preconfigured
         start                           → executable script: pipe message on stdin to create conversation with this model and caller's cwd
-  new/
-    clone                               → read to allocate a new local conversation ID
-    start                               → executable script: pipe message on stdin to create conversation with caller's cwd
+  new                                   → symlink to models/default/new (uses default model for new conversations)
   conversation/                           → lists local IDs + server conversations (merged via GET /api/conversations)
     {local-id}/                         → directory per conversation (8-character hex local ID)
       ctl                               → read/write config (model=X cwd=Y); becomes read-only after creation
