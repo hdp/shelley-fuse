@@ -143,8 +143,8 @@ fi
 # ---------------------------------------------------------------------------
 if [[ -e "/shelley" ]]; then
     fgrep -l "$worktree_dir" /shelley/conversation/*/ctl | \
-        xargs basename -a | head -1 | while read id; do
-        touch /shelley/conversation/"$id"/archived
+        head -1 | xargs dirname | while read conv; do
+            touch "$conv/archived"
     done
 fi
 
