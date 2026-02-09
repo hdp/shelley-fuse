@@ -66,16 +66,6 @@ The filesystem follows a Plan 9-inspired control file model. There are no host d
                                             touch/create to archive, rm to unarchive; ENOENT before backend creation
       model                             → symlink to ../../models/{model-id} (only if model is set)
       cwd                               → symlink to working directory (only if cwd is set)
-      meta/                             → conversation metadata as jsonfs directory tree
-        local_id                        → local FUSE conversation ID
-        conversation_id                 → Shelley API conversation ID (only if created)
-        slug                            → conversation slug (only if set)
-        model                           → selected model (only if set)
-        cwd                             → working directory path (only if set)
-        created                         → boolean "true" or "false"
-        local_created_at                → local timestamp when conversation was cloned
-        api_created_at                  → server timestamp (only if created)
-        api_updated_at                  → server timestamp (only if created)
       messages/                         → all message content
         all.json                        → full conversation as JSON
         all.md                          → full conversation as Markdown
