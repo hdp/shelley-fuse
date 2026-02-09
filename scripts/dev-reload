@@ -71,6 +71,11 @@ find_latest_build() {
   find .cache -name "$BINARY.*" -type f -executable | xargs ls -t | head -1
 }
 
+clean_old_builds() {
+  find .cache -name "$BINARY.*" -type f \! -executable | tail -n +3 | xargs rm
+  find .cache -name "$BINARY.*" -type f -executable | xargs ls -t | tail -n +6 | xargs rm
+}
+
 kill_pids
 start_background_build 
 
