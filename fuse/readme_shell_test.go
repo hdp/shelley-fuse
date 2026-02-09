@@ -710,6 +710,57 @@ func TestReadmeCommonOperationsLastSingleMessage(t *testing.T) {
 	t.Logf("Last message content (truncated): %.200s", lastContent)
 }
 
+// TestReadmeMessageDirContents verifies that individual message directories
+// (e.g. 000-system/, 001-user/) are non-empty and contain the expected files.
+// This catches regressions where Readdir on MessageDirNode returns no entries
+// (e.g. if OpendirHandle incorrectly short-circuits the readdir path).
+func TestReadmeMessageDirContents(t *testing.T) {
+	skipIfNoFusermount(t)
+	skipIfNoShelley(t)
+
+	serverURL := startShelleyServer(t)
+	tm := mountTestFSFull(t, serverURL, time.Hour)
+	mountPoint := tm.MountPoint
+	tracker := tm.Diag
+
+	// Create a conversation with a message
+	convID := strings.TrimSpace(runShellDiagOK(t, mountPoint, "cat new/clone", tracker))
+	runShellDiagOK(t, mountPoint, "echo 'model=predictable' > conversation/"+convID+"/ctl", tracker)
+	runShellDiagOK(t, mountPoint, "echo 'Hello' > conversation/"+convID+"/send", tracker)
+
+	// ls conversation/$ID/messages/ should include message directories
+	msgsListing := runShellDiagOK(t, mountPoint, "ls conversation/"+convID+"/messages/", tracker)
+	// We expect at least a system and user message directory (NNN-slug format)
+	if !strings.Contains(msgsListing, "user") {
+		t.Errorf("Expected a user message directory in messages/ listing, got:\n%s", msgsListing)
+	}
+
+	// Find the first message directory and verify its contents
+	lines := strings.Fields(strings.TrimSpace(msgsListing))
+	var msgDir string
+	for _, line := range lines {
+		if strings.Contains(line, "-") {
+			msgDir = line
+			break
+		}
+	}
+	if msgDir == "" {
+		t.Fatalf("No message directories found in listing:\n%s", msgsListing)
+	}
+
+	// ls conversation/$ID/messages/{msgDir}/ should contain field files
+	contents := runShellDiagOK(t, mountPoint, "ls conversation/"+convID+"/messages/"+msgDir+"/", tracker)
+	if contents == "" {
+		t.Fatalf("Message directory %s is completely empty", msgDir)
+	}
+	for _, expected := range []string{"content.md", "type", "message_id", "sequence_id", "created_at"} {
+		if !strings.Contains(contents, expected) {
+			t.Errorf("Expected %q in message directory listing, got:\n%s", expected, contents)
+		}
+	}
+	t.Logf("Message directory %s contents: %s", msgDir, strings.TrimSpace(contents))
+}
+
 // TestReadmeCommonOperationsLast2Messages exercises listing the last 2 messages:
 //
 //	# List the last 2 messages

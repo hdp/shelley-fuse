@@ -194,7 +194,6 @@ type MessageDirNode struct {
 var _ = (fs.NodeLookuper)((*MessageDirNode)(nil))
 var _ = (fs.NodeReaddirer)((*MessageDirNode)(nil))
 var _ = (fs.NodeGetattrer)((*MessageDirNode)(nil))
-var _ = (fs.NodeOpendirHandler)((*MessageDirNode)(nil))
 
 // messageTimestamps returns timestamps for this message using the metadata mapping.
 func (m *MessageDirNode) messageTimestamps() metadata.Timestamps {
@@ -344,9 +343,6 @@ func (m *MessageDirNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Err
 	return fs.NewListDirStream(entries), 0
 }
 
-func (m *MessageDirNode) OpendirHandle(ctx context.Context, flags uint32) (fs.FileHandle, uint32, syscall.Errno) {
-	return nil, fuse.FOPEN_CACHE_DIR, 0
-}
 
 func (m *MessageDirNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
 	out.Mode = fuse.S_IFDIR | 0755
