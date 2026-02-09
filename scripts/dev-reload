@@ -39,6 +39,7 @@ verify_shelley() {
 start_background_build() {
   local parent="$$"
   while true; do
+    clean_old_builds
     COMMIT=$(git rev-list HEAD -n1)
     HASHED=".cache/$BINARY.$COMMIT"
 
@@ -72,8 +73,8 @@ find_latest_build() {
 }
 
 clean_old_builds() {
-  find .cache -name "$BINARY.*" -type f \! -executable | tail -n +3 | xargs rm
-  find .cache -name "$BINARY.*" -type f -executable | xargs ls -t | tail -n +6 | xargs rm
+  find .cache -name "$BINARY.*" -type f \! -executable | tail -n +3 | xargs rm -f
+  find .cache -name "$BINARY.*" -type f -executable | xargs ls -t | tail -n +6 | xargs rm -f
 }
 
 kill_pids
