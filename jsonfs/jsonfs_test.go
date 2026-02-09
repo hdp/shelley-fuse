@@ -453,3 +453,39 @@ func TestCacheTimeout_Zero(t *testing.T) {
 		t.Errorf("valueNode attr timeout = %v, want 0 (no caching)", got)
 	}
 }
+
+func TestCacheTimeout_ValueNodeOpen_DirectIO(t *testing.T) {
+	// Zero CacheTimeout should use FOPEN_DIRECT_IO
+	node := &valueNode{content: "test", config: &Config{}}
+	_, flags, errno := node.Open(context.Background(), 0)
+	if errno != 0 {
+		t.Fatalf("Open failed with errno %d", errno)
+	}
+	if flags != fuse.FOPEN_DIRECT_IO {
+		t.Errorf("expected FOPEN_DIRECT_IO (%d), got %d", fuse.FOPEN_DIRECT_IO, flags)
+	}
+}
+
+func TestCacheTimeout_ValueNodeOpen_KeepCache(t *testing.T) {
+	// Positive CacheTimeout should use FOPEN_KEEP_CACHE
+	node := &valueNode{content: "test", config: &Config{CacheTimeout: time.Hour}}
+	_, flags, errno := node.Open(context.Background(), 0)
+	if errno != 0 {
+		t.Fatalf("Open failed with errno %d", errno)
+	}
+	if flags != fuse.FOPEN_KEEP_CACHE {
+		t.Errorf("expected FOPEN_KEEP_CACHE (%d), got %d", fuse.FOPEN_KEEP_CACHE, flags)
+	}
+}
+
+func TestCacheTimeout_ValueNodeOpen_NilConfig(t *testing.T) {
+	// Nil config should use FOPEN_DIRECT_IO
+	node := &valueNode{content: "test", config: nil}
+	_, flags, errno := node.Open(context.Background(), 0)
+	if errno != 0 {
+		t.Fatalf("Open failed with errno %d", errno)
+	}
+	if flags != fuse.FOPEN_DIRECT_IO {
+		t.Errorf("expected FOPEN_DIRECT_IO (%d), got %d", fuse.FOPEN_DIRECT_IO, flags)
+	}
+}

@@ -270,6 +270,9 @@ var _ = (fs.NodeReader)((*valueNode)(nil))
 var _ = (fs.NodeGetattrer)((*valueNode)(nil))
 
 func (n *valueNode) Open(ctx context.Context, flags uint32) (fs.FileHandle, uint32, syscall.Errno) {
+	if n.config.cacheTimeout() > 0 {
+		return nil, fuse.FOPEN_KEEP_CACHE, 0
+	}
 	return nil, fuse.FOPEN_DIRECT_IO, 0
 }
 

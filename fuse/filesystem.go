@@ -1138,7 +1138,10 @@ func (c *ConversationNode) Lookup(ctx context.Context, name string, out *fuse.En
 		return nil, syscall.ENOENT
 	}
 
-	config := &jsonfs.Config{StartTime: c.getConversationTime()}
+	config := &jsonfs.Config{
+		StartTime:    c.getConversationTime(),
+		CacheTimeout: 10 * time.Second, // conversation metadata is semi-stable
+	}
 	node := jsonfs.NewNode(value, config)
 
 	// Determine mode based on value type
