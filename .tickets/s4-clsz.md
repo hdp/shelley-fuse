@@ -1,6 +1,6 @@
 ---
 id: s4-clsz
-status: open
+status: in_progress
 deps: []
 links: []
 created: 2026-02-09T03:49:17Z
