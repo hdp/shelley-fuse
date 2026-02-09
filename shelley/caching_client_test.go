@@ -2,6 +2,7 @@ package shelley
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -346,8 +347,10 @@ func TestCachingClient_ListModels_CachesResult(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/" {
 			atomic.AddInt32(&callCount, 1)
-			// Return HTML with SHELLEY_INIT containing models
-			w.Write([]byte(`<script>window.__SHELLEY_INIT__ = {"models":[{"id":"test-model","ready":true}],"default_model":"test-model"};</script>`))
+			modelsJSON, _ := json.Marshal([]Model{{ID: "test-model", Ready: true}})
+			fmt.Fprintf(w,
+				`<html><script>window.__SHELLEY_INIT__ = {"models": %s, "default_model": "test-model"};</script></html>`,
+				modelsJSON)
 			return
 		}
 		http.NotFound(w, r)
@@ -843,8 +846,10 @@ func TestCachingClient_Singleflight_ListModelsCoalesced(t *testing.T) {
 			atomic.AddInt32(&callCount, 1)
 			// Simulate slow backend
 			time.Sleep(50 * time.Millisecond)
-			// Return HTML with embedded JSON (like real Shelley server)
-			w.Write([]byte(`<html><script>window.__SHELLEY_INIT__ = {"models":[{"id":"test","ready":true}],"default_model":"test"};</script></html>`))
+			modelsJSON, _ := json.Marshal([]Model{{ID: "test", Ready: true}})
+			fmt.Fprintf(w,
+				`<html><script>window.__SHELLEY_INIT__ = {"models": %s, "default_model": "test"};</script></html>`,
+				modelsJSON)
 			return
 		}
 		http.NotFound(w, r)

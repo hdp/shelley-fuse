@@ -6,13 +6,11 @@ import (
 	"fmt"
 	"io/ioutil"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
-	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -20,6 +18,7 @@ import (
 	"github.com/hanwen/go-fuse/v2/fs"
 	"github.com/hanwen/go-fuse/v2/fuse"
 	"shelley-fuse/shelley"
+	"shelley-fuse/mockserver"
 	"shelley-fuse/state"
 )
 
@@ -141,28 +140,19 @@ func TestNewIsSymlinkToModelsDefaultNew(t *testing.T) {
 // --- Tests for ConversationListNode with server conversations ---
 
 // mockConversationsServer creates a test server that returns mock conversation data
-func mockConversationsServer(t *testing.T, conversations []shelley.Conversation) *httptest.Server {
+func mockConversationsServer(t *testing.T, conversations []shelley.Conversation) *mockserver.Server {
 	t.Helper()
-	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/conversations" {
-			data, _ := json.Marshal(conversations)
-			w.Write(data)
-			return
-		}
-		http.NotFound(w, r)
-	}))
+	opts := make([]mockserver.Option, len(conversations))
+	for i, c := range conversations {
+		opts[i] = mockserver.WithFullConversation(c, nil)
+	}
+	return mockserver.New(opts...)
 }
 
 // mockErrorServer creates a test server that returns errors for the conversations endpoint
-func mockErrorServer(t *testing.T) *httptest.Server {
+func mockErrorServer(t *testing.T) *mockserver.Server {
 	t.Helper()
-	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/conversations" {
-			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
-			return
-		}
-		http.NotFound(w, r)
-	}))
+	return mockserver.New(mockserver.WithErrorMode(http.StatusInternalServerError))
 }
 
 func TestConversationListNode_ReaddirLocalOnly(t *testing.T) {
@@ -572,7 +562,7 @@ func TestConversationListNode_ReaddirShowsStaleWhenServerFails(t *testing.T) {
 }
 
 // Helper to mount a test filesystem and return mount point and cleanup function
-func mountTestFSWithServer(t *testing.T, server *httptest.Server, store *state.Store) (string, func()) {
+func mountTestFSWithServer(t *testing.T, server *mockserver.Server, store *state.Store) (string, func()) {
 	t.Helper()
 
 	client := shelley.NewClient(server.URL)
@@ -857,27 +847,19 @@ func TestConversationListingMounted(t *testing.T) {
 // --- Tests for ModelsDirNode ---
 
 // mockModelsServer creates a test server that returns mock model data
-func mockModelsServer(t *testing.T, models []shelley.Model) *httptest.Server {
+func mockModelsServer(t *testing.T, models []shelley.Model) *mockserver.Server {
 	t.Helper()
 	return mockModelsServerWithDefault(t, models, "")
 }
 
 // mockModelsServerWithDefault creates a test server that returns mock model data with an optional default model
-func mockModelsServerWithDefault(t *testing.T, models []shelley.Model, defaultModel string) *httptest.Server {
+func mockModelsServerWithDefault(t *testing.T, models []shelley.Model, defaultModel string) *mockserver.Server {
 	t.Helper()
-	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/" {
-			// Simulate the HTML response with embedded model data
-			modelsJSON, _ := json.Marshal(models)
-			defaultModelJSON := "null"
-			if defaultModel != "" {
-				defaultModelJSON = fmt.Sprintf("%q", defaultModel)
-			}
-			fmt.Fprintf(w, `<html><script>window.__SHELLEY_INIT__ = {"models": %s, "default_model": %s};</script></html>`, modelsJSON, defaultModelJSON)
-			return
-		}
-		http.NotFound(w, r)
-	}))
+	opts := []mockserver.Option{mockserver.WithModels(models)}
+	if defaultModel != "" {
+		opts = append(opts, mockserver.WithDefaultModel(defaultModel))
+	}
+	return mockserver.New(opts...)
 }
 
 func TestModelsDirNode_Readdir(t *testing.T) {
@@ -2821,21 +2803,7 @@ func TestTimestamps_MessageFilesUseMessageTime(t *testing.T) {
 		{MessageID: "m3", ConversationID: convID, SequenceID: 3, Type: "user", UserData: strPtr("Thanks"), CreatedAt: msg3Time.Format(time.RFC3339)},
 	}
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/conversation/"+convID {
-			data, _ := json.Marshal(struct {
-				Messages []shelley.Message `json:"messages"`
-			}{Messages: msgs})
-			w.Write(data)
-			return
-		}
-		if r.URL.Path == "/api/conversations" {
-			data, _ := json.Marshal([]shelley.Conversation{{ConversationID: convID}})
-			w.Write(data)
-			return
-		}
-		http.NotFound(w, r)
-	}))
+	server := mockserver.New(mockserver.WithConversation(convID, msgs))
 	defer server.Close()
 
 	client := shelley.NewClient(server.URL)
@@ -3171,17 +3139,7 @@ func TestMessagesDirNodeReaddirWithToolCalls(t *testing.T) {
 		{MessageID: "m4", ConversationID: convID, SequenceID: 4, Type: "shelley", LLMData: strPtr("Done!")},
 	}
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Client uses /api/conversation/{id} (singular)
-		if r.URL.Path == "/api/conversation/"+convID {
-			data, _ := json.Marshal(struct {
-				Messages []shelley.Message `json:"messages"`
-			}{Messages: msgs})
-			w.Write(data)
-			return
-		}
-		http.NotFound(w, r)
-	}))
+	server := mockserver.New(mockserver.WithConversation(convID, msgs))
 	defer server.Close()
 
 	client := shelley.NewClient(server.URL)
@@ -3248,23 +3206,7 @@ func TestMessagesDirNodeLookupWithToolCalls(t *testing.T) {
 		{MessageID: "m3", ConversationID: convID, SequenceID: 3, Type: "user", UserData: strPtr(`{"Content": [{"Type": 6, "ToolUseID": "tu_456"}]}`)},
 	}
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Client uses /api/conversation/{id} (singular)
-		if r.URL.Path == "/api/conversation/"+convID {
-			data, _ := json.Marshal(struct {
-				Messages []shelley.Message `json:"messages"`
-			}{Messages: msgs})
-			w.Write(data)
-			return
-		}
-		if r.URL.Path == "/api/conversations" {
-			// Return conversation list for adoption
-			data, _ := json.Marshal([]shelley.Conversation{{ConversationID: convID}})
-			w.Write(data)
-			return
-		}
-		http.NotFound(w, r)
-	}))
+	server := mockserver.New(mockserver.WithConversation(convID, msgs))
 	defer server.Close()
 
 	client := shelley.NewClient(server.URL)
@@ -3350,21 +3292,7 @@ func TestMessagesDirNodeReadToolCallContent(t *testing.T) {
 		{MessageID: "m2", ConversationID: convID, SequenceID: 101, Type: "user", UserData: strPtr(`{"Content": [{"Type": 6, "ToolUseID": "tu_789"}]}`)},
 	}
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/conversation/"+convID {
-			data, _ := json.Marshal(struct {
-				Messages []shelley.Message `json:"messages"`
-			}{Messages: msgs})
-			w.Write(data)
-			return
-		}
-		if r.URL.Path == "/api/conversations" {
-			data, _ := json.Marshal([]shelley.Conversation{{ConversationID: convID}})
-			w.Write(data)
-			return
-		}
-		http.NotFound(w, r)
-	}))
+	server := mockserver.New(mockserver.WithConversation(convID, msgs))
 	defer server.Close()
 
 	client := shelley.NewClient(server.URL)
@@ -3440,19 +3368,9 @@ func TestMessagesDirNodeReadToolCallContent(t *testing.T) {
 // TestCachingReducesFetches verifies that using CachingClient reduces backend fetches
 // when reading the same conversation multiple times in quick succession.
 func TestCachingReducesFetches(t *testing.T) {
-	var fetchCount int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/conversation/server-conv-123" {
-			atomic.AddInt32(&fetchCount, 1)
-			w.Write([]byte(`{"messages":[{"message_id":"m1","conversation_id":"server-conv-123","sequence_id":1,"type":"user","user_data":"Hello"}]}`))
-			return
-		}
-		if r.URL.Path == "/api/conversations" {
-			data, _ := json.Marshal([]shelley.Conversation{{ConversationID: "server-conv-123"}})
-			w.Write(data)
-			return
-		}
-		http.NotFound(w, r)
+	hello := "Hello"
+	server := mockserver.New(mockserver.WithConversation("server-conv-123", []shelley.Message{
+		{MessageID: "m1", ConversationID: "server-conv-123", SequenceID: 1, Type: "user", UserData: &hello},
 	}))
 	defer server.Close()
 
@@ -3472,8 +3390,8 @@ func TestCachingReducesFetches(t *testing.T) {
 	if errno != 0 {
 		t.Fatalf("First Readdir failed: %v", errno)
 	}
-	if atomic.LoadInt32(&fetchCount) != 1 {
-		t.Errorf("Expected 1 fetch after first Readdir, got %d", fetchCount)
+	if server.FetchCount() != 1 {
+		t.Errorf("Expected 1 fetch after first Readdir, got %d", server.FetchCount())
 	}
 
 	// Second call should use cache (within TTL)
@@ -3481,8 +3399,8 @@ func TestCachingReducesFetches(t *testing.T) {
 	if errno != 0 {
 		t.Fatalf("Second Readdir failed: %v", errno)
 	}
-	if atomic.LoadInt32(&fetchCount) != 1 {
-		t.Errorf("Expected still 1 fetch after second Readdir (cached), got %d", fetchCount)
+	if server.FetchCount() != 1 {
+		t.Errorf("Expected still 1 fetch after second Readdir (cached), got %d", server.FetchCount())
 	}
 
 	// Third call should also use cache
@@ -3490,30 +3408,16 @@ func TestCachingReducesFetches(t *testing.T) {
 	if errno != 0 {
 		t.Fatalf("Third Readdir failed: %v", errno)
 	}
-	if atomic.LoadInt32(&fetchCount) != 1 {
-		t.Errorf("Expected still 1 fetch after third Readdir (cached), got %d", fetchCount)
+	if server.FetchCount() != 1 {
+		t.Errorf("Expected still 1 fetch after third Readdir (cached), got %d", server.FetchCount())
 	}
 }
 
 // TestCachingInvalidatedByWrite verifies that cache is invalidated when a message is sent.
 func TestCachingInvalidatedByWrite(t *testing.T) {
-	var fetchCount int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/conversation/server-conv-456" && r.Method == "GET" {
-			atomic.AddInt32(&fetchCount, 1)
-			w.Write([]byte(`{"messages":[{"message_id":"m1","conversation_id":"server-conv-456","sequence_id":1,"type":"user","user_data":"Hello"}]}`))
-			return
-		}
-		if r.URL.Path == "/api/conversation/server-conv-456/chat" && r.Method == "POST" {
-			w.WriteHeader(http.StatusOK)
-			return
-		}
-		if r.URL.Path == "/api/conversations" {
-			data, _ := json.Marshal([]shelley.Conversation{{ConversationID: "server-conv-456"}})
-			w.Write(data)
-			return
-		}
-		http.NotFound(w, r)
+	hello := "Hello"
+	server := mockserver.New(mockserver.WithConversation("server-conv-456", []shelley.Message{
+		{MessageID: "m1", ConversationID: "server-conv-456", SequenceID: 1, Type: "user", UserData: &hello},
 	}))
 	defer server.Close()
 
@@ -3528,14 +3432,14 @@ func TestCachingInvalidatedByWrite(t *testing.T) {
 
 	// First fetch
 	_, _ = node.Readdir(ctx)
-	if atomic.LoadInt32(&fetchCount) != 1 {
-		t.Errorf("Expected 1 fetch after first Readdir, got %d", fetchCount)
+	if server.FetchCount() != 1 {
+		t.Errorf("Expected 1 fetch after first Readdir, got %d", server.FetchCount())
 	}
 
 	// Second fetch should use cache
 	_, _ = node.Readdir(ctx)
-	if atomic.LoadInt32(&fetchCount) != 1 {
-		t.Errorf("Expected still 1 fetch after cached Readdir, got %d", fetchCount)
+	if server.FetchCount() != 1 {
+		t.Errorf("Expected still 1 fetch after cached Readdir, got %d", server.FetchCount())
 	}
 
 	// Send a message - this should invalidate the cache
@@ -3546,26 +3450,16 @@ func TestCachingInvalidatedByWrite(t *testing.T) {
 
 	// Next fetch should hit backend again (cache invalidated)
 	_, _ = node.Readdir(ctx)
-	if atomic.LoadInt32(&fetchCount) != 2 {
-		t.Errorf("Expected 2 fetches after cache invalidation, got %d", fetchCount)
+	if server.FetchCount() != 2 {
+		t.Errorf("Expected 2 fetches after cache invalidation, got %d", server.FetchCount())
 	}
 }
 
 // TestNoCachingWithZeroTTL verifies that caching is disabled when TTL is 0.
 func TestNoCachingWithZeroTTL(t *testing.T) {
-	var fetchCount int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/conversation/server-conv-789" {
-			atomic.AddInt32(&fetchCount, 1)
-			w.Write([]byte(`{"messages":[{"message_id":"m1","conversation_id":"server-conv-789","sequence_id":1,"type":"user","user_data":"Hello"}]}`))
-			return
-		}
-		if r.URL.Path == "/api/conversations" {
-			data, _ := json.Marshal([]shelley.Conversation{{ConversationID: "server-conv-789"}})
-			w.Write(data)
-			return
-		}
-		http.NotFound(w, r)
+	hello := "Hello"
+	server := mockserver.New(mockserver.WithConversation("server-conv-789", []shelley.Message{
+		{MessageID: "m1", ConversationID: "server-conv-789", SequenceID: 1, Type: "user", UserData: &hello},
 	}))
 	defer server.Close()
 
@@ -3583,8 +3477,8 @@ func TestNoCachingWithZeroTTL(t *testing.T) {
 	for i := 0; i < 3; i++ {
 		_, _ = node.Readdir(ctx)
 		expectedCount := int32(i + 1)
-		if atomic.LoadInt32(&fetchCount) != expectedCount {
-			t.Errorf("Call %d: Expected %d fetches (no caching), got %d", i+1, expectedCount, fetchCount)
+		if server.FetchCount() != expectedCount {
+			t.Errorf("Call %d: Expected %d fetches (no caching), got %d", i+1, expectedCount, server.FetchCount())
 		}
 	}
 }
@@ -3801,21 +3695,7 @@ func TestMessageDirNodeFields(t *testing.T) {
 		},
 	}
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/conversation/"+convID {
-			data, _ := json.Marshal(struct {
-				Messages []shelley.Message `json:"messages"`
-			}{Messages: msgs})
-			w.Write(data)
-			return
-		}
-		if r.URL.Path == "/api/conversations" {
-			data, _ := json.Marshal([]shelley.Conversation{{ConversationID: convID}})
-			w.Write(data)
-			return
-		}
-		http.NotFound(w, r)
-	}))
+	server := mockserver.New(mockserver.WithConversation(convID, msgs))
 	defer server.Close()
 
 	client := shelley.NewClient(server.URL)
@@ -3992,21 +3872,7 @@ func TestMessageFieldStableInodes(t *testing.T) {
 		},
 	}
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/conversation/"+convID {
-			data, _ := json.Marshal(struct {
-				Messages []shelley.Message `json:"messages"`
-			}{Messages: msgs})
-			w.Write(data)
-			return
-		}
-		if r.URL.Path == "/api/conversations" {
-			data, _ := json.Marshal([]shelley.Conversation{{ConversationID: convID}})
-			w.Write(data)
-			return
-		}
-		http.NotFound(w, r)
-	}))
+	server := mockserver.New(mockserver.WithConversation(convID, msgs))
 	defer server.Close()
 
 	client := shelley.NewClient(server.URL)
@@ -4360,21 +4226,7 @@ func TestTimestamps_MessageDirUsesCreatedAt(t *testing.T) {
 		},
 	}
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/conversation/"+convID {
-			data, _ := json.Marshal(struct {
-				Messages []shelley.Message `json:"messages"`
-			}{Messages: messages})
-			w.Write(data)
-			return
-		}
-		if r.URL.Path == "/api/conversations" {
-			data, _ := json.Marshal([]shelley.Conversation{{ConversationID: convID}})
-			w.Write(data)
-			return
-		}
-		http.NotFound(w, r)
-	}))
+	server := mockserver.New(mockserver.WithConversation(convID, messages))
 	defer server.Close()
 
 	client := shelley.NewClient(server.URL)
@@ -4462,21 +4314,7 @@ func TestTimestamps_MessagesSubdirUsesConversationMetadata(t *testing.T) {
 	convID := "conv-msg-subdir"
 	messages := []shelley.Message{}
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/conversation/"+convID {
-			data, _ := json.Marshal(struct {
-				Messages []shelley.Message `json:"messages"`
-			}{Messages: messages})
-			w.Write(data)
-			return
-		}
-		if r.URL.Path == "/api/conversations" {
-			data, _ := json.Marshal([]shelley.Conversation{{ConversationID: convID}})
-			w.Write(data)
-			return
-		}
-		http.NotFound(w, r)
-	}))
+	server := mockserver.New(mockserver.WithConversation(convID, messages))
 	defer server.Close()
 
 	client := shelley.NewClient(server.URL)
@@ -4543,21 +4381,7 @@ func TestQueryResultDirNode_LastN(t *testing.T) {
 		{MessageID: "m4", ConversationID: convID, SequenceID: 4, Type: "shelley", LLMData: strPtr("I'm great!")},
 	}
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/conversation/"+convID {
-			data, _ := json.Marshal(struct {
-				Messages []shelley.Message `json:"messages"`
-			}{Messages: msgs})
-			w.Write(data)
-			return
-		}
-		if r.URL.Path == "/api/conversations" {
-			data, _ := json.Marshal([]shelley.Conversation{{ConversationID: convID}})
-			w.Write(data)
-			return
-		}
-		http.NotFound(w, r)
-	}))
+	server := mockserver.New(mockserver.WithConversation(convID, msgs))
 	defer server.Close()
 
 	client := shelley.NewClient(server.URL)
@@ -4680,21 +4504,7 @@ func TestQueryResultDirNode_SincePersonN(t *testing.T) {
 		{MessageID: "m5", ConversationID: convID, SequenceID: 5, Type: "user", UserData: strPtr("Third")},
 	}
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/conversation/"+convID {
-			data, _ := json.Marshal(struct {
-				Messages []shelley.Message `json:"messages"`
-			}{Messages: msgs})
-			w.Write(data)
-			return
-		}
-		if r.URL.Path == "/api/conversations" {
-			data, _ := json.Marshal([]shelley.Conversation{{ConversationID: convID}})
-			w.Write(data)
-			return
-		}
-		http.NotFound(w, r)
-	}))
+	server := mockserver.New(mockserver.WithConversation(convID, msgs))
 	defer server.Close()
 
 	client := shelley.NewClient(server.URL)
@@ -4795,31 +4605,14 @@ func TestConversationAPITimestampFields(t *testing.T) {
 	convCreatedAt := "2024-01-15T10:30:00Z"
 	convUpdatedAt := "2024-01-15T11:00:00Z"
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/conversations" {
-			slugPtr := &convSlug
-			data, _ := json.Marshal([]shelley.Conversation{{
-				ConversationID: convID,
-				Slug:           slugPtr,
-				CreatedAt:      convCreatedAt,
-				UpdatedAt:      convUpdatedAt,
-			}})
-			w.Write(data)
-			return
-		}
-		if r.URL.Path == "/api/conversation/"+convID {
-			slugPtr := &convSlug
-			data, _ := json.Marshal(shelley.Conversation{
-				ConversationID: convID,
-				Slug:           slugPtr,
-				CreatedAt:      convCreatedAt,
-				UpdatedAt:      convUpdatedAt,
-			})
-			w.Write(data)
-			return
-		}
-		http.NotFound(w, r)
-	}))
+	conv := shelley.Conversation{
+		ConversationID: convID,
+		Slug:           &convSlug,
+		CreatedAt:      convCreatedAt,
+		UpdatedAt:      convUpdatedAt,
+	}
+	rawDetail, _ := json.Marshal(conv)
+	server := mockserver.New(mockserver.WithConversationRawDetail(conv, rawDetail))
 	defer server.Close()
 
 	store := testStore(t)
@@ -4869,13 +4662,7 @@ func TestConversationAPITimestampFields(t *testing.T) {
 
 // TestConversationAPITimestampFields_UncreatedConversation tests that timestamp fields don't exist for uncreated conversations.
 func TestConversationAPITimestampFields_UncreatedConversation(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/conversations" {
-			w.Write([]byte("[]"))
-			return
-		}
-		http.NotFound(w, r)
-	}))
+	server := mockserver.New() // no conversations registered
 	defer server.Close()
 
 	store := testStore(t)
@@ -5042,21 +4829,7 @@ func TestWaitingForInputSymlink_Exists(t *testing.T) {
 		{MessageID: "m1", SequenceID: 1, Type: "user", UserData: strPtr("Hello")},
 		{MessageID: "m2", SequenceID: 2, Type: "shelley", LLMData: strPtr(`{"Content":[{"Type":2,"Text":"Hi!"}],"EndOfTurn":true}`)},
 	}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/conversation/"+convID {
-			data, _ := json.Marshal(struct {
-				Messages []shelley.Message `json:"messages"`
-			}{msgs})
-			w.Write(data)
-			return
-		}
-		if r.URL.Path == "/api/conversations" {
-			data, _ := json.Marshal([]shelley.Conversation{{ConversationID: convID}})
-			w.Write(data)
-			return
-		}
-		http.NotFound(w, r)
-	}))
+	server := mockserver.New(mockserver.WithConversation(convID, msgs))
 	defer server.Close()
 
 	store := testStore(t)
@@ -5085,21 +4858,7 @@ func TestWaitingForInputSymlink_NotExistsAfterUserMessage(t *testing.T) {
 		{MessageID: "m2", SequenceID: 2, Type: "shelley", LLMData: strPtr("Hi!")},
 		{MessageID: "m3", SequenceID: 3, Type: "user", UserData: strPtr("Follow up")},
 	}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/conversation/"+convID {
-			data, _ := json.Marshal(struct {
-				Messages []shelley.Message `json:"messages"`
-			}{msgs})
-			w.Write(data)
-			return
-		}
-		if r.URL.Path == "/api/conversations" {
-			data, _ := json.Marshal([]shelley.Conversation{{ConversationID: convID}})
-			w.Write(data)
-			return
-		}
-		http.NotFound(w, r)
-	}))
+	server := mockserver.New(mockserver.WithConversation(convID, msgs))
 	defer server.Close()
 
 	store := testStore(t)
@@ -5123,21 +4882,7 @@ func TestWaitingForInputSymlink_NotExistsWithPendingToolCall(t *testing.T) {
 		{MessageID: "m1", SequenceID: 1, Type: "user", UserData: strPtr("Hello")},
 		{MessageID: "m2", SequenceID: 2, Type: "shelley", LLMData: strPtr(`{"Content":[{"Type":5,"ID":"tu_pending","ToolName":"bash"}]}`)},
 	}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/conversation/"+convID {
-			data, _ := json.Marshal(struct {
-				Messages []shelley.Message `json:"messages"`
-			}{msgs})
-			w.Write(data)
-			return
-		}
-		if r.URL.Path == "/api/conversations" {
-			data, _ := json.Marshal([]shelley.Conversation{{ConversationID: convID}})
-			w.Write(data)
-			return
-		}
-		http.NotFound(w, r)
-	}))
+	server := mockserver.New(mockserver.WithConversation(convID, msgs))
 	defer server.Close()
 
 	store := testStore(t)
@@ -5161,21 +4906,7 @@ func TestWaitingForInputSymlink_InReaddir(t *testing.T) {
 		{MessageID: "m1", SequenceID: 1, Type: "user", UserData: strPtr("Hello")},
 		{MessageID: "m2", SequenceID: 2, Type: "shelley", LLMData: strPtr("Hi!")},
 	}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/conversation/"+convID {
-			data, _ := json.Marshal(struct {
-				Messages []shelley.Message `json:"messages"`
-			}{msgs})
-			w.Write(data)
-			return
-		}
-		if r.URL.Path == "/api/conversations" {
-			data, _ := json.Marshal([]shelley.Conversation{{ConversationID: convID}})
-			w.Write(data)
-			return
-		}
-		http.NotFound(w, r)
-	}))
+	server := mockserver.New(mockserver.WithConversation(convID, msgs))
 	defer server.Close()
 
 	store := testStore(t)
@@ -5245,21 +4976,7 @@ func TestWaitingForInputSymlink_ToolCallCompletedNoFollowUp(t *testing.T) {
 		{MessageID: "m2", SequenceID: 2, Type: "shelley", LLMData: strPtr(`{"Content":[{"Type":5,"ID":"tu_ls","ToolName":"bash"}]}`)},
 		{MessageID: "m3", SequenceID: 3, Type: "user", UserData: strPtr(`{"Content":[{"Type":6,"ToolUseID":"tu_ls","ToolResult":[{"Text":"output"}]}]}`)},
 	}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/conversation/"+convID {
-			data, _ := json.Marshal(struct {
-				Messages []shelley.Message `json:"messages"`
-			}{msgs})
-			w.Write(data)
-			return
-		}
-		if r.URL.Path == "/api/conversations" {
-			data, _ := json.Marshal([]shelley.Conversation{{ConversationID: convID}})
-			w.Write(data)
-			return
-		}
-		http.NotFound(w, r)
-	}))
+	server := mockserver.New(mockserver.WithConversation(convID, msgs))
 	defer server.Close()
 
 	store := testStore(t)
@@ -5303,23 +5020,7 @@ func TestSinceDirLsDoesNotMakeExcessiveAPICalls(t *testing.T) {
 		})
 	}
 
-	var fetchCount int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/conversation/"+convID {
-			atomic.AddInt32(&fetchCount, 1)
-			data, _ := json.Marshal(struct {
-				Messages []shelley.Message `json:"messages"`
-			}{Messages: msgs})
-			w.Write(data)
-			return
-		}
-		if r.URL.Path == "/api/conversations" {
-			data, _ := json.Marshal([]shelley.Conversation{{ConversationID: convID}})
-			w.Write(data)
-			return
-		}
-		http.NotFound(w, r)
-	}))
+	server := mockserver.New(mockserver.WithConversation(convID, msgs))
 	defer server.Close()
 
 	// Use CachingClient like production
@@ -5353,7 +5054,7 @@ func TestSinceDirLsDoesNotMakeExcessiveAPICalls(t *testing.T) {
 	defer fssrv.Unmount()
 
 	// Reset counter after mount
-	atomic.StoreInt32(&fetchCount, 0)
+	server.ResetFetchCount()
 
 	// ls -l since/user/1/ — should list (numMessages-1) agent messages
 	sincePath := filepath.Join(tmpDir, "conversation", localID, "messages", "since", "user", "1")
@@ -5370,7 +5071,7 @@ func TestSinceDirLsDoesNotMakeExcessiveAPICalls(t *testing.T) {
 	// With proper caching, we expect at most a small constant number of fetches
 	// (1 for the conversation data, possibly a couple more for cache misses).
 	// Without the fix, this would be ~100+ fetches.
-	fetches := atomic.LoadInt32(&fetchCount)
+	fetches := server.FetchCount()
 	t.Logf("GetConversation calls for ls -l since/user/1/ with %d entries: %d", expected, fetches)
 	if fetches > 5 {
 		t.Errorf("Too many GetConversation calls: %d (expected <= 5 with caching)", fetches)
@@ -5405,21 +5106,7 @@ func TestSinceDirPerformance(t *testing.T) {
 		})
 	}
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/conversation/"+convID {
-			data, _ := json.Marshal(struct {
-				Messages []shelley.Message `json:"messages"`
-			}{Messages: msgs})
-			w.Write(data)
-			return
-		}
-		if r.URL.Path == "/api/conversations" {
-			data, _ := json.Marshal([]shelley.Conversation{{ConversationID: convID}})
-			w.Write(data)
-			return
-		}
-		http.NotFound(w, r)
-	}))
+	server := mockserver.New(mockserver.WithConversation(convID, msgs))
 	defer server.Close()
 
 	baseClient := shelley.NewClient(server.URL)

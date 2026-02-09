@@ -2,11 +2,28 @@ package shelley
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 )
+
+// mockShelleyInitServer creates a test server that serves __SHELLEY_INIT__
+// with the given models and default model. This is the canonical way to
+// mock the Shelley backend's model discovery endpoint in the shelley package.
+// For external packages, use the mockserver package instead.
+func mockShelleyInitServer(t *testing.T, models []Model, defaultModel string) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		modelsJSON, _ := json.Marshal(models)
+		defaultModelJSON, _ := json.Marshal(defaultModel)
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprintf(w,
+			`<html><script>window.__SHELLEY_INIT__ = {"models": %s, "default_model": %s};</script></html>`,
+			modelsJSON, defaultModelJSON)
+	}))
+}
 
 func TestStartConversation(t *testing.T) {
 	// Create a test server that captures requests
@@ -321,13 +338,10 @@ func TestModelsResultDefaultModelName(t *testing.T) {
 }
 
 func TestListModelsDisplayName(t *testing.T) {
-	// Create a test server that returns model data with display_name
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/html")
-		w.Write([]byte(`<html><head>
-			<script>window.__SHELLEY_INIT__={"models":[{"id":"predictable","ready":true},{"id":"custom-abc123","display_name":"kimi-2.5-fireworks","ready":true}],"default_model":"custom-abc123"};</script>
-		</head></html>`))
-	}))
+	server := mockShelleyInitServer(t, []Model{
+		{ID: "predictable", Ready: true},
+		{ID: "custom-abc123", DisplayName: "kimi-2.5-fireworks", Ready: true},
+	}, "custom-abc123")
 	defer server.Close()
 
 	client := NewClient(server.URL)
