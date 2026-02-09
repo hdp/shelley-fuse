@@ -5,8 +5,8 @@ A FUSE filesystem that exposes the Shelley API, allowing shell tools to interact
 ## Quick Start
 
 ```bash
-# Start a conversation in one step (clones, sets cwd, sends, prints ID)
-ID=$(echo "Hello, Shelley!" | models/predictable/new/start)
+# Start a conversation with a specific model in one step
+ID=$(echo "Hello, Shelley!" | models/claude-sonnet-4-5/new/start)
 
 # Read the response(s)
 cat conversation/$ID/messages/since/user/1/*/content.md
@@ -15,14 +15,22 @@ cat conversation/$ID/messages/since/user/1/*/content.md
 echo "Thanks!" > conversation/$ID/send
 ```
 
+The `models/{model}/new/start` script is an executable that reads a message
+from stdin, allocates a new conversation with that model preconfigured, sets
+the working directory to the caller's `$PWD`, sends the message, and prints
+the new conversation ID to stdout.
+
+There is also a top-level `new/start` that works the same way but uses the
+server's default model instead of a specific one.
+
 ### Manual Workflow (step by step)
 
 ```bash
-# Allocate a new conversation
-ID=$(cat new/clone)
+# Allocate a new conversation with a specific model preconfigured
+ID=$(cat models/claude-sonnet-4-5/new/clone)
 
-# Configure model and working directory (optional)
-echo "model=claude-sonnet-4.5 cwd=$PWD" > conversation/$ID/ctl
+# Optionally set the working directory
+echo "cwd=$PWD" > conversation/$ID/ctl
 
 # Send first message (creates conversation on backend)
 echo "Hello, Shelley!" > conversation/$ID/send
@@ -32,6 +40,19 @@ cat conversation/$ID/messages/since/user/1/*/content.md
 
 # Send follow-up
 echo "Thanks!" > conversation/$ID/send
+```
+
+Or without choosing a model:
+
+```bash
+# Allocate a new conversation (no model preconfigured)
+ID=$(cat new/clone)
+
+# Configure model and working directory (optional)
+echo "model=claude-sonnet-4-5 cwd=$PWD" > conversation/$ID/ctl
+
+# Send first message (creates conversation on backend)
+echo "Hello, Shelley!" > conversation/$ID/send
 ```
 
 ## Filesystem Layout
@@ -45,11 +66,13 @@ echo "Thanks!" > conversation/$ID/send
       id                 → model ID
       ready              → present if model is ready (absence = not ready)
       new/
-        clone            → read to get a new conversation with this model preconfigured
-        start            → executable: pipe message to start conversation with this model
+        clone            → read to allocate a conversation with this model preconfigured
+        start            → executable: pipe message on stdin → clones with this model,
+                           sets cwd to caller's $PWD, sends message, prints conversation ID
   new/
-    clone                → read to allocate a new conversation ID
-    start                → executable: pipe message to start conversation with caller's cwd
+    clone                → read to allocate a new conversation ID (no model preconfigured)
+    start                → executable: pipe message on stdin → clones, sets cwd to caller's
+                           $PWD, sends message, prints conversation ID (default model)
   conversation/          → all conversations
     {id}/                → directory per conversation
       ctl                → read/write config; read-only after first message
@@ -97,6 +120,17 @@ ls models/
 
 # Check default model
 readlink models/default
+
+# Start a conversation with a specific model (one step)
+ID=$(echo "Explain FUSE" | models/claude-sonnet-4-5/new/start)
+
+# Clone a conversation with a model preconfigured, then configure and send manually
+ID=$(cat models/claude-sonnet-4-5/new/clone)
+echo "cwd=/my/project" > conversation/$ID/ctl
+echo "Hello" > conversation/$ID/send
+
+# Start a conversation with the default model (one step)
+ID=$(echo "Explain FUSE" | new/start)
 
 # List conversations
 ls conversation/

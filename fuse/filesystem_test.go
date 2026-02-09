@@ -5257,6 +5257,9 @@ func TestSinceDirPerformanceRegression(t *testing.T) {
 	// With stable inodes, it should be under 3x.
 	if ratio > 3.0 {
 		t.Errorf("since/user/1/ is %.1fx slower than messages/ (expected <= 3x)", ratio)
+	}
+}
+
 // --- Tests for StartNode ---
 
 func TestStartNode_Read(t *testing.T) {
