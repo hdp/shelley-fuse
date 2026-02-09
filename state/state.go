@@ -14,17 +14,17 @@ import (
 
 // ConversationState tracks the local and remote state of a conversation.
 type ConversationState struct {
-	LocalID               string    `json:"local_id"`
-	ShelleyConversationID string    `json:"shelley_conversation_id,omitempty"`
-	Slug                  string    `json:"slug,omitempty"`
-	Model                 string    `json:"model,omitempty"`
+	LocalID               string `json:"local_id"`
+	ShelleyConversationID string `json:"shelley_conversation_id,omitempty"`
+	Slug                  string `json:"slug,omitempty"`
+	Model                 string `json:"model,omitempty"`
 	// ModelID is the internal API model ID (e.g. "custom-f999b9b0").
 	// When set, this is sent to the API instead of Model (the display name).
 	// For built-in models where ID == display name, this may be empty.
-	ModelID               string    `json:"model_id,omitempty"`
-	Cwd                   string    `json:"cwd,omitempty"`
-	Created               bool      `json:"created"`
-	CreatedAt             time.Time `json:"created_at,omitempty"`
+	ModelID   string    `json:"model_id,omitempty"`
+	Cwd       string    `json:"cwd,omitempty"`
+	Created   bool      `json:"created"`
+	CreatedAt time.Time `json:"created_at,omitempty"`
 	// APICreatedAt is the server's created_at timestamp (RFC3339 string).
 	// This is the original creation time from the Shelley API.
 	APICreatedAt string `json:"api_created_at,omitempty"`

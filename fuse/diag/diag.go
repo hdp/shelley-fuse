@@ -15,11 +15,11 @@ import (
 
 // Op represents a single in-flight FUSE operation.
 type Op struct {
-	ID       uint64
-	Node     string // Type name of the FUSE node (e.g. "ConversationDirNode")
-	Method   string // FUSE method (e.g. "Readdir", "Open", "Write")
-	Detail   string // Free-form detail (e.g. path, conversation ID)
-	Started  time.Time
+	ID      uint64
+	Node    string // Type name of the FUSE node (e.g. "ConversationDirNode")
+	Method  string // FUSE method (e.g. "Readdir", "Open", "Write")
+	Detail  string // Free-form detail (e.g. path, conversation ID)
+	Started time.Time
 }
 
 // Tracker records in-flight FUSE operations.

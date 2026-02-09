@@ -73,7 +73,7 @@ func TestBasicMount(t *testing.T) {
 	}
 
 	expectedEntries := map[string]bool{
-		"models":       false,
+		"model":        false,
 		"new":          false,
 		"conversation": false,
 		"README.md":    false,
@@ -133,8 +133,8 @@ func TestNewIsSymlinkToModelsDefaultNew(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Readlink /new failed: %v", err)
 	}
-	if target != "models/default/new" {
-		t.Errorf("/new symlink target = %q, want %q", target, "models/default/new")
+	if target != "model/default/new" {
+		t.Errorf("/new symlink target = %q, want %q", target, "model/default/new")
 	}
 }
 
@@ -952,7 +952,7 @@ func TestModelsDirNode_Lookup(t *testing.T) {
 	defer fssrv.Unmount()
 
 	// Lookup existing model
-	info, err := os.Stat(filepath.Join(tmpDir, "models", "existing-model"))
+	info, err := os.Stat(filepath.Join(tmpDir, "model", "existing-model"))
 	if err != nil {
 		t.Fatalf("Lookup for existing model should succeed: %v", err)
 	}
@@ -961,7 +961,7 @@ func TestModelsDirNode_Lookup(t *testing.T) {
 	}
 
 	// Lookup nonexistent model
-	_, err = os.Stat(filepath.Join(tmpDir, "models", "nonexistent-model"))
+	_, err = os.Stat(filepath.Join(tmpDir, "model", "nonexistent-model"))
 	if err == nil {
 		t.Error("Lookup for nonexistent model should fail")
 	}
@@ -1041,7 +1041,7 @@ func TestModelNode_LookupMounted(t *testing.T) {
 	defer fssrv.Unmount()
 
 	// Test lookup for "id" via stat
-	info, err := os.Stat(filepath.Join(tmpDir, "models", "my-model-id", "id"))
+	info, err := os.Stat(filepath.Join(tmpDir, "model", "my-model-id", "id"))
 	if err != nil {
 		t.Fatalf("Lookup for 'id' failed: %v", err)
 	}
@@ -1050,7 +1050,7 @@ func TestModelNode_LookupMounted(t *testing.T) {
 	}
 
 	// Test lookup for "ready" via stat
-	info, err = os.Stat(filepath.Join(tmpDir, "models", "my-model-id", "ready"))
+	info, err = os.Stat(filepath.Join(tmpDir, "model", "my-model-id", "ready"))
 	if err != nil {
 		t.Fatalf("Lookup for 'ready' failed: %v", err)
 	}
@@ -1059,7 +1059,7 @@ func TestModelNode_LookupMounted(t *testing.T) {
 	}
 
 	// Test lookup for nonexistent field
-	_, err = os.Stat(filepath.Join(tmpDir, "models", "my-model-id", "nonexistent"))
+	_, err = os.Stat(filepath.Join(tmpDir, "model", "my-model-id", "nonexistent"))
 	if err == nil {
 		t.Error("Lookup for 'nonexistent' should fail")
 	}
@@ -1191,7 +1191,7 @@ func TestModelNewDirNode_LookupMounted(t *testing.T) {
 	defer fssrv.Unmount()
 
 	// new/ directory should exist
-	info, err := os.Stat(filepath.Join(tmpDir, "models", "my-model", "new"))
+	info, err := os.Stat(filepath.Join(tmpDir, "model", "my-model", "new"))
 	if err != nil {
 		t.Fatalf("Stat for 'new' failed: %v", err)
 	}
@@ -1200,7 +1200,7 @@ func TestModelNewDirNode_LookupMounted(t *testing.T) {
 	}
 
 	// new/clone should exist
-	info, err = os.Stat(filepath.Join(tmpDir, "models", "my-model", "new", "clone"))
+	info, err = os.Stat(filepath.Join(tmpDir, "model", "my-model", "new", "clone"))
 	if err != nil {
 		t.Fatalf("Stat for 'new/clone' failed: %v", err)
 	}
@@ -1209,7 +1209,7 @@ func TestModelNewDirNode_LookupMounted(t *testing.T) {
 	}
 
 	// new/start should exist and be executable
-	info, err = os.Stat(filepath.Join(tmpDir, "models", "my-model", "new", "start"))
+	info, err = os.Stat(filepath.Join(tmpDir, "model", "my-model", "new", "start"))
 	if err != nil {
 		t.Fatalf("Stat for 'new/start' failed: %v", err)
 	}
@@ -1221,7 +1221,7 @@ func TestModelNewDirNode_LookupMounted(t *testing.T) {
 	}
 
 	// nonexistent should fail
-	_, err = os.Stat(filepath.Join(tmpDir, "models", "my-model", "new", "nonexistent"))
+	_, err = os.Stat(filepath.Join(tmpDir, "model", "my-model", "new", "nonexistent"))
 	if err == nil {
 		t.Error("Stat for 'nonexistent' should fail")
 	}
@@ -1264,7 +1264,7 @@ func TestModelCloneNode_ReturnsIDWithModelPreconfigured(t *testing.T) {
 	defer fssrv.Unmount()
 
 	// Read the model clone to get a new conversation ID
-	data, err := os.ReadFile(filepath.Join(tmpDir, "models", "my-model", "new", "clone"))
+	data, err := os.ReadFile(filepath.Join(tmpDir, "model", "my-model", "new", "clone"))
 	if err != nil {
 		t.Fatalf("Failed to read model clone: %v", err)
 	}
@@ -1318,11 +1318,11 @@ func TestModelCloneNode_UniqueIDs(t *testing.T) {
 	defer fssrv.Unmount()
 
 	// Read clone twice, should get different IDs
-	data1, err := os.ReadFile(filepath.Join(tmpDir, "models", "my-model", "new", "clone"))
+	data1, err := os.ReadFile(filepath.Join(tmpDir, "model", "my-model", "new", "clone"))
 	if err != nil {
 		t.Fatalf("First clone read failed: %v", err)
 	}
-	data2, err := os.ReadFile(filepath.Join(tmpDir, "models", "my-model", "new", "clone"))
+	data2, err := os.ReadFile(filepath.Join(tmpDir, "model", "my-model", "new", "clone"))
 	if err != nil {
 		t.Fatalf("Second clone read failed: %v", err)
 	}
@@ -1367,7 +1367,7 @@ func TestModelCloneNode_CustomModelName(t *testing.T) {
 	defer fssrv.Unmount()
 
 	// Access via display name
-	data, err := os.ReadFile(filepath.Join(tmpDir, "models", "my-custom-model", "new", "clone"))
+	data, err := os.ReadFile(filepath.Join(tmpDir, "model", "my-custom-model", "new", "clone"))
 	if err != nil {
 		t.Fatalf("Failed to read model clone: %v", err)
 	}
@@ -1541,7 +1541,7 @@ func TestModelsDirNode_MountedReadAndAccess(t *testing.T) {
 	defer fssrv.Unmount()
 
 	// Test reading model-ready/id
-	idData, err := ioutil.ReadFile(filepath.Join(tmpDir, "models", "model-ready", "id"))
+	idData, err := ioutil.ReadFile(filepath.Join(tmpDir, "model", "model-ready", "id"))
 	if err != nil {
 		t.Fatalf("Failed to read model-ready/id: %v", err)
 	}
@@ -1550,19 +1550,19 @@ func TestModelsDirNode_MountedReadAndAccess(t *testing.T) {
 	}
 
 	// Test model-ready/ready exists (presence/absence semantics)
-	readyPath := filepath.Join(tmpDir, "models", "model-ready", "ready")
+	readyPath := filepath.Join(tmpDir, "model", "model-ready", "ready")
 	if _, err := os.Stat(readyPath); err != nil {
 		t.Errorf("expected model-ready/ready to exist, got error: %v", err)
 	}
 
 	// Test model-not-ready/ready does NOT exist (presence/absence semantics)
-	notReadyPath := filepath.Join(tmpDir, "models", "model-not-ready", "ready")
+	notReadyPath := filepath.Join(tmpDir, "model", "model-not-ready", "ready")
 	if _, err := os.Stat(notReadyPath); !os.IsNotExist(err) {
 		t.Errorf("expected model-not-ready/ready to not exist (ENOENT), got: %v", err)
 	}
 
 	// Test listing models directory
-	entries, err := ioutil.ReadDir(filepath.Join(tmpDir, "models"))
+	entries, err := ioutil.ReadDir(filepath.Join(tmpDir, "model"))
 	if err != nil {
 		t.Fatalf("Failed to read models directory: %v", err)
 	}
@@ -1571,7 +1571,7 @@ func TestModelsDirNode_MountedReadAndAccess(t *testing.T) {
 	}
 
 	// Test listing model contents
-	entries, err = ioutil.ReadDir(filepath.Join(tmpDir, "models", "model-ready"))
+	entries, err = ioutil.ReadDir(filepath.Join(tmpDir, "model", "model-ready"))
 	if err != nil {
 		t.Fatalf("Failed to read model-ready directory: %v", err)
 	}
@@ -1609,7 +1609,7 @@ func TestModelsDirNode_ServerError(t *testing.T) {
 	defer fssrv.Unmount()
 
 	// Reading models directory when server errors should fail
-	_, err = ioutil.ReadDir(filepath.Join(tmpDir, "models"))
+	_, err = ioutil.ReadDir(filepath.Join(tmpDir, "model"))
 	if err == nil {
 		t.Error("Expected error when reading models directory with server error")
 	}
@@ -1750,7 +1750,7 @@ func TestModelsDirNode_DefaultSymlink_Lookup(t *testing.T) {
 	defer fssrv.Unmount()
 
 	// Check that "default" exists and is a symlink
-	defaultPath := filepath.Join(tmpDir, "models", "default")
+	defaultPath := filepath.Join(tmpDir, "model", "default")
 	fi, err := os.Lstat(defaultPath)
 	if err != nil {
 		t.Fatalf("Failed to lstat default symlink: %v", err)
@@ -1802,7 +1802,7 @@ func TestModelsDirNode_DefaultSymlink_NoDefault_Lookup(t *testing.T) {
 	defer fssrv.Unmount()
 
 	// Check that "default" does NOT exist
-	defaultPath := filepath.Join(tmpDir, "models", "default")
+	defaultPath := filepath.Join(tmpDir, "model", "default")
 	_, err = os.Lstat(defaultPath)
 	if err == nil {
 		t.Error("expected 'default' to not exist when no default model is set")
@@ -1845,19 +1845,19 @@ func TestModelsDirNode_DefaultSymlink_FollowsToModel(t *testing.T) {
 	defer fssrv.Unmount()
 
 	// Follow the symlink and read the id file
-	idPath := filepath.Join(tmpDir, "models", "default", "id")
+	idPath := filepath.Join(tmpDir, "model", "default", "id")
 	content, err := ioutil.ReadFile(idPath)
 	if err != nil {
-		t.Fatalf("Failed to read models/default/id: %v", err)
+		t.Fatalf("Failed to read model/default/id: %v", err)
 	}
 	if strings.TrimSpace(string(content)) != "target-model" {
 		t.Errorf("expected id content 'target-model', got %q", strings.TrimSpace(string(content)))
 	}
 
 	// Also check the ready file exists (presence/absence semantics)
-	readyPath := filepath.Join(tmpDir, "models", "default", "ready")
+	readyPath := filepath.Join(tmpDir, "model", "default", "ready")
 	if _, err := os.Stat(readyPath); err != nil {
-		t.Errorf("expected models/default/ready to exist, got error: %v", err)
+		t.Errorf("expected model/default/ready to exist, got error: %v", err)
 	}
 }
 
@@ -1894,7 +1894,7 @@ func TestModelsDirNode_DefaultSymlink_Getattr(t *testing.T) {
 	}
 	defer fssrv.Unmount()
 
-	defaultPath := filepath.Join(tmpDir, "models", "default")
+	defaultPath := filepath.Join(tmpDir, "model", "default")
 	fi, err := os.Lstat(defaultPath)
 	if err != nil {
 		t.Fatalf("Failed to lstat default symlink: %v", err)
@@ -2119,7 +2119,7 @@ func TestTimestamps_StaticNodesUseStartTime(t *testing.T) {
 
 	// Test models directory timestamp
 	t.Run("ModelsDirectory", func(t *testing.T) {
-		info, err := os.Stat(filepath.Join(tmpDir, "models"))
+		info, err := os.Stat(filepath.Join(tmpDir, "model"))
 		if err != nil {
 			t.Fatalf("Failed to stat models: %v", err)
 		}
@@ -2154,7 +2154,7 @@ func TestTimestamps_StaticNodesUseStartTime(t *testing.T) {
 
 	// Test model subdirectory timestamp
 	t.Run("ModelSubdirectory", func(t *testing.T) {
-		info, err := os.Stat(filepath.Join(tmpDir, "models", "test-model"))
+		info, err := os.Stat(filepath.Join(tmpDir, "model", "test-model"))
 		if err != nil {
 			t.Fatalf("Failed to stat model: %v", err)
 		}
@@ -2170,7 +2170,7 @@ func TestTimestamps_StaticNodesUseStartTime(t *testing.T) {
 
 	// Test model file timestamp
 	t.Run("ModelFile", func(t *testing.T) {
-		info, err := os.Stat(filepath.Join(tmpDir, "models", "test-model", "id"))
+		info, err := os.Stat(filepath.Join(tmpDir, "model", "test-model", "id"))
 		if err != nil {
 			t.Fatalf("Failed to stat model/id: %v", err)
 		}
@@ -2186,9 +2186,9 @@ func TestTimestamps_StaticNodesUseStartTime(t *testing.T) {
 
 	// Test model clone file timestamp
 	t.Run("ModelCloneFile", func(t *testing.T) {
-		info, err := os.Stat(filepath.Join(tmpDir, "models", "test-model", "new", "clone"))
+		info, err := os.Stat(filepath.Join(tmpDir, "model", "test-model", "new", "clone"))
 		if err != nil {
-			t.Fatalf("Failed to stat models/test-model/new/clone: %v", err)
+			t.Fatalf("Failed to stat model/test-model/new/clone: %v", err)
 		}
 		mtime := info.ModTime()
 		diff := mtime.Sub(startTime)
@@ -2362,7 +2362,6 @@ func TestTimestamps_ConversationNodesUseCreatedAt(t *testing.T) {
 		}
 	})
 
-
 }
 
 func TestTimestamps_DoNotConstantlyUpdate(t *testing.T) {
@@ -2396,7 +2395,7 @@ func TestTimestamps_DoNotConstantlyUpdate(t *testing.T) {
 	defer fssrv.Unmount()
 
 	// Stat the models directory twice with a delay
-	info1, err := os.Stat(filepath.Join(tmpDir, "models"))
+	info1, err := os.Stat(filepath.Join(tmpDir, "model"))
 	if err != nil {
 		t.Fatalf("Failed to stat models (1): %v", err)
 	}
@@ -2405,7 +2404,7 @@ func TestTimestamps_DoNotConstantlyUpdate(t *testing.T) {
 	// Wait a bit
 	time.Sleep(50 * time.Millisecond)
 
-	info2, err := os.Stat(filepath.Join(tmpDir, "models"))
+	info2, err := os.Stat(filepath.Join(tmpDir, "model"))
 	if err != nil {
 		t.Fatalf("Failed to stat models (2): %v", err)
 	}
@@ -2459,7 +2458,7 @@ func TestTimestamps_ConversationTimeDiffersFromStartTime(t *testing.T) {
 	defer fssrv.Unmount()
 
 	// Get models mtime (should be startTime)
-	modelsInfo, err := os.Stat(filepath.Join(tmpDir, "models"))
+	modelsInfo, err := os.Stat(filepath.Join(tmpDir, "model"))
 	if err != nil {
 		t.Fatalf("Failed to stat models: %v", err)
 	}
@@ -2532,13 +2531,13 @@ func TestTimestamps_NeverZero(t *testing.T) {
 	// and only exists when conversation is created on backend
 	// Paths checked via os.Stat (follows symlinks)
 	statPaths := []string{
-		tmpDir,                                            // root
-		filepath.Join(tmpDir, "models"),                   // models dir
-		filepath.Join(tmpDir, "models", "test-model"),     // model dir
-		filepath.Join(tmpDir, "models", "test-model", "id"), // model file
-		filepath.Join(tmpDir, "models", "test-model", "new", "clone"), // model clone file
-		filepath.Join(tmpDir, "conversation"),             // conversation list
-		filepath.Join(tmpDir, "conversation", convID),     // conversation dir
+		tmpDir,                         // root
+		filepath.Join(tmpDir, "model"), // models dir
+		filepath.Join(tmpDir, "model", "test-model"),                 // model dir
+		filepath.Join(tmpDir, "model", "test-model", "id"),           // model file
+		filepath.Join(tmpDir, "model", "test-model", "new", "clone"), // model clone file
+		filepath.Join(tmpDir, "conversation"),                        // conversation list
+		filepath.Join(tmpDir, "conversation", convID),                // conversation dir
 		filepath.Join(tmpDir, "conversation", convID, "ctl"),
 		filepath.Join(tmpDir, "conversation", convID, "send"),
 		filepath.Join(tmpDir, "conversation", convID, "fuse_id"),
@@ -2761,7 +2760,6 @@ func TestTimestamps_NestedQueryDirsUseConversationTime(t *testing.T) {
 		}
 	})
 
-
 }
 
 func TestTimestamps_StateCreatedAtIsPersisted(t *testing.T) {
@@ -2814,7 +2812,7 @@ func TestTimestamps_MessageFilesUseMessageTime(t *testing.T) {
 	// Create messages with different timestamps
 	convID := "test-conv-msg-timestamps"
 	msg1Time := time.Date(2026, 1, 15, 10, 0, 0, 0, time.UTC)
-	msg2Time := time.Date(2026, 1, 15, 10, 5, 0, 0, time.UTC) // 5 minutes later
+	msg2Time := time.Date(2026, 1, 15, 10, 5, 0, 0, time.UTC)  // 5 minutes later
 	msg3Time := time.Date(2026, 1, 15, 10, 10, 0, 0, time.UTC) // 10 minutes later
 
 	msgs := []shelley.Message{
@@ -3020,7 +3018,7 @@ func TestConversationNode_ModelSymlink_WithModel(t *testing.T) {
 		t.Fatalf("Failed to readlink: %v", err)
 	}
 
-	expectedTarget := "../../models/claude-opus-4"
+	expectedTarget := "../../model/claude-opus-4"
 	if target != expectedTarget {
 		t.Errorf("Expected target %q, got %q", expectedTarget, target)
 	}
@@ -5046,7 +5044,9 @@ func TestWaitingForInputSymlink_Exists(t *testing.T) {
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/conversation/"+convID {
-			data, _ := json.Marshal(struct{ Messages []shelley.Message `json:"messages"` }{msgs})
+			data, _ := json.Marshal(struct {
+				Messages []shelley.Message `json:"messages"`
+			}{msgs})
 			w.Write(data)
 			return
 		}
@@ -5087,7 +5087,9 @@ func TestWaitingForInputSymlink_NotExistsAfterUserMessage(t *testing.T) {
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/conversation/"+convID {
-			data, _ := json.Marshal(struct{ Messages []shelley.Message `json:"messages"` }{msgs})
+			data, _ := json.Marshal(struct {
+				Messages []shelley.Message `json:"messages"`
+			}{msgs})
 			w.Write(data)
 			return
 		}
@@ -5123,7 +5125,9 @@ func TestWaitingForInputSymlink_NotExistsWithPendingToolCall(t *testing.T) {
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/conversation/"+convID {
-			data, _ := json.Marshal(struct{ Messages []shelley.Message `json:"messages"` }{msgs})
+			data, _ := json.Marshal(struct {
+				Messages []shelley.Message `json:"messages"`
+			}{msgs})
 			w.Write(data)
 			return
 		}
@@ -5159,7 +5163,9 @@ func TestWaitingForInputSymlink_InReaddir(t *testing.T) {
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/conversation/"+convID {
-			data, _ := json.Marshal(struct{ Messages []shelley.Message `json:"messages"` }{msgs})
+			data, _ := json.Marshal(struct {
+				Messages []shelley.Message `json:"messages"`
+			}{msgs})
 			w.Write(data)
 			return
 		}
@@ -5210,7 +5216,7 @@ func TestAnalyzeWaitingForInput_ToolCallCompletedNoFollowUp(t *testing.T) {
 	}
 	toolMap := shelley.BuildToolNameMap([]*shelley.Message{&msgs[0], &msgs[1], &msgs[2]})
 	status := AnalyzeWaitingForInput(msgs, toolMap)
-	
+
 	// This should be waiting=true because:
 	// - Last agent message (m2) made a tool call
 	// - Tool call was completed (m3 has the result)
@@ -5241,7 +5247,9 @@ func TestWaitingForInputSymlink_ToolCallCompletedNoFollowUp(t *testing.T) {
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/conversation/"+convID {
-			data, _ := json.Marshal(struct{ Messages []shelley.Message `json:"messages"` }{msgs})
+			data, _ := json.Marshal(struct {
+				Messages []shelley.Message `json:"messages"`
+			}{msgs})
 			w.Write(data)
 			return
 		}

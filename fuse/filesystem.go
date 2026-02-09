@@ -257,12 +257,12 @@ var _ = (fs.NodeGetattrer)((*FS)(nil))
 
 func (f *FS) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
 	switch name {
-	case "models":
+	case "model":
 		setEntryTimeout(out, cacheTTLModels)
 		return f.NewInode(ctx, &ModelsDirNode{client: f.client, state: f.state, startTime: f.startTime, diag: f.Diag}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
 	case "new":
 		setEntryTimeout(out, cacheTTLStatic)
-		return f.NewInode(ctx, &SymlinkNode{target: "models/default/new", startTime: f.startTime}, fs.StableAttr{Mode: syscall.S_IFLNK}), 0
+		return f.NewInode(ctx, &SymlinkNode{target: "model/default/new", startTime: f.startTime}, fs.StableAttr{Mode: syscall.S_IFLNK}), 0
 	case "conversation":
 		setEntryTimeout(out, cacheTTLConversation)
 		return f.NewInode(ctx, &ConversationListNode{client: f.client, state: f.state, cloneTimeout: f.cloneTimeout, startTime: f.startTime, parsedCache: f.parsedCache, diag: f.Diag}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
@@ -276,7 +276,7 @@ func (f *FS) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.I
 func (f *FS) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
 	return fs.NewListDirStream([]fuse.DirEntry{
 		{Name: "README.md", Mode: fuse.S_IFREG},
-		{Name: "models", Mode: fuse.S_IFDIR},
+		{Name: "model", Mode: fuse.S_IFDIR},
 		{Name: "new", Mode: syscall.S_IFLNK},
 		{Name: "conversation", Mode: fuse.S_IFDIR},
 	}), 0
@@ -323,7 +323,7 @@ func (r *ReadmeNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.Att
 	return 0
 }
 
-// --- ModelsDirNode: /models/ directory listing available models ---
+// --- ModelsDirNode: /model/ directory listing available models ---
 
 type ModelsDirNode struct {
 	fs.Inode
@@ -345,7 +345,7 @@ func (m *ModelsDirNode) Lookup(ctx context.Context, name string, out *fuse.Entry
 	}
 
 	setEntryTimeout(out, cacheTTLModels)
-	
+
 	// Handle "default" symlink — target uses display name
 	if name == "default" {
 		defName := result.DefaultModelName()
@@ -354,7 +354,7 @@ func (m *ModelsDirNode) Lookup(ctx context.Context, name string, out *fuse.Entry
 		}
 		return m.NewInode(ctx, &SymlinkNode{target: defName, startTime: m.startTime}, fs.StableAttr{Mode: syscall.S_IFLNK}), 0
 	}
-	
+
 	// Primary lookup: match by display name
 	for _, model := range result.Models {
 		if model.Name() == name {
@@ -376,15 +376,15 @@ func (m *ModelsDirNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Errn
 	if err != nil {
 		return nil, syscall.EIO
 	}
-	
+
 	// Capacity for models + optional default symlink + ID alias symlinks
 	entries := make([]fuse.DirEntry, 0, len(result.Models)*2+1)
-	
+
 	// Add "default" symlink if default model is set
 	if result.DefaultModel != "" {
 		entries = append(entries, fuse.DirEntry{Name: "default", Mode: syscall.S_IFLNK})
 	}
-	
+
 	// Add model directories using display names, plus ID symlinks where they differ
 	for _, model := range result.Models {
 		entries = append(entries, fuse.DirEntry{Name: model.Name(), Mode: fuse.S_IFDIR})
@@ -402,7 +402,7 @@ func (m *ModelsDirNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.
 	return 0
 }
 
-// --- ModelNode: /models/{model-id}/ directory for a single model ---
+// --- ModelNode: /model/{model-id}/ directory for a single model ---
 
 type ModelNode struct {
 	fs.Inode
@@ -510,7 +510,7 @@ func (m *ModelReadyNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse
 	return 0
 }
 
-// --- ModelNewDirNode: /models/{model-id}/new/ directory containing clone ---
+// --- ModelNewDirNode: /model/{model-id}/new/ directory containing clone ---
 
 type ModelNewDirNode struct {
 	fs.Inode
@@ -549,7 +549,7 @@ func (n *ModelNewDirNode) Getattr(ctx context.Context, f fs.FileHandle, out *fus
 	return 0
 }
 
-// --- ModelCloneNode: /models/{model-id}/new/clone — clones with model preconfigured ---
+// --- ModelCloneNode: /model/{model-id}/new/clone — clones with model preconfigured ---
 
 type ModelCloneNode struct {
 	fs.Inode
@@ -597,9 +597,9 @@ func (h *CloneFileHandle) Read(ctx context.Context, dest []byte, off int64) (fus
 	return fuse.ReadResultData(readAt(data, dest, off)), 0
 }
 
-// --- ModelStartNode: /models/{model}/new/start — executable shell script that creates a conversation ---
+// --- ModelStartNode: /model/{model}/new/start — executable shell script that creates a conversation ---
 
-// modelStartScriptTemplate is the shell script for /models/{model}/new/start.
+// modelStartScriptTemplate is the shell script for /model/{model}/new/start.
 // It reads a message from stdin, clones a new conversation using the model-specific
 // clone file, sets cwd to the caller's working directory, sends the message,
 // and prints the conversation ID.
@@ -1048,7 +1048,7 @@ func (c *ConversationNode) Lookup(ctx context.Context, name string, out *fuse.En
 			return nil, syscall.ENOENT
 		}
 		out.SetEntryTimeout(immutableEntryTimeout)
-		target := "../../models/" + cs.Model
+		target := "../../model/" + cs.Model
 		return c.NewInode(ctx, &SymlinkNode{target: target, startTime: c.getConversationTime()}, fs.StableAttr{Mode: syscall.S_IFLNK}), 0
 	case "cwd":
 		// Set once via ctl, never changes after → long positive timeout.
@@ -1904,7 +1904,6 @@ func (n *ConvSendNode) Setattr(ctx context.Context, f fs.FileHandle, in *fuse.Se
 	return n.Getattr(ctx, f, out)
 }
 
-
 // --- ConvStatusFieldNode: read-only file for conversation status fields ---
 
 type ConvStatusFieldNode struct {
@@ -2107,10 +2106,10 @@ func (c *ConvContentNode) Open(ctx context.Context, flags uint32) (fs.FileHandle
 type ConvContentFileHandle struct {
 	content     []byte
 	errno       syscall.Errno
-	messageTime time.Time      // for Getattr timestamp (queryBySeq only)
-	startTime   time.Time      // fallback timestamp
-	localID     string         // for looking up conversation creation time
-	state       *state.Store   // for looking up conversation creation time
+	messageTime time.Time    // for Getattr timestamp (queryBySeq only)
+	startTime   time.Time    // fallback timestamp
+	localID     string       // for looking up conversation creation time
+	state       *state.Store // for looking up conversation creation time
 }
 
 var _ = (fs.FileReader)((*ConvContentFileHandle)(nil))
@@ -2600,13 +2599,13 @@ var _ = (fs.NodeSetattrer)((*ArchivedNode)(nil))
 func (a *ArchivedNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
 	out.Mode = fuse.S_IFREG | 0444
 	cs := a.state.Get(a.localID)
-	
+
 	// Default timestamp is CreatedAt or startTime
 	timestamp := a.startTime
 	if cs != nil && !cs.CreatedAt.IsZero() {
 		timestamp = cs.CreatedAt
 	}
-	
+
 	// ArchivedNode only exists when conversation is archived, so use UpdatedAt
 	// as the timestamp (represents when the conversation was last modified/archived)
 	if cs != nil && cs.ShelleyConversationID != "" {
@@ -2620,7 +2619,7 @@ func (a *ArchivedNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.A
 			}
 		}
 	}
-	
+
 	setTimestamps(&out.Attr, timestamp)
 	return 0
 }

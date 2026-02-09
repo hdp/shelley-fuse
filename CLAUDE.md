@@ -45,7 +45,7 @@ The filesystem follows a Plan 9-inspired control file model. There are no host d
 
 ```
 /
-  models/                               → directory of available models (GET /, parse HTML for model list)
+  model/                                → directory of available models (GET /, parse HTML for model list)
     default                             → symlink to default model's {model-id} (only if backend has a default configured)
     {model-id}/                         → directory for each model
       id                                → read-only file: model ID
@@ -53,7 +53,7 @@ The filesystem follows a Plan 9-inspired control file model. There are no host d
       new/
         clone                           → read to allocate a new conversation with this model preconfigured
         start                           → executable script: pipe message on stdin to create conversation with this model and caller's cwd
-  new                                   → symlink to models/default/new (uses default model for new conversations)
+  new                                   → symlink to model/default/new (uses default model for new conversations)
   conversation/                           → lists local IDs + server conversations (merged via GET /api/conversations)
     {local-id}/                         → directory per conversation (8-character hex local ID)
       ctl                               → read/write config (model=X cwd=Y); becomes read-only after creation
@@ -64,7 +64,7 @@ The filesystem follows a Plan 9-inspired control file model. There are no host d
       created                           → present only when created on backend (presence semantics, mtime = creation time)
       archived                          → present only when conversation is archived (presence semantics, mtime = updated_at);
                                             touch/create to archive, rm to unarchive; ENOENT before backend creation
-      model                             → symlink to ../../models/{model-id} (only if model is set)
+      model                             → symlink to ../../model/{model-id} (only if model is set)
       cwd                               → symlink to working directory (only if cwd is set)
       messages/                         → all message content
         all.json                        → full conversation as JSON

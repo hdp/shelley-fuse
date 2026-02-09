@@ -20,7 +20,7 @@ type Client struct {
 // NewClient creates a new Shelley API client
 func NewClient(baseURL string) *Client {
 	return &Client{
-		baseURL:    strings.TrimRight(baseURL, "/"),
+		baseURL: strings.TrimRight(baseURL, "/"),
 		httpClient: &http.Client{
 			Timeout: 2 * time.Minute, // Prevent hanging on unresponsive servers
 		},
@@ -36,10 +36,10 @@ type ChatRequest struct {
 
 // Conversation represents a conversation response
 type Conversation struct {
-	ConversationID string `json:"conversation_id"`
-	Slug          *string `json:"slug"`
-	CreatedAt     string `json:"created_at"`
-	UpdatedAt     string `json:"updated_at"`
+	ConversationID string  `json:"conversation_id"`
+	Slug           *string `json:"slug"`
+	CreatedAt      string  `json:"created_at"`
+	UpdatedAt      string  `json:"updated_at"`
 }
 
 // StreamResponse represents a streaming response
@@ -50,8 +50,8 @@ type StreamResponse struct {
 // Message represents a message in a conversation
 type Message struct {
 	MessageID      string  `json:"message_id"`
-	ConversationID  string  `json:"conversation_id"`
-	SequenceID      int     `json:"sequence_id"`
+	ConversationID string  `json:"conversation_id"`
+	SequenceID     int     `json:"sequence_id"`
 	Type           string  `json:"type"`
 	LLMData        *string `json:"llm_data,omitempty"`
 	UserData       *string `json:"user_data,omitempty"`
@@ -122,49 +122,49 @@ func (c *Client) StartConversation(message, model, cwd string) (StartConversatio
 	reqBody := ChatRequest{
 		Message: message,
 	}
-	
+
 	if model != "" {
 		reqBody.Model = model
 	}
-	
+
 	if cwd != "" {
 		reqBody.Cwd = cwd
 	}
-	
+
 	body, err := json.Marshal(reqBody)
 	if err != nil {
 		return StartConversationResult{}, fmt.Errorf("failed to marshal request: %w", err)
 	}
-	
+
 	req, err := http.NewRequest("POST", c.baseURL+"/api/conversations/new", bytes.NewBuffer(body))
 	if err != nil {
 		return StartConversationResult{}, fmt.Errorf("failed to create request: %w", err)
 	}
-	
+
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Shelley-Request", "1")
 	req.Header.Set("X-Exedev-Userid", "1")
-	
+
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return StartConversationResult{}, fmt.Errorf("failed to send request: %w", err)
 	}
 	defer resp.Body.Close()
-	
+
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
 		body, _ := io.ReadAll(resp.Body)
 		return StartConversationResult{}, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(body))
 	}
-	
+
 	var result struct {
 		ConversationID string  `json:"conversation_id"`
 		Slug           *string `json:"slug"`
 	}
-	
+
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return StartConversationResult{}, fmt.Errorf("failed to decode response: %w", err)
 	}
-	
+
 	res := StartConversationResult{ConversationID: result.ConversationID}
 	if result.Slug != nil {
 		res.Slug = *result.Slug
@@ -178,20 +178,20 @@ func (c *Client) GetConversation(conversationID string) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
-	
+
 	req.Header.Set("X-Exedev-Userid", "1")
-	
+
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to send request: %w", err)
 	}
 	defer resp.Body.Close()
-	
+
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		return nil, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(body))
 	}
-	
+
 	return io.ReadAll(resp.Body)
 }
 
@@ -200,37 +200,37 @@ func (c *Client) SendMessage(conversationID, message, model string) error {
 	reqBody := ChatRequest{
 		Message: message,
 	}
-	
+
 	// Only set model if provided (non-empty)
 	if model != "" {
 		reqBody.Model = model
 	}
-	
+
 	body, err := json.Marshal(reqBody)
 	if err != nil {
 		return fmt.Errorf("failed to marshal request: %w", err)
 	}
-	
+
 	req, err := http.NewRequest("POST", c.baseURL+"/api/conversation/"+conversationID+"/chat", bytes.NewBuffer(body))
 	if err != nil {
 		return fmt.Errorf("failed to create request: %w", err)
 	}
-	
+
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Shelley-Request", "1")
 	req.Header.Set("X-Exedev-Userid", "1")
-	
+
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("failed to send request: %w", err)
 	}
 	defer resp.Body.Close()
-	
+
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted && resp.StatusCode != http.StatusCreated {
 		body, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(body))
 	}
-	
+
 	return nil
 }
 
@@ -240,26 +240,26 @@ func (c *Client) ListModels() (ModelsResult, error) {
 	if err != nil {
 		return ModelsResult{}, fmt.Errorf("failed to create request: %w", err)
 	}
-	
+
 	req.Header.Set("X-Exedev-Userid", "1")
-	
+
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return ModelsResult{}, fmt.Errorf("failed to send request: %w", err)
 	}
 	defer resp.Body.Close()
-	
+
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		return ModelsResult{}, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(body))
 	}
-	
+
 	// Read the response body
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return ModelsResult{}, fmt.Errorf("failed to read response body: %w", err)
 	}
-	
+
 	// Parse HTML to extract window.__SHELLEY_INIT__
 	content := string(body)
 	re := regexp.MustCompile(`window\.__SHELLEY_INIT__\s*=\s*({.*?});`)
@@ -269,10 +269,10 @@ func (c *Client) ListModels() (ModelsResult, error) {
 		var initData map[string]interface{}
 		if err := json.Unmarshal([]byte(match[1]), &initData); err == nil {
 			var result ModelsResult
-			
+
 			// Extract default_model
 			result.DefaultModel = getString(initData, "default_model")
-			
+
 			// Extract models list
 			if models, ok := initData["models"].([]interface{}); ok {
 				for _, m := range models {
@@ -289,7 +289,7 @@ func (c *Client) ListModels() (ModelsResult, error) {
 			return result, nil
 		}
 	}
-	
+
 	// Fallback to a fixed list of models
 	return ModelsResult{
 		Models: []Model{
@@ -306,20 +306,20 @@ func (c *Client) ListConversations() ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
-	
+
 	req.Header.Set("X-Exedev-Userid", "1")
-	
+
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to send request: %w", err)
 	}
 	defer resp.Body.Close()
-	
+
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		return nil, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(body))
 	}
-	
+
 	return io.ReadAll(resp.Body)
 }
 

@@ -52,7 +52,7 @@ func FormatMarkdown(messages []Message) []byte {
 // formatMessageMarkdown returns the header and content for a message's markdown representation.
 // Returns (header, content) where header includes tool name for tool calls (e.g., "tool call: bash")
 // and tool results (e.g., "tool result: bash"), or the message type for regular messages.
-// 
+//
 // Messages may contain multiple content items (text + multiple tool calls). This function
 // processes ALL content items and combines them into a single markdown output.
 func formatMessageMarkdown(m *Message, toolCallMap map[string]ToolCallInfo) (string, string) {
@@ -245,10 +245,11 @@ func formatSimpleValue(v interface{}) string {
 // formatToolResultContent formats the body of a tool result message.
 // Extracts text from the ToolResult array and formats with command header if available.
 // Format:
-//   ### command: <command>
-//   ```
-//   <output>
-//   ```
+//
+//	### command: <command>
+//	```
+//	<output>
+//	```
 func formatToolResultContent(item ContentItem, toolCallMap map[string]ToolCallInfo) string {
 	// Extract the output text
 	var outputParts []string
@@ -516,7 +517,7 @@ func extractTextContent(data string) string {
 	if strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[") {
 		return extractFromJSON(data)
 	}
-	
+
 	// Plain text, return as-is
 	return data
 }
@@ -604,20 +605,20 @@ func extractFromContentField(content interface{}) string {
 // ContentType represents the type of a content item in a message.
 // These values match the Shelley API content types.
 const (
-	ContentTypeText       = 2  // Text content with explanation
-	ContentTypeToolUse    = 5  // Tool call (tool_use)
-	ContentTypeToolResult = 6  // Tool result (tool_result)
+	ContentTypeText       = 2 // Text content with explanation
+	ContentTypeToolUse    = 5 // Tool call (tool_use)
+	ContentTypeToolResult = 6 // Tool result (tool_result)
 )
 
 // ContentItem represents a single content item in a message's Content array.
 // This is used for parsing the JSON content to detect tool calls and results.
 type ContentItem struct {
-	Type       int             `json:"Type"`
-	Text       string          `json:"Text,omitempty"`       // Text content for Type 2
-	ID         string          `json:"ID,omitempty"`         // Tool use ID for tool_use (Type 5)
-	ToolName   string          `json:"ToolName,omitempty"`
-	ToolUseID  string          `json:"ToolUseID,omitempty"` // References tool use ID in tool_result (Type 6)
-	Input      json.RawMessage `json:"ToolInput,omitempty"`
+	Type       int              `json:"Type"`
+	Text       string           `json:"Text,omitempty"` // Text content for Type 2
+	ID         string           `json:"ID,omitempty"`   // Tool use ID for tool_use (Type 5)
+	ToolName   string           `json:"ToolName,omitempty"`
+	ToolUseID  string           `json:"ToolUseID,omitempty"` // References tool use ID in tool_result (Type 6)
+	Input      json.RawMessage  `json:"ToolInput,omitempty"`
 	ToolResult []ToolResultItem `json:"ToolResult,omitempty"`
 }
 

@@ -234,14 +234,14 @@ func TestRootAndModels(t *testing.T) {
 	for _, e := range entries {
 		names[e.Name()] = true
 	}
-	for _, expected := range []string{"models", "new", "conversation"} {
+	for _, expected := range []string{"model", "new", "conversation"} {
 		if !names[expected] {
 			t.Errorf("Expected entry %q in root directory", expected)
 		}
 	}
 
 	// Models directory
-	entries, err = ioutil.ReadDir(filepath.Join(mountPoint, "models"))
+	entries, err = ioutil.ReadDir(filepath.Join(mountPoint, "model"))
 	if err != nil {
 		t.Fatalf("Failed to read models directory: %v", err)
 	}
@@ -260,24 +260,24 @@ func TestRootAndModels(t *testing.T) {
 	}
 
 	// Model fields
-	idData, err := ioutil.ReadFile(filepath.Join(mountPoint, "models", "predictable", "id"))
+	idData, err := ioutil.ReadFile(filepath.Join(mountPoint, "model", "predictable", "id"))
 	if err != nil {
-		t.Fatalf("Failed to read models/predictable/id: %v", err)
+		t.Fatalf("Failed to read model/predictable/id: %v", err)
 	}
 	if strings.TrimSpace(string(idData)) != "predictable" {
 		t.Errorf("Expected id='predictable', got %q", string(idData))
 	}
 
 	// Check ready file exists (presence/absence semantics)
-	readyPath := filepath.Join(mountPoint, "models", "predictable", "ready")
+	readyPath := filepath.Join(mountPoint, "model", "predictable", "ready")
 	if _, err := os.Stat(readyPath); err != nil {
-		t.Errorf("Expected models/predictable/ready to exist: %v", err)
+		t.Errorf("Expected model/predictable/ready to exist: %v", err)
 	}
 
 	// Model directory listing
-	entries, err = ioutil.ReadDir(filepath.Join(mountPoint, "models", "predictable"))
+	entries, err = ioutil.ReadDir(filepath.Join(mountPoint, "model", "predictable"))
 	if err != nil {
-		t.Fatalf("Failed to read models/predictable: %v", err)
+		t.Fatalf("Failed to read model/predictable: %v", err)
 	}
 	expectedFiles := map[string]bool{"id": false, "ready": false}
 	for _, e := range entries {
@@ -287,7 +287,7 @@ func TestRootAndModels(t *testing.T) {
 	}
 	for name, found := range expectedFiles {
 		if !found {
-			t.Errorf("Expected file %q in models/predictable", name)
+			t.Errorf("Expected file %q in model/predictable", name)
 		}
 	}
 }
@@ -466,7 +466,6 @@ func TestConversationFlow(t *testing.T) {
 	if len(since1Entries) != 0 {
 		t.Errorf("Expected 0 entries in since/user/1 (last user msg is final), got %d", len(since1Entries))
 	}
-
 
 	// Verify conversation in listing
 	entries, err := ioutil.ReadDir(filepath.Join(mountPoint, "conversation"))
@@ -1133,11 +1132,11 @@ func TestMultilineWriteToSend(t *testing.T) {
 }
 
 // TestShellRedirectToSend tests the shell redirect pattern where bash does:
-//   1. open file -> fd 3
-//   2. dup2(3, 1) -> fd 1 now points to file
-//   3. close(3) -> triggers Flush with EMPTY buffer (no data written yet!)
-//   4. echo writes to fd 1 -> data goes in buffer
-//   5. process exits, fd 1 closed -> triggers Flush again
+//  1. open file -> fd 3
+//  2. dup2(3, 1) -> fd 1 now points to file
+//  3. close(3) -> triggers Flush with EMPTY buffer (no data written yet!)
+//  4. echo writes to fd 1 -> data goes in buffer
+//  5. process exits, fd 1 closed -> triggers Flush again
 //
 // The bug (sf-bksa): flushed flag was set on step 3, so step 5 was a no-op.
 // The fix: only set flushed when there's actual data to send.
@@ -1429,8 +1428,8 @@ func TestStartScript(t *testing.T) {
 	// We write a model config via ctl after cloning but before sending,
 	// which is what the script does internally (clone, write ctl, write send).
 	//
-	// Actually, let's use the model-specific one via /models/predictable/new/start.
-	modelStartPath := filepath.Join(mountPoint, "models", "predictable", "new", "start")
+	// Actually, let's use the model-specific one via /model/predictable/new/start.
+	modelStartPath := filepath.Join(mountPoint, "model", "predictable", "new", "start")
 	info, err = os.Stat(modelStartPath)
 	if err != nil {
 		t.Fatalf("Stat model start script failed: %v", err)

@@ -167,10 +167,10 @@ func TestReadmeQuickStart(t *testing.T) {
 // TestReadmeCommonOperationsModels exercises the model-related Common Operations:
 //
 //	# List available models
-//	ls models/
+//	ls model/
 //
 //	# Check default model
-//	readlink models/default
+//	readlink model/default
 func TestReadmeCommonOperationsModels(t *testing.T) {
 	skipIfNoFusermount(t)
 	skipIfNoShelley(t)
@@ -180,8 +180,8 @@ func TestReadmeCommonOperationsModels(t *testing.T) {
 	mountPoint := tm.MountPoint
 	tracker := tm.Diag
 
-	// List available models: ls models/
-	modelsOutput := runShellDiagOK(t, mountPoint, "ls models/", tracker)
+	// List available models: ls model/
+	modelsOutput := runShellDiagOK(t, mountPoint, "ls model/", tracker)
 	if modelsOutput == "" {
 		t.Error("Expected non-empty models listing")
 	}
@@ -190,8 +190,8 @@ func TestReadmeCommonOperationsModels(t *testing.T) {
 	}
 	t.Logf("Models: %s", strings.TrimSpace(modelsOutput))
 
-	// Check default model: readlink models/default
-	defaultModel := runShellDiagOK(t, mountPoint, "readlink models/default", tracker)
+	// Check default model: readlink model/default
+	defaultModel := runShellDiagOK(t, mountPoint, "readlink model/default", tracker)
 	defaultModel = strings.TrimSpace(defaultModel)
 	if defaultModel == "" {
 		t.Error("Expected non-empty default model symlink target")
@@ -432,14 +432,14 @@ func TestReadmeFullWorkflow(t *testing.T) {
 	// === Common Operations ===
 
 	// 8. List models
-	models := runShellDiagOK(t, mountPoint, "ls models/", tracker)
+	models := runShellDiagOK(t, mountPoint, "ls model/", tracker)
 	if !strings.Contains(models, "predictable") {
 		t.Error("Expected predictable model in listing")
 	}
 	t.Log("Step 8 - Listed models")
 
 	// 9. Check default model
-	defaultModel := strings.TrimSpace(runShellDiagOK(t, mountPoint, "readlink models/default", tracker))
+	defaultModel := strings.TrimSpace(runShellDiagOK(t, mountPoint, "readlink model/default", tracker))
 	if defaultModel == "" {
 		t.Error("Expected non-empty default model")
 	}

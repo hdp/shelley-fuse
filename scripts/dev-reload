@@ -26,7 +26,7 @@ verify_shelley() {
   local mnt="$2"
   "$binary" "$mnt" "$URL" &
   local pid="$!"
-  if ! cat "$mnt/README.md" >/dev/null || ! ls "$mnt/models" | grep -q .; then
+  if ! cat "$mnt/README.md" >/dev/null || ! ls "$mnt/model" | grep -q .; then
     kill "$pid"
   else
     kill -INT "$pid"

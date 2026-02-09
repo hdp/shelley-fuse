@@ -6,7 +6,7 @@ A FUSE filesystem that exposes the Shelley API, allowing shell tools to interact
 
 ```bash
 # Start a conversation with a specific model in one step
-ID=$(echo "Hello, Shelley!" | models/claude-sonnet-4-5/new/start)
+ID=$(echo "Hello, Shelley!" | model/claude-sonnet-4-5/new/start)
 
 # Read the response(s)
 cat conversation/$ID/messages/since/user/1/*/content.md
@@ -15,7 +15,7 @@ cat conversation/$ID/messages/since/user/1/*/content.md
 echo "Thanks!" > conversation/$ID/send
 ```
 
-The `models/{model}/new/start` script is an executable that reads a message
+The `model/{model}/new/start` script is an executable that reads a message
 from stdin, allocates a new conversation with that model preconfigured, sets
 the working directory to the caller's `$PWD`, sends the message, and prints
 the new conversation ID to stdout.
@@ -27,7 +27,7 @@ server's default model instead of a specific one.
 
 ```bash
 # Allocate a new conversation with a specific model preconfigured
-ID=$(cat models/claude-sonnet-4-5/new/clone)
+ID=$(cat model/claude-sonnet-4-5/new/clone)
 
 # Optionally set the working directory
 echo "cwd=$PWD" > conversation/$ID/ctl
@@ -60,7 +60,7 @@ echo "Hello, Shelley!" > conversation/$ID/send
 ```
 /
   README.md              → this file
-  models/                → available models
+  model/                → available models
     default              → symlink to default model
     {model-id}/          → directory per model
       id                 → model ID
@@ -78,7 +78,7 @@ echo "Hello, Shelley!" > conversation/$ID/send
       ctl                → read/write config; read-only after first message
       send               → write here to send messages
       archived           → present when archived; touch to archive, rm to unarchive
-      model              → symlink to ../../models/{model-id}
+      model              → symlink to ../../model/{model-id}
       cwd                → symlink to working directory
       id                 → Shelley server conversation ID
       fuse_id            → local FUSE conversation ID
@@ -116,16 +116,16 @@ echo "Hello, Shelley!" > conversation/$ID/send
 
 ```bash
 # List available models
-ls models/
+ls model/
 
 # Check default model
-readlink models/default
+readlink model/default
 
 # Start a conversation with a specific model (one step)
-ID=$(echo "Explain FUSE" | models/claude-sonnet-4-5/new/start)
+ID=$(echo "Explain FUSE" | model/claude-sonnet-4-5/new/start)
 
 # Clone a conversation with a model preconfigured, then configure and send manually
-ID=$(cat models/claude-sonnet-4-5/new/clone)
+ID=$(cat model/claude-sonnet-4-5/new/clone)
 echo "cwd=/my/project" > conversation/$ID/ctl
 echo "Hello" > conversation/$ID/send
 

@@ -268,7 +268,7 @@ func TestFormatMarkdownWithJSON(t *testing.T) {
 		{MessageID: "m1", ConversationID: "c1", SequenceID: 1, Type: "user", UserData: strPtr("Hello")},
 		{MessageID: "m2", ConversationID: "c1", SequenceID: 2, Type: "shelley", LLMData: strPtr(`{"Content": "Hi there! How can I help?"}`)},
 	}
-	
+
 	md := string(FormatMarkdown(messages))
 	if !strings.Contains(md, "## user") {
 		t.Error("expected markdown to contain '## user'")
@@ -295,24 +295,24 @@ func TestFormatMarkdownMixedContent(t *testing.T) {
 		{MessageID: "m3", ConversationID: "c1", SequenceID: 3, Type: "user", UserData: strPtr(`{"Content": "User message with JSON"}`)},
 		{MessageID: "m4", ConversationID: "c1", SequenceID: 4, Type: "shelley", LLMData: strPtr(`{"Content": [{"Text": "Complex "}, {"Text": "response"}]}`)},
 	}
-	
+
 	md := string(FormatMarkdown(messages))
-	
+
 	// Check that plain text passes through
 	if !strings.Contains(md, "Plain text response") {
 		t.Error("expected plain text to pass through")
 	}
-	
+
 	// Check that user JSON is also extracted
 	if !strings.Contains(md, "User message with JSON") {
 		t.Error("expected user JSON to be extracted")
 	}
-	
+
 	// Check that complex JSON is extracted
 	if !strings.Contains(md, "Complex response") {
 		t.Error("expected complex JSON to be extracted")
 	}
-	
+
 	// Should NOT contain any raw JSON
 	if strings.Contains(md, `{"Content":`) {
 		t.Error("markdown should not contain raw JSON")
@@ -413,7 +413,6 @@ func TestMessageSlugToolUsePatch(t *testing.T) {
 		t.Errorf("expected 'patch-tool', got %q", slug)
 	}
 }
-
 
 func TestMessageSlugToolResult(t *testing.T) {
 	messages := []*Message{
@@ -946,7 +945,7 @@ func TestFilterSince_ConsecutiveUserMessages(t *testing.T) {
 func TestFilterSince_ToolCallsMixedIn(t *testing.T) {
 	// Scenario: user, bash-tool, bash-result, shelley, user
 	// Tool calls and results should NOT count as "user" messages
-	
+
 	// Create tool use JSON using Shelley API format (Type=5 for tool_use)
 	toolUseJSON := `{"Content": [{"Type": 5, "ID": "tool123", "ToolName": "bash", "ToolInput": {"command": "ls"}}]}`
 	// Create tool result JSON using Shelley API format (Type=6 for tool_result)
@@ -990,7 +989,7 @@ func TestFilterSince_ToolCallsMixedIn(t *testing.T) {
 	// since/user/2 should find seq 1 and return seq 2,3,4,5
 	result2 := FilterSince(msgs, "user", 2)
 	t.Logf("FilterSince(user, 2) returned %d messages", len(result2))
-	
+
 	// Check what FormatMarkdown would produce
 	md := string(FormatMarkdown(result2))
 	t.Logf("FormatMarkdown output:\n%s", md)
@@ -1004,7 +1003,7 @@ func TestFilterSince_ToolCallsMixedIn(t *testing.T) {
 func TestFilterSince_ToolResultMisidentifiedAsUser(t *testing.T) {
 	// Scenario: Tool result with Type="user" but content is tool_result
 	// This tests the MessageSlug function specifically
-	
+
 	// Use Shelley API format (Type=5 for tool_use, Type=6 for tool_result)
 	toolUseJSON := `{"Content": [{"Type": 5, "ID": "tool456", "ToolName": "bash", "ToolInput": {"command": "pwd"}}]}`
 	toolResultJSON := `{"Content": [{"Type": 6, "ToolUseID": "tool456", "ToolResult": [{"Text": "/home/user"}]}]}`
@@ -1039,7 +1038,7 @@ func TestFilterSince_ToolResultMisidentifiedAsUser(t *testing.T) {
 	// since/user/1 should find seq 1 and return seq 2, 3
 	result := FilterSince(msgs, "user", 1)
 	t.Logf("FilterSince(user, 1) returned %d messages", len(result))
-	
+
 	if len(result) != 2 {
 		t.Errorf("Expected 2 messages, got %d", len(result))
 	}
@@ -1104,7 +1103,7 @@ func TestFilterSince_EmptyResultWhenReferenceIsLast(t *testing.T) {
 func TestFilterSince_RealWorldScenario(t *testing.T) {
 	// Simulate a real conversation flow that might trigger the bug
 	// user asks question -> shelley responds with tool call -> tool result -> shelley final answer -> user follow-up
-	
+
 	// Use Shelley API format (Type=5 for tool_use, Type=6 for tool_result)
 	toolUseJSON := `{"Content": [{"Type": 5, "ID": "toolu_abc", "ToolName": "bash", "ToolInput": {"command": "echo hello"}}]}`
 	toolResultJSON := `{"Content": [{"Type": 6, "ToolUseID": "toolu_abc", "ToolResult": [{"Text": "hello"}]}]}`
@@ -1140,7 +1139,7 @@ func TestFilterSince_RealWorldScenario(t *testing.T) {
 	// Test since/user/2 - should find seq 1 and return seq 2,3,4,5
 	result2 := FilterSince(msgs, "user", 2)
 	t.Logf("since/user/2: %d messages", len(result2))
-	
+
 	md2 := string(FormatMarkdown(result2))
 	t.Logf("since/user/2 markdown:\n%s", md2)
 
@@ -1469,7 +1468,7 @@ func TestFormatToolResultContent_MultipleResults(t *testing.T) {
 	// Create tool use messages for multiple commands
 	toolUse1 := `{"Content": [{"Type": 5, "ID": "tu_multi_001", "ToolName": "bash", "ToolInput": {"command": "echo hello"}}]}`
 	toolUse2 := `{"Content": [{"Type": 5, "ID": "tu_multi_002", "ToolName": "bash", "ToolInput": {"command": "echo world"}}]}`
-	
+
 	// Create tool result message with multiple results
 	toolResultContent := `{"Content": [
 		{"Type": 6, "ToolUseID": "tu_multi_001", "ToolResult": [{"Text": "hello\n"}]},
@@ -1505,7 +1504,7 @@ func TestFormatToolResultContent_MultipleResults(t *testing.T) {
 func TestFormatToolResultContent_NoCorrespondingToolUse(t *testing.T) {
 	// Tool result without a corresponding tool use should still work
 	toolResultContent := `{"Content": [{"Type": 6, "ToolUseID": "tu_orphan", "ToolResult": [{"Text": "orphan output\n"}]}]}`
-	
+
 	messages := []Message{
 		{MessageID: "m1", ConversationID: "c1", SequenceID: 1, Type: "user", UserData: strPtr(toolResultContent)},
 	}
@@ -1603,7 +1602,7 @@ func TestFormatMarkdownMultipleToolResults(t *testing.T) {
 	// Create messages with tool calls and corresponding results
 	toolUse1JSON := `{"Content": [{"Type": 5, "ID": "tu_001", "ToolName": "bash", "ToolInput": {"command": "tk help"}}]}`
 	toolUse2JSON := `{"Content": [{"Type": 5, "ID": "tu_002", "ToolName": "bash", "ToolInput": {"command": "cat /foo"}}]}`
-	
+
 	// Tool result message with multiple results
 	toolResultJSON := `{"Content": [
 		{"Type": 6, "ToolUseID": "tu_001", "ToolResult": [{"Text": "tk - minimal ticket system...\n"}]},
