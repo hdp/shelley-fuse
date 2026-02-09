@@ -1,6 +1,6 @@
 ---
 id: sf-8nsq
-status: in_progress
+status: closed
 deps: [sf-l0h7]
 links: []
 created: 2026-02-09T02:36:27Z

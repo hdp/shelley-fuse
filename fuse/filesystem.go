@@ -1491,7 +1491,8 @@ func (m *MessagesDirNode) Lookup(ctx context.Context, name string, out *fuse.Ent
 		out.SetAttrTimeout(cacheTTLImmutable)
 		out.Attr.Mode = fuse.S_IFDIR | 0755
 		node.messageTimestamps().ApplyWithFallback(&out.Attr, m.startTime)
-		return m.NewInode(ctx, node, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
+		ino := stableIno("msg-dir", msg.ConversationID, strconv.Itoa(msg.SequenceID))
+		return m.NewInode(ctx, node, fs.StableAttr{Mode: fuse.S_IFDIR, Ino: ino}), 0
 	}
 
 	return nil, syscall.ENOENT
@@ -1518,7 +1519,8 @@ func (m *MessagesDirNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Er
 				for i := range result.Messages {
 					slug := shelley.MessageSlug(&result.Messages[i], result.ToolMap)
 					base := messageFileBase(result.Messages[i].SequenceID, slug, result.MaxSeqID)
-					entries = append(entries, fuse.DirEntry{Name: base, Mode: fuse.S_IFDIR})
+					ino := stableIno("msg-dir", result.Messages[i].ConversationID, strconv.Itoa(result.Messages[i].SequenceID))
+					entries = append(entries, fuse.DirEntry{Name: base, Mode: fuse.S_IFDIR, Ino: ino})
 				}
 			}
 		}
@@ -1587,13 +1589,24 @@ func setImmutableDirAttrs(out *fuse.EntryOut, t time.Time) {
 	setTimestamps(&out.Attr, t)
 }
 
+// msgFieldIno computes a stable inode number for a message field node.
+// This allows the kernel to recognize the same logical file across lookups
+// and reuse cached data, even after the inode is forgotten and re-discovered.
+func msgFieldIno(conversationID string, sequenceID int, fieldName string) uint64 {
+	return stableIno("msg-field", conversationID, strconv.Itoa(sequenceID), fieldName)
+}
+
 func (m *MessageDirNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
 	t := m.messageTime()
+	convID := m.message.ConversationID
+	seqID := m.message.SequenceID
 
-	// Helper to create and return an immutable field node with cached attrs.
+	// Helper to create and return an immutable field node with cached attrs
+	// and a stable inode number derived from (conversationID, sequenceID, fieldName).
 	fieldNode := func(value string) (*fs.Inode, syscall.Errno) {
 		setImmutableFieldAttrs(out, value, false, t)
-		return m.NewInode(ctx, &MessageFieldNode{value: value, startTime: t}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
+		ino := msgFieldIno(convID, seqID, name)
+		return m.NewInode(ctx, &MessageFieldNode{value: value, startTime: t}, fs.StableAttr{Mode: fuse.S_IFREG, Ino: ino}), 0
 	}
 
 	switch name {
@@ -1611,45 +1624,54 @@ func (m *MessageDirNode) Lookup(ctx context.Context, name string, out *fuse.Entr
 		if m.message.LLMData == nil || *m.message.LLMData == "" {
 			return nil, syscall.ENOENT
 		}
+		ino := msgFieldIno(convID, seqID, name)
 		config := &jsonfs.Config{StartTime: t, CacheTimeout: cacheTTLImmutable}
 		node, err := jsonfs.NewNodeFromJSON([]byte(*m.message.LLMData), config)
 		if err != nil {
 			// If JSON parsing fails, return as a file
 			setImmutableFieldAttrs(out, *m.message.LLMData, false, t)
-			return m.NewInode(ctx, &MessageFieldNode{value: *m.message.LLMData, startTime: t}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
+			return m.NewInode(ctx, &MessageFieldNode{value: *m.message.LLMData, startTime: t}, fs.StableAttr{Mode: fuse.S_IFREG, Ino: ino}), 0
 		}
 		setImmutableDirAttrs(out, t)
-		return m.NewInode(ctx, node, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
+		return m.NewInode(ctx, node, fs.StableAttr{Mode: fuse.S_IFDIR, Ino: ino}), 0
 	case "usage_data":
 		if m.message.UsageData == nil || *m.message.UsageData == "" {
 			return nil, syscall.ENOENT
 		}
+		ino := msgFieldIno(convID, seqID, name)
 		config := &jsonfs.Config{StartTime: t, CacheTimeout: cacheTTLImmutable}
 		node, err := jsonfs.NewNodeFromJSON([]byte(*m.message.UsageData), config)
 		if err != nil {
 			// If JSON parsing fails, return as a file
 			setImmutableFieldAttrs(out, *m.message.UsageData, false, t)
-			return m.NewInode(ctx, &MessageFieldNode{value: *m.message.UsageData, startTime: t}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
+			return m.NewInode(ctx, &MessageFieldNode{value: *m.message.UsageData, startTime: t}, fs.StableAttr{Mode: fuse.S_IFREG, Ino: ino}), 0
 		}
 		setImmutableDirAttrs(out, t)
-		return m.NewInode(ctx, node, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
+		return m.NewInode(ctx, node, fs.StableAttr{Mode: fuse.S_IFDIR, Ino: ino}), 0
 	case "content.md":
 		// Generate markdown rendering of this single message
 		content := string(shelley.FormatMarkdown([]shelley.Message{m.message}))
 		setImmutableFieldAttrs(out, content, true, t)
-		return m.NewInode(ctx, &MessageFieldNode{value: content, startTime: t, noNewline: true}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
+		ino := msgFieldIno(convID, seqID, name)
+		return m.NewInode(ctx, &MessageFieldNode{value: content, startTime: t, noNewline: true}, fs.StableAttr{Mode: fuse.S_IFREG, Ino: ino}), 0
 	}
 	return nil, syscall.ENOENT
 }
 
 func (m *MessageDirNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
+	convID := m.message.ConversationID
+	seqID := m.message.SequenceID
+	fieldIno := func(name string) uint64 {
+		return msgFieldIno(convID, seqID, name)
+	}
+
 	entries := []fuse.DirEntry{
-		{Name: "message_id", Mode: fuse.S_IFREG},
-		{Name: "conversation_id", Mode: fuse.S_IFREG},
-		{Name: "sequence_id", Mode: fuse.S_IFREG},
-		{Name: "type", Mode: fuse.S_IFREG},
-		{Name: "created_at", Mode: fuse.S_IFREG},
-		{Name: "content.md", Mode: fuse.S_IFREG},
+		{Name: "message_id", Mode: fuse.S_IFREG, Ino: fieldIno("message_id")},
+		{Name: "conversation_id", Mode: fuse.S_IFREG, Ino: fieldIno("conversation_id")},
+		{Name: "sequence_id", Mode: fuse.S_IFREG, Ino: fieldIno("sequence_id")},
+		{Name: "type", Mode: fuse.S_IFREG, Ino: fieldIno("type")},
+		{Name: "created_at", Mode: fuse.S_IFREG, Ino: fieldIno("created_at")},
+		{Name: "content.md", Mode: fuse.S_IFREG, Ino: fieldIno("content.md")},
 	}
 	// Only include llm_data if present
 	if m.message.LLMData != nil && *m.message.LLMData != "" {
@@ -1657,9 +1679,9 @@ func (m *MessageDirNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Err
 		trimmed := strings.TrimSpace(*m.message.LLMData)
 		if (strings.HasPrefix(trimmed, "{") && strings.HasSuffix(trimmed, "}")) ||
 			(strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]")) {
-			entries = append(entries, fuse.DirEntry{Name: "llm_data", Mode: fuse.S_IFDIR})
+			entries = append(entries, fuse.DirEntry{Name: "llm_data", Mode: fuse.S_IFDIR, Ino: fieldIno("llm_data")})
 		} else {
-			entries = append(entries, fuse.DirEntry{Name: "llm_data", Mode: fuse.S_IFREG})
+			entries = append(entries, fuse.DirEntry{Name: "llm_data", Mode: fuse.S_IFREG, Ino: fieldIno("llm_data")})
 		}
 	}
 	// Only include usage_data if present
@@ -1667,9 +1689,9 @@ func (m *MessageDirNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Err
 		trimmed := strings.TrimSpace(*m.message.UsageData)
 		if (strings.HasPrefix(trimmed, "{") && strings.HasSuffix(trimmed, "}")) ||
 			(strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]")) {
-			entries = append(entries, fuse.DirEntry{Name: "usage_data", Mode: fuse.S_IFDIR})
+			entries = append(entries, fuse.DirEntry{Name: "usage_data", Mode: fuse.S_IFDIR, Ino: fieldIno("usage_data")})
 		} else {
-			entries = append(entries, fuse.DirEntry{Name: "usage_data", Mode: fuse.S_IFREG})
+			entries = append(entries, fuse.DirEntry{Name: "usage_data", Mode: fuse.S_IFREG, Ino: fieldIno("usage_data")})
 		}
 	}
 	return fs.NewListDirStream(entries), 0

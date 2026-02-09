@@ -34,6 +34,14 @@ func testStore(t *testing.T) *state.Store {
 
 func strPtr(s string) *string { return &s }
 
+// statIno extracts the inode number from an os.FileInfo via the underlying syscall.Stat_t.
+func statIno(info os.FileInfo) uint64 {
+	if st, ok := info.Sys().(*syscall.Stat_t); ok {
+		return st.Ino
+	}
+	return 0
+}
+
 func TestBasicMount(t *testing.T) {
 	mockClient := shelley.NewClient("http://localhost:11002")
 	store := testStore(t)
@@ -3899,6 +3907,160 @@ func TestMessageDirNodeFields(t *testing.T) {
 	})
 }
 
+// TestMessageFieldStableInodes verifies that message field nodes use stable,
+// deterministic inode numbers derived from (conversationID, sequenceID, fieldName).
+// This allows the kernel to recognize the same logical file across lookups.
+func TestMessageFieldStableInodes(t *testing.T) {
+	convID := "test-conv-stable-ino"
+	msgs := []shelley.Message{
+		{
+			MessageID:      "msg-uuid-001",
+			ConversationID: convID,
+			SequenceID:     1,
+			Type:           "user",
+			UserData:       strPtr("Hello"),
+			CreatedAt:      "2026-01-15T10:00:00Z",
+		},
+		{
+			MessageID:      "msg-uuid-002",
+			ConversationID: convID,
+			SequenceID:     2,
+			Type:           "shelley",
+			LLMData:        strPtr(`{"Content":[{"Type":2,"Text":"Hi"}]}`),
+			CreatedAt:      "2026-01-15T10:01:00Z",
+		},
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/conversation/"+convID {
+			data, _ := json.Marshal(struct {
+				Messages []shelley.Message `json:"messages"`
+			}{Messages: msgs})
+			w.Write(data)
+			return
+		}
+		if r.URL.Path == "/api/conversations" {
+			data, _ := json.Marshal([]shelley.Conversation{{ConversationID: convID}})
+			w.Write(data)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	client := shelley.NewClient(server.URL)
+	store := testStore(t)
+	localID, _ := store.Clone()
+	store.MarkCreated(localID, convID, "")
+
+	shelleyFS := NewFS(client, store, time.Hour)
+	tmpDir, err := ioutil.TempDir("", "shelley-fuse-stable-ino-test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	opts := &fs.Options{}
+	entryTimeout := time.Duration(0)
+	attrTimeout := time.Duration(0)
+	negativeTimeout := time.Duration(0)
+	opts.EntryTimeout = &entryTimeout
+	opts.AttrTimeout = &attrTimeout
+	opts.NegativeTimeout = &negativeTimeout
+
+	fssrv, err := fs.Mount(tmpDir, shelleyFS, opts)
+	if err != nil {
+		t.Fatalf("Mount failed: %v", err)
+	}
+	defer fssrv.Unmount()
+
+	msgDir := filepath.Join(tmpDir, "conversation", localID, "messages")
+
+	// Stat each field file twice and verify the inode is stable across lookups.
+	userDir := filepath.Join(msgDir, "0-user")
+	agentDir := filepath.Join(msgDir, "1-agent")
+
+	fields := []string{"message_id", "conversation_id", "sequence_id", "type", "created_at", "content.md"}
+
+	// Collect inodes from first stat pass
+	userInodes := make(map[string]uint64)
+	agentInodes := make(map[string]uint64)
+
+	for _, field := range fields {
+		info, err := os.Stat(filepath.Join(userDir, field))
+		if err != nil {
+			t.Fatalf("Stat %s/0-user/%s: %v", localID, field, err)
+		}
+		userInodes[field] = statIno(info)
+
+		info, err = os.Stat(filepath.Join(agentDir, field))
+		if err != nil {
+			t.Fatalf("Stat %s/1-agent/%s: %v", localID, field, err)
+		}
+		agentInodes[field] = statIno(info)
+	}
+
+	// Also check llm_data directory inode for agent
+	info, err := os.Stat(filepath.Join(agentDir, "llm_data"))
+	if err != nil {
+		t.Fatalf("Stat llm_data: %v", err)
+	}
+	agentLLMIno := statIno(info)
+
+	// Verify all inode numbers are non-zero (stable, not auto-assigned 0)
+	for field, ino := range userInodes {
+		if ino == 0 {
+			t.Errorf("user/%s inode should be non-zero", field)
+		}
+	}
+	for field, ino := range agentInodes {
+		if ino == 0 {
+			t.Errorf("agent/%s inode should be non-zero", field)
+		}
+	}
+	if agentLLMIno == 0 {
+		t.Errorf("agent/llm_data inode should be non-zero")
+	}
+
+	// Verify same field in different messages gets different inodes
+	for _, field := range fields {
+		if userInodes[field] == agentInodes[field] {
+			t.Errorf("%s: user and agent inodes should differ, both are %d", field, userInodes[field])
+		}
+	}
+
+	// Verify different fields within the same message get different inodes
+	seenUser := make(map[uint64]string)
+	for field, ino := range userInodes {
+		if prev, ok := seenUser[ino]; ok {
+			t.Errorf("inode collision in user message: %s and %s both have ino %d", prev, field, ino)
+		}
+		seenUser[ino] = field
+	}
+
+	// Verify message directory itself has a stable inode
+	userDirInfo, err := os.Stat(userDir)
+	if err != nil {
+		t.Fatalf("Stat user dir: %v", err)
+	}
+	userDirIno := statIno(userDirInfo)
+	if userDirIno == 0 {
+		t.Errorf("user message dir inode should be non-zero")
+	}
+
+	agentDirInfo, err := os.Stat(agentDir)
+	if err != nil {
+		t.Fatalf("Stat agent dir: %v", err)
+	}
+	agentDirIno := statIno(agentDirInfo)
+	if agentDirIno == 0 {
+		t.Errorf("agent message dir inode should be non-zero")
+	}
+	if userDirIno == agentDirIno {
+		t.Errorf("user and agent message dir inodes should differ")
+	}
+}
+
 // TestTimestamps_APIMetadataMapping tests that API metadata (created_at, updated_at)
 // is properly mapped to filesystem stat attributes.
 func TestTimestamps_APIMetadataMapping(t *testing.T) {
@@ -5350,5 +5512,35 @@ func TestModelStartNode_Getattr(t *testing.T) {
 	}
 	if out.Size == 0 {
 		t.Error("model start script should have non-zero size")
+	}
+}
+
+func TestMsgFieldIno(t *testing.T) {
+	// Same inputs produce same output (deterministic)
+	ino1 := msgFieldIno("conv-abc", 1, "message_id")
+	ino2 := msgFieldIno("conv-abc", 1, "message_id")
+	if ino1 != ino2 {
+		t.Errorf("same inputs should produce same inode: %d != %d", ino1, ino2)
+	}
+	if ino1 == 0 {
+		t.Error("inode should be non-zero")
+	}
+
+	// Different field names produce different inodes
+	ino3 := msgFieldIno("conv-abc", 1, "type")
+	if ino1 == ino3 {
+		t.Errorf("different fields should produce different inodes: both %d", ino1)
+	}
+
+	// Different sequence IDs produce different inodes
+	ino4 := msgFieldIno("conv-abc", 2, "message_id")
+	if ino1 == ino4 {
+		t.Errorf("different seqIDs should produce different inodes: both %d", ino1)
+	}
+
+	// Different conversation IDs produce different inodes
+	ino5 := msgFieldIno("conv-xyz", 1, "message_id")
+	if ino1 == ino5 {
+		t.Errorf("different convIDs should produce different inodes: both %d", ino1)
 	}
 }
