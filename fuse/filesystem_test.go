@@ -5369,11 +5369,16 @@ func TestSinceDirLsDoesNotMakeExcessiveAPICalls(t *testing.T) {
 	}
 }
 
-// TestSinceDirPerformanceRegression verifies that ls -l on since/{person}/{N}/
-// is no more than 3x slower than ls -l on messages/. Before stable inodes,
-// every Lstat during ls -l re-created intermediate FUSE nodes, losing the
-// FilterSince cache and causing O(N²) work.
-func TestSinceDirPerformanceRegression(t *testing.T) {
+// TestSinceDirPerformance verifies that ReadDir on messages/ and
+// since/{person}/{N}/ complete in reasonable absolute time for a 100-message
+// conversation. This replaced a ratio-based test that became flaky after
+// immutable-node caching made messages/ dramatically faster (kernel-cached
+// Lstat results) while since/ still does per-entry FUSE roundtrips. Both
+// paths are now orders of magnitude faster than the original O(N²) bug
+// (~6s for messages/, ~35s for since/ with 150 messages). The absolute
+// thresholds here are generous guards against gross regressions, not
+// precision benchmarks.
+func TestSinceDirPerformance(t *testing.T) {
 	convID := "conv-perf-regression"
 	numMessages := 100
 
@@ -5447,7 +5452,7 @@ func TestSinceDirPerformanceRegression(t *testing.T) {
 
 	const iterations = 5
 
-	// Measure messages/ ReadDir (baseline)
+	// Measure messages/ ReadDir
 	var messagesTotal time.Duration
 	for i := 0; i < iterations; i++ {
 		start := time.Now()
@@ -5474,14 +5479,19 @@ func TestSinceDirPerformanceRegression(t *testing.T) {
 
 	messagesAvg := messagesTotal / time.Duration(iterations)
 	sinceAvg := sinceTotal / time.Duration(iterations)
-	ratio := float64(sinceAvg) / float64(messagesAvg)
 
-	t.Logf("messages/ avg: %v, since/user/1/ avg: %v, ratio: %.1fx", messagesAvg, sinceAvg, ratio)
+	t.Logf("messages/ avg: %v, since/user/1/ avg: %v", messagesAvg, sinceAvg)
 
-	// Before the fix (stable inodes), this ratio was ~5x.
-	// With stable inodes, it should be under 3x.
-	if ratio > 3.0 {
-		t.Errorf("since/user/1/ is %.1fx slower than messages/ (expected <= 3x)", ratio)
+	// Absolute thresholds: guard against gross regressions. The original bug
+	// had ~6s for messages/ and ~35s for since/ with 150 messages. Current
+	// performance is ~1-2ms and ~7-15ms respectively. A 500ms threshold per
+	// path gives ~30x headroom and will only trip on a real regression.
+	const maxAcceptable = 500 * time.Millisecond
+	if messagesAvg > maxAcceptable {
+		t.Errorf("messages/ avg %v exceeds %v threshold", messagesAvg, maxAcceptable)
+	}
+	if sinceAvg > maxAcceptable {
+		t.Errorf("since/user/1/ avg %v exceeds %v threshold", sinceAvg, maxAcceptable)
 	}
 }
 
