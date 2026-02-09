@@ -1,6 +1,6 @@
 ---
 id: sf-jzbs
-status: open
+status: in_progress
 deps: [sf-l0h7]
 links: []
 created: 2026-02-09T02:36:19Z
