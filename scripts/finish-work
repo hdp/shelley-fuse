@@ -83,11 +83,17 @@ if [ -n "$status" ] && [ "$status" != "closed" ]; then
     # Commit the status change wherever the file lives
     ticket_file=".tickets/${ticket}.md"
     if worktree_exists; then
-        (cd "$worktree_dir" && tk close "$ticket") \
+        (cd "$worktree_dir" && tk close "$ticket")
             && git -C "$worktree_dir" commit --amend --no-edit -- "$ticket_file" 2>/dev/null || true
     elif [ -f "$ticket_file" ]; then
-        tk close "$ticket" \
-            && git commit --amend --no-edit -- "$ticket_file" 2>/dev/null || true
+        if branch_exists; then
+            git checkout $ticket
+            tk close "$ticket"
+            git commit --amend --no-edit -- "$ticket_file" 2>/dev/null
+        else
+            tk close "$ticket"
+            git commit -m "Close $ticket" -- "$ticket_file" 2>/dev/null
+        fi
     fi
 fi
 
