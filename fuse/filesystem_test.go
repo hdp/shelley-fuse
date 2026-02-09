@@ -5121,3 +5121,119 @@ func TestSinceDirLsDoesNotMakeExcessiveAPICalls(t *testing.T) {
 		t.Errorf("Too many GetConversation calls: %d (expected <= 5 with caching)", fetches)
 	}
 }
+
+// TestSinceDirPerformanceRegression verifies that ls -l on since/{person}/{N}/
+// is no more than 3x slower than ls -l on messages/. Before stable inodes,
+// every Lstat during ls -l re-created intermediate FUSE nodes, losing the
+// FilterSince cache and causing O(N²) work.
+func TestSinceDirPerformanceRegression(t *testing.T) {
+	convID := "conv-perf-regression"
+	numMessages := 100
+
+	// Build a conversation: 1 user message followed by (numMessages-1) agent replies.
+	// This ensures since/user/1/ returns (numMessages-1) entries.
+	msgs := []shelley.Message{
+		{MessageID: "m1", ConversationID: convID, SequenceID: 1, Type: "user", UserData: strPtr(`{"Content":[{"Type":2,"Text":"Hello"}]}`)},
+	}
+	for i := 2; i <= numMessages; i++ {
+		msgs = append(msgs, shelley.Message{
+			MessageID:      fmt.Sprintf("m%d", i),
+			ConversationID: convID,
+			SequenceID:     i,
+			Type:           "shelley",
+			LLMData:        strPtr(fmt.Sprintf(`{"Content":[{"Type":2,"Text":"Reply %d"}]}`, i)),
+		})
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/conversation/"+convID {
+			data, _ := json.Marshal(struct {
+				Messages []shelley.Message `json:"messages"`
+			}{Messages: msgs})
+			w.Write(data)
+			return
+		}
+		if r.URL.Path == "/api/conversations" {
+			data, _ := json.Marshal([]shelley.Conversation{{ConversationID: convID}})
+			w.Write(data)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	baseClient := shelley.NewClient(server.URL)
+	cachingClient := shelley.NewCachingClient(baseClient, 5*time.Second)
+	store := testStore(t)
+
+	localID, _ := store.Clone()
+	store.MarkCreated(localID, convID, "")
+
+	shelleyFS := NewFS(cachingClient, store, time.Hour)
+
+	tmpDir, err := ioutil.TempDir("", "shelley-fuse-perf-regression")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	opts := &fs.Options{}
+	entryTimeout := time.Duration(0)
+	attrTimeout := time.Duration(0)
+	negativeTimeout := time.Duration(0)
+	opts.EntryTimeout = &entryTimeout
+	opts.AttrTimeout = &attrTimeout
+	opts.NegativeTimeout = &negativeTimeout
+
+	fssrv, err := fs.Mount(tmpDir, shelleyFS, opts)
+	if err != nil {
+		t.Fatalf("Mount failed: %v", err)
+	}
+	defer fssrv.Unmount()
+
+	messagesPath := filepath.Join(tmpDir, "conversation", localID, "messages")
+	sincePath := filepath.Join(tmpDir, "conversation", localID, "messages", "since", "user", "1")
+
+	// Warm up caches
+	ioutil.ReadDir(messagesPath)
+	ioutil.ReadDir(sincePath)
+
+	const iterations = 5
+
+	// Measure messages/ ReadDir (baseline)
+	var messagesTotal time.Duration
+	for i := 0; i < iterations; i++ {
+		start := time.Now()
+		_, err := ioutil.ReadDir(messagesPath)
+		if err != nil {
+			t.Fatalf("ReadDir messages/ failed: %v", err)
+		}
+		messagesTotal += time.Since(start)
+	}
+
+	// Measure since/user/1/ ReadDir
+	var sinceTotal time.Duration
+	for i := 0; i < iterations; i++ {
+		start := time.Now()
+		entries, err := ioutil.ReadDir(sincePath)
+		if err != nil {
+			t.Fatalf("ReadDir since/user/1/ failed: %v", err)
+		}
+		if len(entries) != numMessages-1 {
+			t.Fatalf("Expected %d entries, got %d", numMessages-1, len(entries))
+		}
+		sinceTotal += time.Since(start)
+	}
+
+	messagesAvg := messagesTotal / time.Duration(iterations)
+	sinceAvg := sinceTotal / time.Duration(iterations)
+	ratio := float64(sinceAvg) / float64(messagesAvg)
+
+	t.Logf("messages/ avg: %v, since/user/1/ avg: %v, ratio: %.1fx", messagesAvg, sinceAvg, ratio)
+
+	// Before the fix (stable inodes), this ratio was ~5x.
+	// With stable inodes, it should be under 3x.
+	if ratio > 3.0 {
+		t.Errorf("since/user/1/ is %.1fx slower than messages/ (expected <= 3x)", ratio)
+	}
+}

@@ -5,6 +5,7 @@ import (
 	_ "embed"
 	"encoding/json"
 	"fmt"
+	"hash/fnv"
 	"log"
 	"regexp"
 	"strconv"
@@ -1331,9 +1332,11 @@ func (m *MessagesDirNode) Lookup(ctx context.Context, name string, out *fuse.Ent
 	defer diag.Track(m.diag, "MessagesDirNode", "Lookup", m.localID+"/"+name)()
 	switch name {
 	case "last":
-		return m.NewInode(ctx, &QueryDirNode{localID: m.localID, client: m.client, state: m.state, kind: queryLast, startTime: m.startTime, parsedCache: m.parsedCache, diag: m.diag}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
+		ino := stableIno("query-dir", m.localID, "last")
+		return m.NewInode(ctx, &QueryDirNode{localID: m.localID, client: m.client, state: m.state, kind: queryLast, startTime: m.startTime, parsedCache: m.parsedCache, diag: m.diag}, fs.StableAttr{Mode: fuse.S_IFDIR, Ino: ino}), 0
 	case "since":
-		return m.NewInode(ctx, &QueryDirNode{localID: m.localID, client: m.client, state: m.state, kind: querySince, startTime: m.startTime, parsedCache: m.parsedCache, diag: m.diag}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
+		ino := stableIno("query-dir", m.localID, "since")
+		return m.NewInode(ctx, &QueryDirNode{localID: m.localID, client: m.client, state: m.state, kind: querySince, startTime: m.startTime, parsedCache: m.parsedCache, diag: m.diag}, fs.StableAttr{Mode: fuse.S_IFDIR, Ino: ino}), 0
 	case "count":
 		return m.NewInode(ctx, &MessageCountNode{localID: m.localID, client: m.client, state: m.state, startTime: m.startTime, parsedCache: m.parsedCache}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
 	}
@@ -2165,18 +2168,28 @@ func (q *QueryDirNode) Lookup(ctx context.Context, name string, out *fuse.EntryO
 	defer diag.Track(q.diag, "QueryDirNode", "Lookup", q.localID+"/"+name)()
 	// If this is since/ (no person set), the child is a person directory
 	if q.kind == querySince && q.person == "" {
+		// Use a stable inode number so go-fuse reuses the existing node
+		// across repeated path traversals (e.g., during ls -l).
+		ino := stableIno("query-person", q.localID, name)
 		return q.NewInode(ctx, &QueryDirNode{
 			localID: q.localID, client: q.client, state: q.state,
 			kind: q.kind, person: name, startTime: q.startTime, parsedCache: q.parsedCache, diag: q.diag,
-		}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
+		}, fs.StableAttr{Mode: fuse.S_IFDIR, Ino: ino}), 0
 	}
 
-	// The child is {N} - return a QueryResultDirNode
+	// The child is {N} - return a QueryResultDirNode.
+	// Use a stable inode number so go-fuse reuses the existing node across
+	// repeated path traversals. This is critical for performance: the node
+	// caches filtered message results and name indices that are expensive to
+	// recompute (FilterSinceWithToolMap is O(N) with JSON parsing per message).
+	// Without stable inodes, ls -l on since/{person}/{N}/ would create a fresh
+	// node for every Lstat call, causing O(N²) FilterSince computations.
 	n, err := strconv.Atoi(name)
 	if err != nil || n <= 0 {
 		return nil, syscall.ENOENT
 	}
 
+	ino := stableIno("query-result", q.localID, q.person, name)
 	return q.NewInode(ctx, &QueryResultDirNode{
 		localID:     q.localID,
 		client:      q.client,
@@ -2187,7 +2200,7 @@ func (q *QueryDirNode) Lookup(ctx context.Context, name string, out *fuse.EntryO
 		startTime:   q.startTime,
 		parsedCache: q.parsedCache,
 		diag:        q.diag,
-	}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
+	}, fs.StableAttr{Mode: fuse.S_IFDIR, Ino: ino}), 0
 }
 
 // getSymlinkTarget returns the symlink target for last/{N} or since/{person}/{N}.
@@ -2777,6 +2790,25 @@ func extractToolResultIDs(msg *shelley.Message) []string {
 	}
 
 	return ids
+}
+
+// stableIno computes a deterministic inode number from the given key parts.
+// This allows go-fuse to reuse existing inodes across repeated Lookup calls
+// for the same path, preserving any cached state on the node.
+func stableIno(parts ...string) uint64 {
+	h := fnv.New64a()
+	for i, p := range parts {
+		if i > 0 {
+			h.Write([]byte{0}) // separator
+		}
+		h.Write([]byte(p))
+	}
+	// Ensure non-zero (Ino=0 means auto-assign in go-fuse)
+	ino := h.Sum64()
+	if ino == 0 {
+		ino = 1
+	}
+	return ino
 }
 
 // compile-time interface checks
