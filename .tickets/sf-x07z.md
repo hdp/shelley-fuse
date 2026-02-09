@@ -1,6 +1,6 @@
 ---
 id: sf-x07z
-status: in_progress
+status: closed
 deps: []
 links: []
 created: 2026-02-09T16:05:02Z
@@ -16,3 +16,9 @@ Currently the code parses systemctl's text output, which can be brittle. We shou
 
 Replace text parsing with JSON parsing for systemctl commands
 
+
+## Notes
+
+**2026-02-09T16:07:39Z**
+
+Replaced brittle text parsing of systemctl output with JSON parsing. Changed from 'systemctl show shelley.socket -p Listen' to 'systemctl list-sockets shelley.socket --output=json' which returns structured JSON. Updated parseListenAddress to parse JSON instead of text, and updated all corresponding tests.

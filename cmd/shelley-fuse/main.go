@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -20,41 +21,30 @@ import (
 
 const defaultBackendURL = "http://localhost:9999"
 
-// parseListenAddress parses the output of `systemctl show shelley.socket -p Listen`
+// SocketInfo represents a socket entry from systemctl list-sockets --output=json.
+type SocketInfo struct {
+	Listen    string `json:"listen"`
+	Unit      string `json:"unit"`
+	Activates string `json:"activates"`
+}
+
+// parseListenAddress parses the JSON output from `systemctl list-sockets shelley.socket --output=json`
 // and returns an HTTP URL for the first TCP listen address found.
-//
-// Expected input formats:
-//
-//	Listen=127.0.0.1:9999 (Stream)
-//	Listen=[::]:9999 (Stream)
-//	Listen=0.0.0.0:8080 (Stream)
-//	Listen=/run/shelley.sock (Stream)
-func parseListenAddress(output string) (string, error) {
-	for _, line := range strings.Split(output, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
+func parseListenAddress(jsonOutput string) (string, error) {
+	var sockets []SocketInfo
+	if err := json.Unmarshal([]byte(jsonOutput), &sockets); err != nil {
+		return "", fmt.Errorf("failed to parse systemctl JSON output: %w", err)
+	}
 
-		// Strip "Listen=" prefix if present
-		line = strings.TrimPrefix(line, "Listen=")
-
-		// Strip the trailing " (Stream)", " (Datagram)", etc.
-		if idx := strings.LastIndex(line, " ("); idx >= 0 {
-			line = line[:idx]
-		}
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-
+	// The output should contain shelley.socket entries
+	for _, s := range sockets {
 		// Skip unix sockets (absolute paths)
-		if strings.HasPrefix(line, "/") {
+		if strings.HasPrefix(s.Listen, "/") {
 			continue
 		}
 
 		// Parse as a TCP address
-		host, port, err := net.SplitHostPort(line)
+		host, port, err := net.SplitHostPort(s.Listen)
 		if err != nil {
 			continue
 		}
@@ -67,13 +57,14 @@ func parseListenAddress(output string) (string, error) {
 		return fmt.Sprintf("http://%s", net.JoinHostPort(host, port)), nil
 	}
 
-	return "", fmt.Errorf("no TCP listen address found in systemctl output")
+	return "", fmt.Errorf("no TCP listen address found for shelley.socket")
 }
 
 // discoverBackendURL attempts to discover the backend URL from the
-// shelley.socket systemd unit. Falls back to defaultBackendURL on failure.
+// shelley.socket systemd unit using systemctl's JSON output format.
+// Falls back to defaultBackendURL on failure.
 func discoverBackendURL() string {
-	out, err := exec.Command("systemctl", "show", "shelley.socket", "-p", "Listen").Output()
+	out, err := exec.Command("systemctl", "list-sockets", "shelley.socket", "--output=json").Output()
 	if err != nil {
 		log.Printf("Failed to query shelley.socket: %v; using default %s", err, defaultBackendURL)
 		return defaultBackendURL
