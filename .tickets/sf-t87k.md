@@ -1,6 +1,6 @@
 ---
 id: sf-t87k
-status: open
+status: in_progress
 deps: []
 links: []
 created: 2026-02-09T01:51:13Z
