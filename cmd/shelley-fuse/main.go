@@ -4,8 +4,11 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"os"
+	"os/exec"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -15,21 +18,98 @@ import (
 	"shelley-fuse/state"
 )
 
+const defaultBackendURL = "http://localhost:9999"
+
+// parseListenAddress parses the output of `systemctl show shelley.socket -p Listen`
+// and returns an HTTP URL for the first TCP listen address found.
+//
+// Expected input formats:
+//
+//	Listen=127.0.0.1:9999 (Stream)
+//	Listen=[::]:9999 (Stream)
+//	Listen=0.0.0.0:8080 (Stream)
+//	Listen=/run/shelley.sock (Stream)
+func parseListenAddress(output string) (string, error) {
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+
+		// Strip "Listen=" prefix if present
+		line = strings.TrimPrefix(line, "Listen=")
+
+		// Strip the trailing " (Stream)", " (Datagram)", etc.
+		if idx := strings.LastIndex(line, " ("); idx >= 0 {
+			line = line[:idx]
+		}
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+
+		// Skip unix sockets (absolute paths)
+		if strings.HasPrefix(line, "/") {
+			continue
+		}
+
+		// Parse as a TCP address
+		host, port, err := net.SplitHostPort(line)
+		if err != nil {
+			continue
+		}
+
+		// Replace wildcard/unspecified addresses with localhost
+		if host == "" || host == "0.0.0.0" || host == "::" {
+			host = "localhost"
+		}
+
+		return fmt.Sprintf("http://%s", net.JoinHostPort(host, port)), nil
+	}
+
+	return "", fmt.Errorf("no TCP listen address found in systemctl output")
+}
+
+// discoverBackendURL attempts to discover the backend URL from the
+// shelley.socket systemd unit. Falls back to defaultBackendURL on failure.
+func discoverBackendURL() string {
+	out, err := exec.Command("systemctl", "show", "shelley.socket", "-p", "Listen").Output()
+	if err != nil {
+		log.Printf("Failed to query shelley.socket: %v; using default %s", err, defaultBackendURL)
+		return defaultBackendURL
+	}
+
+	url, err := parseListenAddress(string(out))
+	if err != nil {
+		log.Printf("Failed to parse shelley.socket listen address: %v; using default %s", err, defaultBackendURL)
+		return defaultBackendURL
+	}
+
+	return url
+}
+
 func main() {
 	debug := flag.Bool("debug", false, "enable debug output")
 	cloneTimeout := flag.Duration("clone-timeout", time.Hour, "duration after which unconversed clone IDs are cleaned up")
 	cacheTTL := flag.Duration("cache-ttl", 3*time.Second, "cache TTL for backend responses (0 to disable caching)")
 	flag.Parse()
 
-	if flag.NArg() < 2 {
-		fmt.Printf("Usage: %s [options] MOUNTPOINT URL\n", os.Args[0])
+	if flag.NArg() < 1 {
+		fmt.Printf("Usage: %s [options] MOUNTPOINT [URL]\n", os.Args[0])
 		fmt.Printf("Options:\n")
 		flag.PrintDefaults()
 		os.Exit(1)
 	}
 
 	mountpoint := flag.Arg(0)
-	url := flag.Arg(1)
+
+	var url string
+	if flag.NArg() >= 2 {
+		url = flag.Arg(1)
+	} else {
+		url = discoverBackendURL()
+	}
+	log.Printf("Using backend URL: %s", url)
 
 	// Create Shelley client with optional caching
 	baseClient := shelley.NewClient(url)
