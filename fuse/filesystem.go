@@ -22,9 +22,26 @@ import (
 	"shelley-fuse/state"
 )
 
-// immutableTimeout is the cache timeout for immutable message nodes.
-// Message content never changes once created, so we can cache aggressively.
-const immutableTimeout = 1 * time.Hour
+// Cache timeout constants.
+const (
+	// immutableTimeout is the cache timeout for immutable message nodes.
+	// Message content never changes once created, so we can cache aggressively.
+	immutableTimeout = 1 * time.Hour
+
+	// negTimeout is the negative-entry timeout for dynamic presence files
+	// that may appear (e.g., "created" before backend creation, "model" before ctl write).
+	// Short enough to notice state changes promptly.
+	negTimeout = 1 * time.Second
+
+	// immutableEntryTimeout is the positive-entry timeout for files that,
+	// once they exist, never disappear or change identity (e.g., "created",
+	// "model" symlink, "cwd" symlink).
+	immutableEntryTimeout = 1 * time.Hour
+
+	// volatileEntryTimeout is the positive-entry timeout for files whose
+	// presence can toggle (e.g., "archived" can be created/removed).
+	volatileEntryTimeout = 1 * time.Second
+)
 
 // ParsedMessageCache caches parsed messages and toolMaps, keyed by conversation ID.
 // The cache is content-addressed: it stores a checksum of the raw data and only
@@ -976,39 +993,55 @@ func (c *ConversationNode) Lookup(ctx context.Context, name string, out *fuse.En
 	case "fuse_id":
 		return c.NewInode(ctx, &ConvStatusFieldNode{localID: c.localID, client: c.client, state: c.state, field: "fuse_id", startTime: c.startTime}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
 	case "created":
-		// Presence/absence semantics: file exists only when conversation is created on backend
+		// Presence/absence semantics: file exists only when conversation is created on backend.
+		// Once created, it never disappears → long positive timeout.
+		// Before creation, short negative timeout so we notice quickly.
 		cs := c.state.Get(c.localID)
 		if cs == nil || !cs.Created {
+			out.SetEntryTimeout(negTimeout)
 			return nil, syscall.ENOENT
 		}
+		out.SetEntryTimeout(immutableEntryTimeout)
 		return c.NewInode(ctx, &ConvCreatedNode{localID: c.localID, state: c.state, startTime: c.startTime}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
 	case "model":
+		// Set once via ctl, never changes after → long positive timeout.
+		// Before set, short negative timeout so we notice the ctl write.
 		cs := c.state.Get(c.localID)
 		if cs == nil || cs.Model == "" {
+			out.SetEntryTimeout(negTimeout)
 			return nil, syscall.ENOENT
 		}
+		out.SetEntryTimeout(immutableEntryTimeout)
 		target := "../../models/" + cs.Model
 		return c.NewInode(ctx, &SymlinkNode{target: target, startTime: c.getConversationTime()}, fs.StableAttr{Mode: syscall.S_IFLNK}), 0
 	case "cwd":
+		// Set once via ctl, never changes after → long positive timeout.
+		// Before set, short negative timeout so we notice the ctl write.
 		cs := c.state.Get(c.localID)
 		if cs == nil || cs.Cwd == "" {
+			out.SetEntryTimeout(negTimeout)
 			return nil, syscall.ENOENT
 		}
+		out.SetEntryTimeout(immutableEntryTimeout)
 		return c.NewInode(ctx, &CwdSymlinkNode{
 			localID:   c.localID,
 			state:     c.state,
 			startTime: c.startTime,
 		}, fs.StableAttr{Mode: syscall.S_IFLNK}), 0
 	case "archived":
-		// Presence/absence semantics: file exists only when conversation is archived
+		// Presence/absence semantics: file exists only when conversation is archived.
+		// Can appear and disappear (archive/unarchive) → short timeouts both ways.
 		cs := c.state.Get(c.localID)
 		if cs == nil || !cs.Created || cs.ShelleyConversationID == "" {
+			out.SetEntryTimeout(negTimeout)
 			return nil, syscall.ENOENT
 		}
 		archived, err := c.client.IsConversationArchived(cs.ShelleyConversationID)
 		if err != nil || !archived {
+			out.SetEntryTimeout(volatileEntryTimeout)
 			return nil, syscall.ENOENT
 		}
+		out.SetEntryTimeout(volatileEntryTimeout)
 		return c.NewInode(ctx, &ArchivedNode{
 			localID:   c.localID,
 			client:    c.client,
@@ -1016,7 +1049,8 @@ func (c *ConversationNode) Lookup(ctx context.Context, name string, out *fuse.En
 			startTime: c.startTime,
 		}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
 	case "waiting_for_input":
-		// Symlink to messages/{NNN}-agent/llm_data/EndOfTurn when conversation is waiting for user input
+		// Symlink to messages/{NNN}-agent/llm_data/EndOfTurn when conversation is waiting for user input.
+		// Changes with every message → no entry caching (0 timeout, the default).
 		cs := c.state.Get(c.localID)
 		if cs == nil || !cs.Created || cs.ShelleyConversationID == "" {
 			return nil, syscall.ENOENT

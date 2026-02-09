@@ -1,6 +1,6 @@
 ---
 id: sf-squ7
-status: in_progress
+status: closed
 deps: []
 links: []
 created: 2026-02-09T02:36:10Z
