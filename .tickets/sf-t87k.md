@@ -2,7 +2,7 @@
 id: sf-t87k
 status: in_progress
 deps: []
-links: []
+links: [sf-l0h7]
 created: 2026-02-09T01:51:13Z
 type: task
 priority: 2
