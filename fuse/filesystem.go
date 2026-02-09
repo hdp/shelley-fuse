@@ -212,7 +212,7 @@ var _ = (fs.NodeGetattrer)((*FS)(nil))
 func (f *FS) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
 	switch name {
 	case "models":
-		return f.NewInode(ctx, &ModelsDirNode{client: f.client, startTime: f.startTime, diag: f.Diag}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
+		return f.NewInode(ctx, &ModelsDirNode{client: f.client, state: f.state, startTime: f.startTime, diag: f.Diag}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
 	case "new":
 		return f.NewInode(ctx, &NewDirNode{state: f.state, startTime: f.startTime, diag: f.Diag}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
 	case "conversation":
@@ -276,6 +276,7 @@ func (r *ReadmeNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.Att
 type ModelsDirNode struct {
 	fs.Inode
 	client    shelley.ShelleyClient
+	state     *state.Store
 	startTime time.Time
 	diag      *diag.Tracker
 }
@@ -303,7 +304,7 @@ func (m *ModelsDirNode) Lookup(ctx context.Context, name string, out *fuse.Entry
 	// Primary lookup: match by display name
 	for _, model := range result.Models {
 		if model.Name() == name {
-			return m.NewInode(ctx, &ModelNode{model: model, startTime: m.startTime}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
+			return m.NewInode(ctx, &ModelNode{model: model, client: m.client, state: m.state, startTime: m.startTime, diag: m.diag}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
 		}
 	}
 	// Fallback: match by internal ID — return symlink to display name
@@ -351,7 +352,10 @@ func (m *ModelsDirNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.
 type ModelNode struct {
 	fs.Inode
 	model     shelley.Model
+	client    shelley.ShelleyClient
+	state     *state.Store
 	startTime time.Time
+	diag      *diag.Tracker
 }
 
 var _ = (fs.NodeLookuper)((*ModelNode)(nil))
@@ -368,6 +372,8 @@ func (m *ModelNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut)
 			return nil, syscall.ENOENT
 		}
 		return m.NewInode(ctx, &ModelReadyNode{startTime: m.startTime}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
+	case "new":
+		return m.NewInode(ctx, &ModelNewDirNode{model: m.model, state: m.state, startTime: m.startTime, diag: m.diag}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
 	}
 	return nil, syscall.ENOENT
 }
@@ -375,6 +381,7 @@ func (m *ModelNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut)
 func (m *ModelNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
 	entries := []fuse.DirEntry{
 		{Name: "id", Mode: fuse.S_IFREG},
+		{Name: "new", Mode: fuse.S_IFDIR},
 	}
 	// Presence/absence semantics: only include "ready" if model is ready
 	if m.model.Ready {
@@ -440,6 +447,71 @@ func (m *ModelReadyNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse
 	out.Mode = fuse.S_IFREG | 0444
 	out.Size = 0
 	setTimestamps(&out.Attr, m.startTime)
+	return 0
+}
+
+// --- ModelNewDirNode: /models/{model-id}/new/ directory containing clone ---
+
+type ModelNewDirNode struct {
+	fs.Inode
+	model     shelley.Model
+	state     *state.Store
+	startTime time.Time
+	diag      *diag.Tracker
+}
+
+var _ = (fs.NodeLookuper)((*ModelNewDirNode)(nil))
+var _ = (fs.NodeReaddirer)((*ModelNewDirNode)(nil))
+var _ = (fs.NodeGetattrer)((*ModelNewDirNode)(nil))
+
+func (n *ModelNewDirNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
+	if name == "clone" {
+		return n.NewInode(ctx, &ModelCloneNode{model: n.model, state: n.state, startTime: n.startTime, diag: n.diag}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
+	}
+	return nil, syscall.ENOENT
+}
+
+func (n *ModelNewDirNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
+	return fs.NewListDirStream([]fuse.DirEntry{
+		{Name: "clone", Mode: fuse.S_IFREG},
+	}), 0
+}
+
+func (n *ModelNewDirNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
+	out.Mode = fuse.S_IFDIR | 0755
+	setTimestamps(&out.Attr, n.startTime)
+	return 0
+}
+
+// --- ModelCloneNode: /models/{model-id}/new/clone — clones with model preconfigured ---
+
+type ModelCloneNode struct {
+	fs.Inode
+	model     shelley.Model
+	state     *state.Store
+	startTime time.Time
+	diag      *diag.Tracker
+}
+
+var _ = (fs.NodeOpener)((*ModelCloneNode)(nil))
+var _ = (fs.NodeGetattrer)((*ModelCloneNode)(nil))
+
+func (c *ModelCloneNode) Open(ctx context.Context, flags uint32) (fs.FileHandle, uint32, syscall.Errno) {
+	defer diag.Track(c.diag, "ModelCloneNode", "Open", c.model.Name())()
+	id, err := c.state.Clone()
+	if err != nil {
+		return nil, 0, syscall.EIO
+	}
+	// Preconfigure the model on the new conversation
+	if err := c.state.SetModel(id, c.model.Name(), c.model.ID); err != nil {
+		return nil, 0, syscall.EIO
+	}
+	return &CloneFileHandle{id: id, diag: c.diag}, fuse.FOPEN_DIRECT_IO, 0
+}
+
+func (c *ModelCloneNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
+	out.Mode = fuse.S_IFREG | 0444
+	setTimestamps(&out.Attr, c.startTime)
 	return 0
 }
 

@@ -50,6 +50,8 @@ The filesystem follows a Plan 9-inspired control file model. There are no host d
     {model-id}/                         → directory for each model
       id                                → read-only file: model ID
       ready                             → present only if model is ready (presence semantics)
+      new/
+        clone                           → read to allocate a new conversation with this model preconfigured
   new/
     clone                               → read to allocate a new local conversation ID
   conversation/                           → lists local IDs + server conversations (merged via GET /api/conversations)

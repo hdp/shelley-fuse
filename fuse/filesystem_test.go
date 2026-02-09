@@ -931,23 +931,25 @@ func TestModelNode_Readdir(t *testing.T) {
 		entries = append(entries, entry)
 	}
 
-	if len(entries) != 2 {
-		t.Fatalf("expected 2 entries (id, ready), got %d", len(entries))
+	if len(entries) != 3 {
+		t.Fatalf("expected 3 entries (id, new, ready), got %d", len(entries))
 	}
 
-	expectedFiles := map[string]bool{"id": false, "ready": false}
+	expectedModes := map[string]uint32{"id": fuse.S_IFREG, "new": fuse.S_IFDIR, "ready": fuse.S_IFREG}
+	found := map[string]bool{}
 	for _, e := range entries {
-		if _, ok := expectedFiles[e.Name]; ok {
-			expectedFiles[e.Name] = true
-			if e.Mode != fuse.S_IFREG {
-				t.Errorf("expected file mode for %q", e.Name)
-			}
-		} else {
+		expMode, ok := expectedModes[e.Name]
+		if !ok {
 			t.Errorf("unexpected entry %q", e.Name)
+			continue
+		}
+		found[e.Name] = true
+		if e.Mode != expMode {
+			t.Errorf("entry %q: expected mode %d, got %d", e.Name, expMode, e.Mode)
 		}
 	}
-	for name, found := range expectedFiles {
-		if !found {
+	for name := range expectedModes {
+		if !found[name] {
 			t.Errorf("expected entry %q not found", name)
 		}
 	}
@@ -1062,6 +1064,260 @@ func TestModelFieldNode_ReadOffset(t *testing.T) {
 	data, _ = result.Bytes(nil)
 	if len(data) != 0 {
 		t.Errorf("expected empty result for offset beyond content, got %q", string(data))
+	}
+}
+
+// --- Tests for ModelNewDirNode ---
+
+func TestModelNewDirNode_Readdir(t *testing.T) {
+	model := shelley.Model{ID: "test-model", Ready: true}
+	node := &ModelNewDirNode{model: model}
+
+	stream, errno := node.Readdir(context.Background())
+	if errno != 0 {
+		t.Fatalf("Readdir failed with errno %d", errno)
+	}
+
+	var entries []fuse.DirEntry
+	for stream.HasNext() {
+		entry, _ := stream.Next()
+		entries = append(entries, entry)
+	}
+
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 entry (clone), got %d", len(entries))
+	}
+	if entries[0].Name != "clone" {
+		t.Errorf("expected entry 'clone', got %q", entries[0].Name)
+	}
+	if entries[0].Mode != fuse.S_IFREG {
+		t.Errorf("expected file mode for 'clone'")
+	}
+}
+
+func TestModelNewDirNode_LookupMounted(t *testing.T) {
+	models := []shelley.Model{
+		{ID: "my-model", Ready: true},
+	}
+	server := mockModelsServer(t, models)
+	defer server.Close()
+
+	client := shelley.NewClient(server.URL)
+	store := testStore(t)
+	shelleyFS := NewFS(client, store, time.Hour)
+
+	tmpDir, err := ioutil.TempDir("", "shelley-fuse-model-new-lookup-test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	opts := &fs.Options{}
+	entryTimeout := time.Duration(0)
+	attrTimeout := time.Duration(0)
+	negativeTimeout := time.Duration(0)
+	opts.EntryTimeout = &entryTimeout
+	opts.AttrTimeout = &attrTimeout
+	opts.NegativeTimeout = &negativeTimeout
+
+	fssrv, err := fs.Mount(tmpDir, shelleyFS, opts)
+	if err != nil {
+		t.Fatalf("Mount failed: %v", err)
+	}
+	defer fssrv.Unmount()
+
+	// new/ directory should exist
+	info, err := os.Stat(filepath.Join(tmpDir, "models", "my-model", "new"))
+	if err != nil {
+		t.Fatalf("Stat for 'new' failed: %v", err)
+	}
+	if !info.IsDir() {
+		t.Error("expected directory for 'new', got file")
+	}
+
+	// new/clone should exist
+	info, err = os.Stat(filepath.Join(tmpDir, "models", "my-model", "new", "clone"))
+	if err != nil {
+		t.Fatalf("Stat for 'new/clone' failed: %v", err)
+	}
+	if info.IsDir() {
+		t.Error("expected file for 'new/clone', got directory")
+	}
+
+	// nonexistent should fail
+	_, err = os.Stat(filepath.Join(tmpDir, "models", "my-model", "new", "nonexistent"))
+	if err == nil {
+		t.Error("Stat for 'nonexistent' should fail")
+	}
+	if !os.IsNotExist(err) {
+		t.Errorf("expected ENOENT for nonexistent, got %v", err)
+	}
+}
+
+// --- Tests for ModelCloneNode (mounted) ---
+
+func TestModelCloneNode_ReturnsIDWithModelPreconfigured(t *testing.T) {
+	models := []shelley.Model{
+		{ID: "my-model", Ready: true},
+	}
+	server := mockModelsServer(t, models)
+	defer server.Close()
+
+	client := shelley.NewClient(server.URL)
+	store := testStore(t)
+	shelleyFS := NewFS(client, store, time.Hour)
+
+	tmpDir, err := ioutil.TempDir("", "shelley-fuse-model-clone-test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	opts := &fs.Options{}
+	entryTimeout := time.Duration(0)
+	attrTimeout := time.Duration(0)
+	negativeTimeout := time.Duration(0)
+	opts.EntryTimeout = &entryTimeout
+	opts.AttrTimeout = &attrTimeout
+	opts.NegativeTimeout = &negativeTimeout
+
+	fssrv, err := fs.Mount(tmpDir, shelleyFS, opts)
+	if err != nil {
+		t.Fatalf("Mount failed: %v", err)
+	}
+	defer fssrv.Unmount()
+
+	// Read the model clone to get a new conversation ID
+	data, err := os.ReadFile(filepath.Join(tmpDir, "models", "my-model", "new", "clone"))
+	if err != nil {
+		t.Fatalf("Failed to read model clone: %v", err)
+	}
+
+	id := strings.TrimSpace(string(data))
+	if len(id) != 8 {
+		t.Fatalf("expected 8-character hex ID, got %q", id)
+	}
+
+	// Verify the model is preconfigured by reading the ctl file
+	ctlData, err := os.ReadFile(filepath.Join(tmpDir, "conversation", id, "ctl"))
+	if err != nil {
+		t.Fatalf("Failed to read ctl: %v", err)
+	}
+
+	ctlContent := strings.TrimSpace(string(ctlData))
+	if !strings.Contains(ctlContent, "model=my-model") {
+		t.Errorf("expected ctl to contain 'model=my-model', got %q", ctlContent)
+	}
+}
+
+func TestModelCloneNode_UniqueIDs(t *testing.T) {
+	models := []shelley.Model{
+		{ID: "my-model", Ready: true},
+	}
+	server := mockModelsServer(t, models)
+	defer server.Close()
+
+	client := shelley.NewClient(server.URL)
+	store := testStore(t)
+	shelleyFS := NewFS(client, store, time.Hour)
+
+	tmpDir, err := ioutil.TempDir("", "shelley-fuse-model-clone-unique-test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	opts := &fs.Options{}
+	entryTimeout := time.Duration(0)
+	attrTimeout := time.Duration(0)
+	negativeTimeout := time.Duration(0)
+	opts.EntryTimeout = &entryTimeout
+	opts.AttrTimeout = &attrTimeout
+	opts.NegativeTimeout = &negativeTimeout
+
+	fssrv, err := fs.Mount(tmpDir, shelleyFS, opts)
+	if err != nil {
+		t.Fatalf("Mount failed: %v", err)
+	}
+	defer fssrv.Unmount()
+
+	// Read clone twice, should get different IDs
+	data1, err := os.ReadFile(filepath.Join(tmpDir, "models", "my-model", "new", "clone"))
+	if err != nil {
+		t.Fatalf("First clone read failed: %v", err)
+	}
+	data2, err := os.ReadFile(filepath.Join(tmpDir, "models", "my-model", "new", "clone"))
+	if err != nil {
+		t.Fatalf("Second clone read failed: %v", err)
+	}
+
+	id1 := strings.TrimSpace(string(data1))
+	id2 := strings.TrimSpace(string(data2))
+	if id1 == id2 {
+		t.Errorf("expected unique IDs, both are %q", id1)
+	}
+}
+
+func TestModelCloneNode_CustomModelName(t *testing.T) {
+	// Test with a model where display name differs from internal ID
+	models := []shelley.Model{
+		{ID: "custom-abc123", DisplayName: "my-custom-model", Ready: true},
+	}
+	server := mockModelsServer(t, models)
+	defer server.Close()
+
+	client := shelley.NewClient(server.URL)
+	store := testStore(t)
+	shelleyFS := NewFS(client, store, time.Hour)
+
+	tmpDir, err := ioutil.TempDir("", "shelley-fuse-model-clone-custom-test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	opts := &fs.Options{}
+	entryTimeout := time.Duration(0)
+	attrTimeout := time.Duration(0)
+	negativeTimeout := time.Duration(0)
+	opts.EntryTimeout = &entryTimeout
+	opts.AttrTimeout = &attrTimeout
+	opts.NegativeTimeout = &negativeTimeout
+
+	fssrv, err := fs.Mount(tmpDir, shelleyFS, opts)
+	if err != nil {
+		t.Fatalf("Mount failed: %v", err)
+	}
+	defer fssrv.Unmount()
+
+	// Access via display name
+	data, err := os.ReadFile(filepath.Join(tmpDir, "models", "my-custom-model", "new", "clone"))
+	if err != nil {
+		t.Fatalf("Failed to read model clone: %v", err)
+	}
+
+	id := strings.TrimSpace(string(data))
+
+	// Verify model display name is set in ctl
+	ctlData, err := os.ReadFile(filepath.Join(tmpDir, "conversation", id, "ctl"))
+	if err != nil {
+		t.Fatalf("Failed to read ctl: %v", err)
+	}
+	ctlContent := strings.TrimSpace(string(ctlData))
+	if !strings.Contains(ctlContent, "model=my-custom-model") {
+		t.Errorf("expected ctl to contain 'model=my-custom-model', got %q", ctlContent)
+	}
+
+	// Verify internal model ID is stored in state
+	cs := store.Get(id)
+	if cs == nil {
+		t.Fatalf("conversation %q not found in state", id)
+	}
+	if cs.ModelID != "custom-abc123" {
+		t.Errorf("expected ModelID 'custom-abc123', got %q", cs.ModelID)
+	}
+	if cs.Model != "my-custom-model" {
+		t.Errorf("expected Model 'my-custom-model', got %q", cs.Model)
 	}
 }
 
@@ -1243,8 +1499,8 @@ func TestModelsDirNode_MountedReadAndAccess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to read model-ready directory: %v", err)
 	}
-	if len(entries) != 2 {
-		t.Errorf("expected 2 files (id, ready), got %d", len(entries))
+	if len(entries) != 3 {
+		t.Errorf("expected 3 entries (id, new, ready), got %d", len(entries))
 	}
 }
 

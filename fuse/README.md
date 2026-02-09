@@ -31,6 +31,8 @@ echo "Thanks!" > conversation/$ID/send
     {model-id}/          → directory per model
       id                 → model ID
       ready              → present if model is ready (absence = not ready)
+      new/
+        clone            → read to get a new conversation with this model preconfigured
   new/
     clone                → read to allocate a new conversation ID
   conversation/          → all conversations
