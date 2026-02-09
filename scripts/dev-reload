@@ -6,8 +6,9 @@ BINARY=shelley-fuse
 MNT=/shelley
 URL=http://localhost:9999
 SLEEP=10
-mkdir -p .cache
-PIDFILE=.cache/.pid
+BUILD=".build"
+mkdir -p "$BUILD"
+PIDFILE="$BUILD/.pid"
 
 trap "pkill -F '$PIDFILE' 2>/dev/null || true; rm -f '$PIDFILE'" EXIT
 
@@ -41,7 +42,7 @@ start_background_build() {
   while true; do
     clean_old_builds
     COMMIT=$(git rev-list HEAD -n1)
-    HASHED=".cache/$BINARY.$COMMIT"
+    HASHED="$BUILD/$BINARY.$COMMIT"
 
     if ! [[ -e "$HASHED" ]]; then
       mkdir -p ".mnt/$COMMIT"
@@ -69,20 +70,23 @@ kill_pids() {
 }
 
 find_latest_build() {
-  find .cache -name "$BINARY.*" -type f -executable | xargs ls -t | head -1
+  find "$BUILD" -name "$BINARY.*" -type f -executable | xargs -r ls -t | head -1
 }
 
 clean_old_builds() {
-  find .cache -name "$BINARY.*" -type f \! -executable | tail -n +3 | xargs rm -f
-  find .cache -name "$BINARY.*" -type f -executable | xargs ls -t | tail -n +6 | xargs rm -f
+  find "$BUILD" -name "$BINARY.*" -type f \! -executable | tail -n +3 | xargs -r rm -f
+  find "$BUILD" -name "$BINARY.*" -type f -executable | xargs -r ls -t | tail -n +6 | xargs -r rm -f
 }
 
 kill_pids
 start_background_build 
 
 while true; do
+  if ! [[ -e "$BINARY" ]]; then
+    just build 
+  fi
   LATEST=$(find_latest_build)
-  if ! [[ "$BINARY" -ef "$LATEST" ]]; then
+  if [[ "$LATEST" ]] && ! [[ "$BINARY" -ef "$LATEST" ]]; then
     ln -svf "$LATEST" "$BINARY"
   fi
   just run-dev
