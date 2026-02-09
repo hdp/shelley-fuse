@@ -307,7 +307,7 @@ var _ = (fs.NodeReader)((*ReadmeNode)(nil))
 var _ = (fs.NodeGetattrer)((*ReadmeNode)(nil))
 
 func (r *ReadmeNode) Open(ctx context.Context, flags uint32) (fs.FileHandle, uint32, syscall.Errno) {
-	return nil, fuse.FOPEN_DIRECT_IO, 0
+	return nil, fuse.FOPEN_KEEP_CACHE, 0
 }
 
 func (r *ReadmeNode) Read(ctx context.Context, f fs.FileHandle, dest []byte, off int64) (fuse.ReadResult, syscall.Errno) {
@@ -494,7 +494,7 @@ var _ = (fs.NodeReader)((*ModelReadyNode)(nil))
 var _ = (fs.NodeGetattrer)((*ModelReadyNode)(nil))
 
 func (m *ModelReadyNode) Open(ctx context.Context, flags uint32) (fs.FileHandle, uint32, syscall.Errno) {
-	return nil, fuse.FOPEN_DIRECT_IO, 0
+	return nil, fuse.FOPEN_KEEP_CACHE, 0
 }
 
 func (m *ModelReadyNode) Read(ctx context.Context, f fs.FileHandle, dest []byte, off int64) (fuse.ReadResult, syscall.Errno) {
@@ -1621,7 +1621,7 @@ var _ = (fs.NodeReader)((*MessageFieldNode)(nil))
 var _ = (fs.NodeGetattrer)((*MessageFieldNode)(nil))
 
 func (m *MessageFieldNode) Open(ctx context.Context, flags uint32) (fs.FileHandle, uint32, syscall.Errno) {
-	return nil, fuse.FOPEN_DIRECT_IO, 0
+	return nil, fuse.FOPEN_KEEP_CACHE, 0
 }
 
 func (m *MessageFieldNode) Read(ctx context.Context, f fs.FileHandle, dest []byte, off int64) (fuse.ReadResult, syscall.Errno) {
