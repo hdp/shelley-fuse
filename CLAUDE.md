@@ -6,6 +6,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Shelley FUSE is a Go FUSE filesystem that exposes the Shelley API (an AI conversation platform, source at https://github.com/boldsoftware/shelley) as a mountable filesystem. Shell tools interact with Shelley conversations through standard file operations (cat, echo, ls).
 
+## Filesystem Architecture
+
+The authoritative documentation for the filesystem layout, usage examples, and common operations lives in **`fuse/README.md`**. That file is embedded into the binary and served at the mountpoint as `/README.md`, making the filesystem self-documenting.
+
+**Read `fuse/README.md` before doing any feature work.**
+
 ## Build & Test Commands
 
 ```bash
@@ -39,55 +45,11 @@ It's idempotent — run it repeatedly until it exits 0. If the rebase has confli
 - **`state/`** - Local conversation state management. Tracks the mapping between local FUSE conversation IDs and Shelley backend conversation IDs, persisted to `~/.shelley-fuse/state.json`.
 - **`cmd/shelley-fuse/`** - Main binary entry point. Parses args and mounts the filesystem.
 
-### Filesystem Node Hierarchy
+### Key Design Decisions
 
-The filesystem follows a Plan 9-inspired control file model. There are no host directories — a single shelley-fuse instance connects to one Shelley backend. Typed nodes in `fuse/filesystem.go` implement the hierarchy:
-
-```
-/
-  model/                                → directory of available models (GET /, parse HTML for model list)
-    default                             → symlink to default model's {model-id} (only if backend has a default configured)
-    {model-id}/                         → directory for each model
-      id                                → read-only file: model ID
-      ready                             → present only if model is ready (presence semantics)
-      new/
-        clone                           → read to allocate a new conversation with this model preconfigured
-        start                           → executable script: pipe message on stdin to create conversation with this model and caller's cwd
-  new                                   → symlink to model/default/new (uses default model for new conversations)
-  conversation/                           → lists local IDs + server conversations (merged via GET /api/conversations)
-    {local-id}/                         → directory per conversation (8-character hex local ID)
-      ctl                               → read/write config (model=X cwd=Y); becomes read-only after creation
-      send                              → write here to send a message; first write creates conversation on backend
-      id                                → read-only: Shelley server conversation ID (ENOENT before creation)
-      slug                              → read-only: conversation slug (ENOENT before creation or if no slug)
-      fuse_id                           → read-only: local FUSE conversation ID (8-character hex)
-      created                           → present only when created on backend (presence semantics, mtime = creation time)
-      archived                          → present only when conversation is archived (presence semantics, mtime = updated_at);
-                                            touch/create to archive, rm to unarchive; ENOENT before backend creation
-      model                             → symlink to ../../model/{model-id} (only if model is set)
-      cwd                               → symlink to working directory (only if cwd is set)
-      messages/                         → all message content
-        all.json                        → full conversation as JSON
-        all.md                          → full conversation as Markdown
-        count                           → number of messages in conversation (0 before creation)
-        {N}-{slug}/                     → message directory (0-indexed, zero-padded, e.g. 000-user/, 099-bash-tool/, 100-bash-result/)
-          message_id                    → message UUID
-          conversation_id               → conversation ID
-          sequence_id                   → sequence number
-          type                          → message type (user, agent, bash-tool, bash-result, etc.)
-          created_at                    → timestamp
-          content.md                    → markdown rendering of the message
-          llm_data/                     → unpacked JSON directory (present only if message has LLM data)
-          usage_data/                   → unpacked JSON directory (present only if message has usage data)
-        last/{N}/                       → directory with symlinks to last N message directories
-        since/{slug}/{N}/               → directory with symlinks to messages after Nth-to-last {slug}
-    {server-id}                         → symlink to local-id: allows access via Shelley server ID
-    {slug}                              → symlink to local-id: allows access via conversation slug
-```
-
-Key design: conversation creation is split into clone → configure via ctl → first write to send. The `state` package maps local IDs to Shelley backend conversation IDs, persisted to `~/.shelley-fuse/state.json`.
-
-The `/conversation` directory automatically discovers and adopts server-side conversations. When `ConversationListNode.Readdir` is called, it fetches conversations from `client.ListConversations()` and immediately adopts any that aren't already tracked locally via `state.AdoptWithSlug()`. This ensures all conversations always appear with 8-character local IDs—there are no "server-only" conversations visible to users. The `Lookup` method also supports accessing conversations by their Shelley server ID for backwards compatibility, adopting them on first access.
+- The filesystem follows a Plan 9-inspired control file model. Typed nodes in `fuse/filesystem.go` implement the hierarchy documented in `fuse/README.md`.
+- Conversation creation is split into clone → configure via ctl → first write to send. The `state` package maps local IDs to Shelley backend conversation IDs.
+- The `/conversation` directory automatically discovers and adopts server-side conversations on Readdir and Lookup, ensuring all conversations always appear with 8-character local IDs.
 
 ### go-fuse API Notes
 
