@@ -466,7 +466,7 @@ var _ = (fs.NodeReader)((*ModelFieldNode)(nil))
 var _ = (fs.NodeGetattrer)((*ModelFieldNode)(nil))
 
 func (m *ModelFieldNode) Open(ctx context.Context, flags uint32) (fs.FileHandle, uint32, syscall.Errno) {
-	return nil, fuse.FOPEN_DIRECT_IO, 0
+	return nil, fuse.FOPEN_KEEP_CACHE, 0
 }
 
 func (m *ModelFieldNode) Read(ctx context.Context, f fs.FileHandle, dest []byte, off int64) (fuse.ReadResult, syscall.Errno) {
@@ -476,6 +476,7 @@ func (m *ModelFieldNode) Read(ctx context.Context, f fs.FileHandle, dest []byte,
 
 func (m *ModelFieldNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
 	out.Mode = fuse.S_IFREG | 0444
+	out.Size = uint64(len(m.value) + 1)
 	setTimestamps(&out.Attr, m.startTime)
 	out.SetTimeout(cacheTTLModels)
 	return 0
