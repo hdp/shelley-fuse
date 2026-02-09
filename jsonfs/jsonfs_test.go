@@ -405,3 +405,51 @@ func TestNilConfig(t *testing.T) {
 		stream.Next()
 	}
 }
+
+func TestCacheTimeout_Getattr(t *testing.T) {
+	cacheTTL := 1 * time.Hour
+	config := &Config{
+		StartTime:    time.Date(2026, 1, 15, 10, 0, 0, 0, time.UTC),
+		CacheTimeout: cacheTTL,
+	}
+
+	// Test objectNode Getattr sets cache timeout
+	node, err := NewNodeFromJSON([]byte(`{"key": "value"}`), config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	obj := node.(*objectNode)
+	var out fuse.AttrOut
+	if errno := obj.Getattr(context.Background(), nil, &out); errno != 0 {
+		t.Fatalf("Getattr failed: %d", errno)
+	}
+	if got := out.Timeout(); got != cacheTTL {
+		t.Errorf("objectNode attr timeout = %v, want %v", got, cacheTTL)
+	}
+
+	// Test valueNode Getattr sets cache timeout
+	vn := &valueNode{content: "hello", config: config}
+	out = fuse.AttrOut{}
+	if errno := vn.Getattr(context.Background(), nil, &out); errno != 0 {
+		t.Fatalf("Getattr failed: %d", errno)
+	}
+	if got := out.Timeout(); got != cacheTTL {
+		t.Errorf("valueNode attr timeout = %v, want %v", got, cacheTTL)
+	}
+}
+
+func TestCacheTimeout_Zero(t *testing.T) {
+	// With zero CacheTimeout, no per-node timeouts should be set
+	config := &Config{
+		StartTime: time.Date(2026, 1, 15, 10, 0, 0, 0, time.UTC),
+	}
+
+	vn := &valueNode{content: "hello", config: config}
+	var out fuse.AttrOut
+	if errno := vn.Getattr(context.Background(), nil, &out); errno != 0 {
+		t.Fatalf("Getattr failed: %d", errno)
+	}
+	if got := out.Timeout(); got != 0 {
+		t.Errorf("valueNode attr timeout = %v, want 0 (no caching)", got)
+	}
+}

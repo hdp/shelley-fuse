@@ -30,6 +30,12 @@ type Config struct {
 
 	// StartTime is used for file/directory timestamps. If zero, time.Now() is used.
 	StartTime time.Time
+
+	// CacheTimeout sets the kernel cache timeout for entry/attr lookups.
+	// If zero, no per-node timeouts are set (server defaults apply).
+	// For immutable JSON data (e.g. message llm_data/usage_data), use a long
+	// timeout since the data never changes.
+	CacheTimeout time.Duration
 }
 
 func (c *Config) startTime() time.Time {
@@ -37,6 +43,13 @@ func (c *Config) startTime() time.Time {
 		return time.Now()
 	}
 	return c.StartTime
+}
+
+func (c *Config) cacheTimeout() time.Duration {
+	if c == nil {
+		return 0
+	}
+	return c.CacheTimeout
 }
 
 func (c *Config) shouldUnpack(fieldName string) bool {
@@ -109,6 +122,38 @@ func newNode(value any, fieldName string, config *Config) fs.InodeEmbedder {
 	}
 }
 
+// setEntryCache sets entry and attr cache timeouts on an EntryOut if configured.
+// When setting AttrTimeout, it also populates the Attr fields so the kernel
+// has valid data to cache (otherwise it would cache zero-valued attrs).
+func setEntryCache(out *fuse.EntryOut, child fs.InodeEmbedder, config *Config) {
+	timeout := config.cacheTimeout()
+	if timeout <= 0 {
+		return
+	}
+	out.SetEntryTimeout(timeout)
+	out.SetAttrTimeout(timeout)
+	t := config.startTime()
+	switch c := child.(type) {
+	case *objectNode, *arrayNode:
+		out.Attr.Mode = fuse.S_IFDIR | 0755
+		setTimestamps(&out.Attr, t)
+	case *valueNode:
+		out.Attr.Mode = fuse.S_IFREG | 0444
+		out.Attr.Size = uint64(len(c.content) + 1)
+		setTimestamps(&out.Attr, t)
+	default:
+		// Unknown node type; set entry timeout only, skip attr
+		_ = child
+	}
+}
+
+// setAttrCache sets the attr cache timeout on an AttrOut if configured.
+func setAttrCache(out *fuse.AttrOut, timeout time.Duration) {
+	if timeout > 0 {
+		out.SetTimeout(timeout)
+	}
+}
+
 // setTimestamps sets atime, mtime, and ctime on the attribute.
 func setTimestamps(attr *fuse.Attr, t time.Time) {
 	attr.Atime = uint64(t.Unix())
@@ -138,6 +183,7 @@ func (n *objectNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut
 	}
 
 	child := newNode(value, name, n.config)
+	setEntryCache(out, child, n.config)
 	mode := nodeMode(child)
 	return n.NewInode(ctx, child, fs.StableAttr{Mode: mode}), 0
 }
@@ -164,6 +210,7 @@ func (n *objectNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) 
 func (n *objectNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
 	out.Mode = fuse.S_IFDIR | 0755
 	setTimestamps(&out.Attr, n.config.startTime())
+	setAttrCache(out, n.config.cacheTimeout())
 	return 0
 }
 
@@ -186,6 +233,7 @@ func (n *arrayNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut)
 	}
 
 	child := newNode(n.data[idx], "", n.config)
+	setEntryCache(out, child, n.config)
 	mode := nodeMode(child)
 	return n.NewInode(ctx, child, fs.StableAttr{Mode: mode}), 0
 }
@@ -205,6 +253,7 @@ func (n *arrayNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
 func (n *arrayNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
 	out.Mode = fuse.S_IFDIR | 0755
 	setTimestamps(&out.Attr, n.config.startTime())
+	setAttrCache(out, n.config.cacheTimeout())
 	return 0
 }
 
@@ -233,6 +282,7 @@ func (n *valueNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.Attr
 	out.Mode = fuse.S_IFREG | 0444
 	out.Size = uint64(len(n.content) + 1) // +1 for newline
 	setTimestamps(&out.Attr, n.config.startTime())
+	setAttrCache(out, n.config.cacheTimeout())
 	return 0
 }
 

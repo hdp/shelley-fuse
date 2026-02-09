@@ -22,6 +22,10 @@ import (
 	"shelley-fuse/state"
 )
 
+// immutableTimeout is the cache timeout for immutable message nodes.
+// Message content never changes once created, so we can cache aggressively.
+const immutableTimeout = 1 * time.Hour
+
 // ParsedMessageCache caches parsed messages and toolMaps, keyed by conversation ID.
 // The cache is content-addressed: it stores a checksum of the raw data and only
 // returns the cached result if the raw data hasn't changed. This ensures that
@@ -1298,11 +1302,18 @@ func (m *MessagesDirNode) Lookup(ctx context.Context, name string, out *fuse.Ent
 			return nil, syscall.ENOENT
 		}
 
-		return m.NewInode(ctx, &MessageDirNode{
+		node := &MessageDirNode{
 			message:   *msg,
 			toolMap:   result.ToolMap,
 			startTime: m.startTime,
-		}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
+		}
+		// Message directories are immutable once created — cache aggressively.
+		// Populate attrs in EntryOut so the kernel has valid data to cache.
+		out.SetEntryTimeout(immutableTimeout)
+		out.SetAttrTimeout(immutableTimeout)
+		out.Attr.Mode = fuse.S_IFDIR | 0755
+		node.messageTimestamps().ApplyWithFallback(&out.Attr, m.startTime)
+		return m.NewInode(ctx, node, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
 	}
 
 	return nil, syscall.ENOENT
@@ -1375,45 +1386,80 @@ func (m *MessageDirNode) messageTime() time.Time {
 	return m.startTime
 }
 
+// setImmutableFieldAttrs populates the EntryOut with immutable cache timeouts
+// and file attrs for a MessageFieldNode, so the kernel has valid data to cache.
+func setImmutableFieldAttrs(out *fuse.EntryOut, value string, noNewline bool, t time.Time) {
+	out.SetEntryTimeout(immutableTimeout)
+	out.SetAttrTimeout(immutableTimeout)
+	out.Attr.Mode = fuse.S_IFREG | 0444
+	size := len(value)
+	if !noNewline {
+		size++
+	}
+	out.Attr.Size = uint64(size)
+	setTimestamps(&out.Attr, t)
+}
+
+// setImmutableDirAttrs populates the EntryOut with immutable cache timeouts
+// and directory attrs, so the kernel has valid data to cache.
+func setImmutableDirAttrs(out *fuse.EntryOut, t time.Time) {
+	out.SetEntryTimeout(immutableTimeout)
+	out.SetAttrTimeout(immutableTimeout)
+	out.Attr.Mode = fuse.S_IFDIR | 0755
+	setTimestamps(&out.Attr, t)
+}
+
 func (m *MessageDirNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
 	t := m.messageTime()
+
+	// Helper to create and return an immutable field node with cached attrs.
+	fieldNode := func(value string) (*fs.Inode, syscall.Errno) {
+		setImmutableFieldAttrs(out, value, false, t)
+		return m.NewInode(ctx, &MessageFieldNode{value: value, startTime: t}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
+	}
+
 	switch name {
 	case "message_id":
-		return m.NewInode(ctx, &MessageFieldNode{value: m.message.MessageID, startTime: t}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
+		return fieldNode(m.message.MessageID)
 	case "conversation_id":
-		return m.NewInode(ctx, &MessageFieldNode{value: m.message.ConversationID, startTime: t}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
+		return fieldNode(m.message.ConversationID)
 	case "sequence_id":
-		return m.NewInode(ctx, &MessageFieldNode{value: strconv.Itoa(m.message.SequenceID), startTime: t}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
+		return fieldNode(strconv.Itoa(m.message.SequenceID))
 	case "type":
-		return m.NewInode(ctx, &MessageFieldNode{value: m.message.Type, startTime: t}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
+		return fieldNode(m.message.Type)
 	case "created_at":
-		return m.NewInode(ctx, &MessageFieldNode{value: m.message.CreatedAt, startTime: t}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
+		return fieldNode(m.message.CreatedAt)
 	case "llm_data":
 		if m.message.LLMData == nil || *m.message.LLMData == "" {
 			return nil, syscall.ENOENT
 		}
-		config := &jsonfs.Config{StartTime: t}
+		config := &jsonfs.Config{StartTime: t, CacheTimeout: immutableTimeout}
 		node, err := jsonfs.NewNodeFromJSON([]byte(*m.message.LLMData), config)
 		if err != nil {
 			// If JSON parsing fails, return as a file
+			setImmutableFieldAttrs(out, *m.message.LLMData, false, t)
 			return m.NewInode(ctx, &MessageFieldNode{value: *m.message.LLMData, startTime: t}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
 		}
+		setImmutableDirAttrs(out, t)
 		return m.NewInode(ctx, node, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
 	case "usage_data":
 		if m.message.UsageData == nil || *m.message.UsageData == "" {
 			return nil, syscall.ENOENT
 		}
-		config := &jsonfs.Config{StartTime: t}
+		config := &jsonfs.Config{StartTime: t, CacheTimeout: immutableTimeout}
 		node, err := jsonfs.NewNodeFromJSON([]byte(*m.message.UsageData), config)
 		if err != nil {
 			// If JSON parsing fails, return as a file
+			setImmutableFieldAttrs(out, *m.message.UsageData, false, t)
 			return m.NewInode(ctx, &MessageFieldNode{value: *m.message.UsageData, startTime: t}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
 		}
+		setImmutableDirAttrs(out, t)
 		return m.NewInode(ctx, node, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
 	case "content.md":
 		// Generate markdown rendering of this single message
-		content := shelley.FormatMarkdown([]shelley.Message{m.message})
-		return m.NewInode(ctx, &MessageFieldNode{value: string(content), startTime: t, noNewline: true}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
+		content := string(shelley.FormatMarkdown([]shelley.Message{m.message}))
+		setImmutableFieldAttrs(out, content, true, t)
+		return m.NewInode(ctx, &MessageFieldNode{value: content, startTime: t, noNewline: true}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
 	}
 	return nil, syscall.ENOENT
 }
@@ -1454,6 +1500,7 @@ func (m *MessageDirNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Err
 func (m *MessageDirNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
 	out.Mode = fuse.S_IFDIR | 0755
 	m.messageTimestamps().ApplyWithFallback(&out.Attr, m.startTime)
+	out.SetTimeout(immutableTimeout)
 	return 0
 }
 
@@ -1490,6 +1537,7 @@ func (m *MessageFieldNode) Getattr(ctx context.Context, f fs.FileHandle, out *fu
 	}
 	out.Size = uint64(size)
 	setTimestamps(&out.Attr, m.startTime)
+	out.SetTimeout(immutableTimeout)
 	return 0
 }
 
