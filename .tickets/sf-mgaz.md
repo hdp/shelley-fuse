@@ -1,6 +1,6 @@
 ---
 id: sf-mgaz
-status: open
+status: in_progress
 deps: []
 links: []
 created: 2026-02-09T03:01:25Z
