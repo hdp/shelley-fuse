@@ -51,6 +51,18 @@ clean-finished:
         fi
     done
 
+# Install shelley-fuse: build, install binary, install systemd unit, enable and start
+install:
+    just build
+    sudo install -m 755 shelley-fuse /usr/local/bin/shelley-fuse
+    sudo cp shelley-fuse.service /etc/systemd/system/shelley-fuse.service
+    sudo systemctl daemon-reload
+    sudo systemctl enable shelley-fuse.service
+    sudo systemctl restart shelley-fuse.service
+    @echo "shelley-fuse installed and started"
+    @echo "Mount point: /shelley"
+    @echo "Check status: systemctl status shelley-fuse"
+
 # Clean build artifacts
 clean:
     rm -f shelley-fuse

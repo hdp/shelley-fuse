@@ -1,0 +1,25 @@
+[Unit]
+Description=Shelley FUSE Filesystem
+After=shelley.socket
+Requires=shelley.socket
+
+[Service]
+Type=exec
+User=exedev
+Group=exedev
+ExecStartPre=/bin/mkdir -p /shelley
+ExecStart=/usr/local/bin/shelley-fuse /shelley http://localhost:9999
+ExecStop=/bin/fusermount -u /shelley
+Restart=on-failure
+RestartSec=5
+Environment=HOME=/home/exedev
+Environment=USER=exedev
+KillMode=process
+TimeoutStopSec=10
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=shelley-fuse
+
+[Install]
+WantedBy=multi-user.target
