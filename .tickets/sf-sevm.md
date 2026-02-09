@@ -1,6 +1,6 @@
 ---
 id: sf-sevm
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-02-04T13:16:41Z
@@ -51,3 +51,7 @@ The waiting_for_input symlink got lost somehow in some refactoring. Readd it and
 **2026-02-09T16:17:10Z**
 
 The code is still present, but even on archived conversations, which by definition should be waiting for input (since they're stopped), waiting_for_input isn't showing up in the conversation's directory listing
+
+**2026-02-09T16:19:38Z**
+
+Issue: waiting_for_input symlink not appearing even though user interrupted conversation. Need to debug why Readdir doesn't include it.
