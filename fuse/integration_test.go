@@ -1392,3 +1392,123 @@ func TestArchivedFileTimestamp(t *testing.T) {
 
 	t.Logf("Archived file timestamp: %v", modTime)
 }
+
+// TestStartScript tests the /new/start executable script.
+// It verifies that executing the script with a message on stdin creates a
+// new conversation with the correct cwd and returns the local ID.
+func TestStartScript(t *testing.T) {
+	skipIfNoFusermount(t)
+	skipIfNoShelley(t)
+
+	serverURL := startShelleyServer(t)
+	mountPoint := mountTestFS(t, serverURL)
+
+	// Read the start script and verify it's a shell script
+	startPath := filepath.Join(mountPoint, "new", "start")
+	scriptData, err := ioutil.ReadFile(startPath)
+	if err != nil {
+		t.Fatalf("Failed to read start script: %v", err)
+	}
+	if !strings.HasPrefix(string(scriptData), "#!/bin/sh") {
+		t.Fatalf("start script missing shebang, got: %s", string(scriptData[:50]))
+	}
+
+	// Verify it's executable
+	info, err := os.Stat(startPath)
+	if err != nil {
+		t.Fatalf("Stat failed: %v", err)
+	}
+	if info.Mode()&0111 == 0 {
+		t.Fatalf("start script is not executable: mode %o", info.Mode())
+	}
+
+	// Execute the start script with a message on stdin.
+	// We need to set model=predictable first, but the start script doesn't
+	// do that. Use the model-specific start script instead for the full flow.
+	// Here we test the basic /new/start which doesn't set a model.
+	// We write a model config via ctl after cloning but before sending,
+	// which is what the script does internally (clone, write ctl, write send).
+	//
+	// Actually, let's use the model-specific one via /models/predictable/new/start.
+	modelStartPath := filepath.Join(mountPoint, "models", "predictable", "new", "start")
+	info, err = os.Stat(modelStartPath)
+	if err != nil {
+		t.Fatalf("Stat model start script failed: %v", err)
+	}
+	if info.Mode()&0111 == 0 {
+		t.Fatalf("model start script is not executable: mode %o", info.Mode())
+	}
+
+	// Execute the model-specific start script with a message on stdin
+	testCwd := t.TempDir()
+	cmd := exec.Command(modelStartPath)
+	cmd.Stdin = strings.NewReader("hello from start script")
+	cmd.Dir = testCwd
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("start script failed: %v\noutput: %s", err, output)
+	}
+
+	localID := strings.TrimSpace(string(output))
+	if len(localID) != 8 {
+		t.Fatalf("Expected 8-char hex ID, got %q (full output: %q)", localID, string(output))
+	}
+
+	// Verify the conversation was created on the backend
+	idData, err := ioutil.ReadFile(filepath.Join(mountPoint, "conversation", localID, "id"))
+	if err != nil {
+		t.Fatalf("Failed to read server ID: %v", err)
+	}
+	serverID := strings.TrimSpace(string(idData))
+	if serverID == "" {
+		t.Fatal("Expected non-empty server ID")
+	}
+
+	// Verify cwd was set correctly
+	ctlData, err := ioutil.ReadFile(filepath.Join(mountPoint, "conversation", localID, "ctl"))
+	if err != nil {
+		t.Fatalf("Failed to read ctl: %v", err)
+	}
+	ctl := string(ctlData)
+	if !strings.Contains(ctl, "cwd="+testCwd) {
+		t.Errorf("Expected ctl to contain cwd=%s, got: %s", testCwd, ctl)
+	}
+
+	// Verify model was set (via model-specific clone)
+	if !strings.Contains(ctl, "model=") {
+		t.Errorf("Expected ctl to contain model=, got: %s", ctl)
+	}
+
+	// Verify message content via all.md
+	allMD, err := ioutil.ReadFile(filepath.Join(mountPoint, "conversation", localID, "messages", "all.md"))
+	if err != nil {
+		t.Fatalf("Failed to read all.md: %v", err)
+	}
+	if !strings.Contains(string(allMD), "hello from start script") {
+		t.Errorf("Expected all.md to contain message, got: %s", string(allMD))
+	}
+
+	t.Logf("Start script created conversation %s (server: %s) with cwd=%s", localID, serverID, testCwd)
+}
+
+// TestStartScriptNoInput verifies the start script errors when given no stdin.
+func TestStartScriptNoInput(t *testing.T) {
+	skipIfNoFusermount(t)
+	skipIfNoShelley(t)
+
+	serverURL := startShelleyServer(t)
+	mountPoint := mountTestFS(t, serverURL)
+
+	startPath := filepath.Join(mountPoint, "new", "start")
+
+	// Execute with empty stdin — should fail
+	cmd := exec.Command(startPath)
+	cmd.Stdin = strings.NewReader("")
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("Expected start script to fail with no input, got output: %s", output)
+	}
+	if !strings.Contains(string(output), "no message") {
+		t.Errorf("Expected error about no message, got: %s", output)
+	}
+}

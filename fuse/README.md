@@ -5,6 +5,19 @@ A FUSE filesystem that exposes the Shelley API, allowing shell tools to interact
 ## Quick Start
 
 ```bash
+# Start a conversation in one step (clones, sets cwd, sends, prints ID)
+ID=$(echo "Hello, Shelley!" | models/predictable/new/start)
+
+# Read the response(s)
+cat conversation/$ID/messages/since/user/1/*/content.md
+
+# Send follow-up
+echo "Thanks!" > conversation/$ID/send
+```
+
+### Manual Workflow (step by step)
+
+```bash
 # Allocate a new conversation
 ID=$(cat new/clone)
 
@@ -33,8 +46,10 @@ echo "Thanks!" > conversation/$ID/send
       ready              → present if model is ready (absence = not ready)
       new/
         clone            → read to get a new conversation with this model preconfigured
+        start            → executable: pipe message to start conversation with this model
   new/
     clone                → read to allocate a new conversation ID
+    start                → executable: pipe message to start conversation with caller's cwd
   conversation/          → all conversations
     {id}/                → directory per conversation
       ctl                → read/write config; read-only after first message

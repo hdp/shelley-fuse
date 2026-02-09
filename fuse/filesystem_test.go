@@ -1084,14 +1084,24 @@ func TestModelNewDirNode_Readdir(t *testing.T) {
 		entries = append(entries, entry)
 	}
 
-	if len(entries) != 1 {
-		t.Fatalf("expected 1 entry (clone), got %d", len(entries))
+	if len(entries) != 2 {
+		t.Fatalf("expected 2 entries (clone, start), got %d", len(entries))
 	}
-	if entries[0].Name != "clone" {
-		t.Errorf("expected entry 'clone', got %q", entries[0].Name)
+	expected := map[string]bool{"clone": false, "start": false}
+	for _, e := range entries {
+		if _, ok := expected[e.Name]; !ok {
+			t.Errorf("unexpected entry %q", e.Name)
+		} else {
+			expected[e.Name] = true
+		}
+		if e.Mode != fuse.S_IFREG {
+			t.Errorf("expected file mode for %q", e.Name)
+		}
 	}
-	if entries[0].Mode != fuse.S_IFREG {
-		t.Errorf("expected file mode for 'clone'")
+	for name, found := range expected {
+		if !found {
+			t.Errorf("missing expected entry %q", name)
+		}
 	}
 }
 
@@ -1142,6 +1152,18 @@ func TestModelNewDirNode_LookupMounted(t *testing.T) {
 	}
 	if info.IsDir() {
 		t.Error("expected file for 'new/clone', got directory")
+	}
+
+	// new/start should exist and be executable
+	info, err = os.Stat(filepath.Join(tmpDir, "models", "my-model", "new", "start"))
+	if err != nil {
+		t.Fatalf("Stat for 'new/start' failed: %v", err)
+	}
+	if info.IsDir() {
+		t.Error("expected file for 'new/start', got directory")
+	}
+	if info.Mode()&0111 == 0 {
+		t.Error("expected 'new/start' to be executable")
 	}
 
 	// nonexistent should fail
@@ -5235,5 +5257,95 @@ func TestSinceDirPerformanceRegression(t *testing.T) {
 	// With stable inodes, it should be under 3x.
 	if ratio > 3.0 {
 		t.Errorf("since/user/1/ is %.1fx slower than messages/ (expected <= 3x)", ratio)
+// --- Tests for StartNode ---
+
+func TestStartNode_Read(t *testing.T) {
+	node := &StartNode{startTime: time.Now()}
+
+	_, flags, errno := node.Open(context.Background(), 0)
+	if errno != 0 {
+		t.Fatalf("Open failed with errno %d", errno)
+	}
+	if flags&fuse.FOPEN_DIRECT_IO == 0 {
+		t.Error("expected FOPEN_DIRECT_IO flag")
+	}
+
+	result, errno := node.Read(context.Background(), nil, make([]byte, 4096), 0)
+	if errno != 0 {
+		t.Fatalf("Read failed with errno %d", errno)
+	}
+	data, _ := result.Bytes(make([]byte, 4096))
+	script := string(data)
+
+	if !strings.HasPrefix(script, "#!/bin/sh") {
+		t.Error("start script should begin with #!/bin/sh shebang")
+	}
+	if !strings.Contains(script, "new/clone") {
+		t.Error("start script should reference new/clone")
+	}
+	if !strings.Contains(script, "/ctl") {
+		t.Error("start script should write to ctl")
+	}
+	if !strings.Contains(script, "/send") {
+		t.Error("start script should write to send")
+	}
+}
+
+func TestStartNode_Getattr(t *testing.T) {
+	node := &StartNode{startTime: time.Now()}
+	var out fuse.AttrOut
+	errno := node.Getattr(context.Background(), nil, &out)
+	if errno != 0 {
+		t.Fatalf("Getattr failed with errno %d", errno)
+	}
+	// Should be executable by all
+	if out.Mode&0111 == 0 {
+		t.Error("start script should be executable")
+	}
+	if out.Mode&fuse.S_IFREG == 0 {
+		t.Error("start script should be a regular file")
+	}
+	if out.Size == 0 {
+		t.Error("start script should have non-zero size")
+	}
+}
+
+func TestModelStartNode_Read(t *testing.T) {
+	node := &ModelStartNode{model: shelley.Model{ID: "test-model"}, startTime: time.Now()}
+
+	result, errno := node.Read(context.Background(), nil, make([]byte, 4096), 0)
+	if errno != 0 {
+		t.Fatalf("Read failed with errno %d", errno)
+	}
+	data, _ := result.Bytes(make([]byte, 4096))
+	script := string(data)
+
+	if !strings.HasPrefix(script, "#!/bin/sh") {
+		t.Error("model start script should begin with #!/bin/sh shebang")
+	}
+	// The model version uses the sibling clone file
+	if !strings.Contains(script, "$DIR/clone") {
+		t.Error("model start script should reference $DIR/clone")
+	}
+	if !strings.Contains(script, "/ctl") {
+		t.Error("model start script should write to ctl")
+	}
+	if !strings.Contains(script, "/send") {
+		t.Error("model start script should write to send")
+	}
+}
+
+func TestModelStartNode_Getattr(t *testing.T) {
+	node := &ModelStartNode{model: shelley.Model{ID: "test-model"}, startTime: time.Now()}
+	var out fuse.AttrOut
+	errno := node.Getattr(context.Background(), nil, &out)
+	if errno != 0 {
+		t.Fatalf("Getattr failed with errno %d", errno)
+	}
+	if out.Mode&0111 == 0 {
+		t.Error("model start script should be executable")
+	}
+	if out.Size == 0 {
+		t.Error("model start script should have non-zero size")
 	}
 }

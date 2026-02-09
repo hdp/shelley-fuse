@@ -525,8 +525,11 @@ var _ = (fs.NodeGetattrer)((*ModelNewDirNode)(nil))
 
 func (n *ModelNewDirNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
 	setEntryTimeout(out, cacheTTLModels)
-	if name == "clone" {
+	switch name {
+	case "clone":
 		return n.NewInode(ctx, &ModelCloneNode{model: n.model, state: n.state, startTime: n.startTime, diag: n.diag}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
+	case "start":
+		return n.NewInode(ctx, &ModelStartNode{model: n.model, startTime: n.startTime}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
 	}
 	return nil, syscall.ENOENT
 }
@@ -534,6 +537,7 @@ func (n *ModelNewDirNode) Lookup(ctx context.Context, name string, out *fuse.Ent
 func (n *ModelNewDirNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
 	return fs.NewListDirStream([]fuse.DirEntry{
 		{Name: "clone", Mode: fuse.S_IFREG},
+		{Name: "start", Mode: fuse.S_IFREG},
 	}), 0
 }
 
@@ -592,8 +596,11 @@ var _ = (fs.NodeGetattrer)((*NewDirNode)(nil))
 
 func (n *NewDirNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
 	setEntryTimeout(out, cacheTTLStatic)
-	if name == "clone" {
+	switch name {
+	case "clone":
 		return n.NewInode(ctx, &CloneNode{state: n.state, startTime: n.startTime, diag: n.diag}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
+	case "start":
+		return n.NewInode(ctx, &StartNode{startTime: n.startTime}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
 	}
 	return nil, syscall.ENOENT
 }
@@ -601,6 +608,7 @@ func (n *NewDirNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut
 func (n *NewDirNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
 	return fs.NewListDirStream([]fuse.DirEntry{
 		{Name: "clone", Mode: fuse.S_IFREG},
+		{Name: "start", Mode: fuse.S_IFREG},
 	}), 0
 }
 
@@ -650,6 +658,89 @@ func (h *CloneFileHandle) Read(ctx context.Context, dest []byte, off int64) (fus
 	defer diag.Track(h.diag, "CloneFileHandle", "Read", h.id)()
 	data := []byte(h.id + "\n")
 	return fuse.ReadResultData(readAt(data, dest, off)), 0
+}
+
+// --- StartNode: /new/start — executable shell script that clones, configures, and sends ---
+
+// startScript is the shell script returned by /new/start.
+// It reads a message from stdin, clones a new conversation, sets cwd to the
+// caller's working directory, sends the message, and prints the conversation ID.
+const startScript = `#!/bin/sh
+set -e
+MOUNT="$(cd "$(dirname "$0")/.." && pwd)"
+MSG="$(cat)"
+[ -z "$MSG" ] && { echo "error: no message provided on stdin" >&2; exit 1; }
+ID="$(cat "$MOUNT/new/clone")"
+printf 'cwd=%s\n' "$PWD" > "$MOUNT/conversation/$ID/ctl"
+printf '%s' "$MSG" > "$MOUNT/conversation/$ID/send"
+echo "$ID"
+`
+
+type StartNode struct {
+	fs.Inode
+	startTime time.Time
+}
+
+var _ = (fs.NodeOpener)((*StartNode)(nil))
+var _ = (fs.NodeReader)((*StartNode)(nil))
+var _ = (fs.NodeGetattrer)((*StartNode)(nil))
+
+func (n *StartNode) Open(ctx context.Context, flags uint32) (fs.FileHandle, uint32, syscall.Errno) {
+	return nil, fuse.FOPEN_DIRECT_IO, 0
+}
+
+func (n *StartNode) Read(ctx context.Context, f fs.FileHandle, dest []byte, off int64) (fuse.ReadResult, syscall.Errno) {
+	data := []byte(startScript)
+	return fuse.ReadResultData(readAt(data, dest, off)), 0
+}
+
+func (n *StartNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
+	out.Mode = fuse.S_IFREG | 0555
+	out.Size = uint64(len(startScript))
+	setTimestamps(&out.Attr, n.startTime)
+	return 0
+}
+
+// --- ModelStartNode: /models/{model}/new/start — like StartNode but uses model-specific clone ---
+
+// modelStartScriptTemplate is the shell script template for /models/{model}/new/start.
+// It uses the model-specific clone file in the same directory.
+const modelStartScriptTemplate = `#!/bin/sh
+set -e
+DIR="$(cd "$(dirname "$0")" && pwd)"
+MOUNT="$(cd "$DIR/../../.." && pwd)"
+MSG="$(cat)"
+[ -z "$MSG" ] && { echo "error: no message provided on stdin" >&2; exit 1; }
+ID="$(cat "$DIR/clone")"
+printf 'cwd=%s\n' "$PWD" > "$MOUNT/conversation/$ID/ctl"
+printf '%s' "$MSG" > "$MOUNT/conversation/$ID/send"
+echo "$ID"
+`
+
+type ModelStartNode struct {
+	fs.Inode
+	model     shelley.Model
+	startTime time.Time
+}
+
+var _ = (fs.NodeOpener)((*ModelStartNode)(nil))
+var _ = (fs.NodeReader)((*ModelStartNode)(nil))
+var _ = (fs.NodeGetattrer)((*ModelStartNode)(nil))
+
+func (n *ModelStartNode) Open(ctx context.Context, flags uint32) (fs.FileHandle, uint32, syscall.Errno) {
+	return nil, fuse.FOPEN_DIRECT_IO, 0
+}
+
+func (n *ModelStartNode) Read(ctx context.Context, f fs.FileHandle, dest []byte, off int64) (fuse.ReadResult, syscall.Errno) {
+	data := []byte(modelStartScriptTemplate)
+	return fuse.ReadResultData(readAt(data, dest, off)), 0
+}
+
+func (n *ModelStartNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
+	out.Mode = fuse.S_IFREG | 0555
+	out.Size = uint64(len(modelStartScriptTemplate))
+	setTimestamps(&out.Attr, n.startTime)
+	return 0
 }
 
 // --- ConversationListNode: /conversation/ directory ---
