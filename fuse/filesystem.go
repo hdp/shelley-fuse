@@ -22,11 +22,27 @@ import (
 	"shelley-fuse/state"
 )
 
-// Cache timeout constants.
+// Kernel cache timeout tiers for entry and attr caching.
+// These override the global 0 timeout set in mount options.
+// Per-node timeouts set via EntryOut.SetEntryTimeout/SetAttrTimeout (in Lookup)
+// and AttrOut.SetTimeout (in Getattr) take precedence over the global defaults.
 const (
-	// immutableTimeout is the cache timeout for immutable message nodes.
-	// Message content never changes once created, so we can cache aggressively.
-	immutableTimeout = 1 * time.Hour
+	// cacheTTLImmutable is for nodes whose content never changes once created:
+	// message field nodes, message directories, jsonfs subtrees.
+	cacheTTLImmutable = 1 * time.Hour
+
+	// cacheTTLStatic is for nodes that essentially never change:
+	// FS root, NewDirNode, ReadmeNode.
+	cacheTTLStatic = 1 * time.Hour
+
+	// cacheTTLModels is for model-related nodes that change very rarely:
+	// ModelsDirNode, ModelNode, ModelFieldNode, ModelReadyNode, ModelNewDirNode, ModelCloneNode.
+	cacheTTLModels = 5 * time.Minute
+
+	// cacheTTLConversation is for conversation structural nodes that change
+	// infrequently (new messages, archive status changes):
+	// ConversationNode, ConversationListNode.
+	cacheTTLConversation = 10 * time.Second
 
 	// negTimeout is the negative-entry timeout for dynamic presence files
 	// that may appear (e.g., "created" before backend creation, "model" before ctl write).
@@ -42,6 +58,14 @@ const (
 	// presence can toggle (e.g., "archived" can be created/removed).
 	volatileEntryTimeout = 1 * time.Second
 )
+
+// setEntryTimeout sets the entry (name→inode) cache timeout on an EntryOut (used in Lookup).
+// This controls how long the kernel caches that a name exists in a directory.
+// Note: we intentionally do NOT set AttrTimeout here because our Lookup methods
+// don't populate out.Attr — attribute caching is handled by Getattr via SetTimeout.
+func setEntryTimeout(out *fuse.EntryOut, ttl time.Duration) {
+	out.SetEntryTimeout(ttl)
+}
 
 // ParsedMessageCache caches parsed messages and toolMaps, keyed by conversation ID.
 // The cache is content-addressed: it stores a checksum of the raw data and only
@@ -233,12 +257,16 @@ var _ = (fs.NodeGetattrer)((*FS)(nil))
 func (f *FS) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
 	switch name {
 	case "models":
+		setEntryTimeout(out, cacheTTLModels)
 		return f.NewInode(ctx, &ModelsDirNode{client: f.client, state: f.state, startTime: f.startTime, diag: f.Diag}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
 	case "new":
+		setEntryTimeout(out, cacheTTLStatic)
 		return f.NewInode(ctx, &NewDirNode{state: f.state, startTime: f.startTime, diag: f.Diag}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
 	case "conversation":
+		setEntryTimeout(out, cacheTTLConversation)
 		return f.NewInode(ctx, &ConversationListNode{client: f.client, state: f.state, cloneTimeout: f.cloneTimeout, startTime: f.startTime, parsedCache: f.parsedCache, diag: f.Diag}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
 	case "README.md":
+		setEntryTimeout(out, cacheTTLStatic)
 		return f.NewInode(ctx, &ReadmeNode{startTime: f.startTime}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
 	}
 	return nil, syscall.ENOENT
@@ -256,6 +284,7 @@ func (f *FS) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
 func (f *FS) Getattr(ctx context.Context, fh fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
 	out.Mode = fuse.S_IFDIR | 0755
 	setTimestamps(&out.Attr, f.startTime)
+	out.SetTimeout(cacheTTLStatic)
 	return 0
 }
 
@@ -289,6 +318,7 @@ func (r *ReadmeNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.Att
 	out.Mode = fuse.S_IFREG | 0444
 	out.Size = uint64(len(readmeContent))
 	setTimestamps(&out.Attr, r.startTime)
+	out.SetTimeout(cacheTTLStatic)
 	return 0
 }
 
@@ -312,6 +342,8 @@ func (m *ModelsDirNode) Lookup(ctx context.Context, name string, out *fuse.Entry
 	if err != nil {
 		return nil, syscall.EIO
 	}
+
+	setEntryTimeout(out, cacheTTLModels)
 	
 	// Handle "default" symlink — target uses display name
 	if name == "default" {
@@ -365,6 +397,7 @@ func (m *ModelsDirNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Errn
 func (m *ModelsDirNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
 	out.Mode = fuse.S_IFDIR | 0755
 	setTimestamps(&out.Attr, m.startTime)
+	out.SetTimeout(cacheTTLModels)
 	return 0
 }
 
@@ -384,6 +417,7 @@ var _ = (fs.NodeReaddirer)((*ModelNode)(nil))
 var _ = (fs.NodeGetattrer)((*ModelNode)(nil))
 
 func (m *ModelNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
+	setEntryTimeout(out, cacheTTLModels)
 	switch name {
 	case "id":
 		return m.NewInode(ctx, &ModelFieldNode{value: m.model.ID, startTime: m.startTime}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
@@ -414,6 +448,7 @@ func (m *ModelNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
 func (m *ModelNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
 	out.Mode = fuse.S_IFDIR | 0755
 	setTimestamps(&out.Attr, m.startTime)
+	out.SetTimeout(cacheTTLModels)
 	return 0
 }
 
@@ -441,6 +476,7 @@ func (m *ModelFieldNode) Read(ctx context.Context, f fs.FileHandle, dest []byte,
 func (m *ModelFieldNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
 	out.Mode = fuse.S_IFREG | 0444
 	setTimestamps(&out.Attr, m.startTime)
+	out.SetTimeout(cacheTTLModels)
 	return 0
 }
 
@@ -468,6 +504,7 @@ func (m *ModelReadyNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse
 	out.Mode = fuse.S_IFREG | 0444
 	out.Size = 0
 	setTimestamps(&out.Attr, m.startTime)
+	out.SetTimeout(cacheTTLModels)
 	return 0
 }
 
@@ -486,6 +523,7 @@ var _ = (fs.NodeReaddirer)((*ModelNewDirNode)(nil))
 var _ = (fs.NodeGetattrer)((*ModelNewDirNode)(nil))
 
 func (n *ModelNewDirNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
+	setEntryTimeout(out, cacheTTLModels)
 	if name == "clone" {
 		return n.NewInode(ctx, &ModelCloneNode{model: n.model, state: n.state, startTime: n.startTime, diag: n.diag}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
 	}
@@ -501,6 +539,7 @@ func (n *ModelNewDirNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Er
 func (n *ModelNewDirNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
 	out.Mode = fuse.S_IFDIR | 0755
 	setTimestamps(&out.Attr, n.startTime)
+	out.SetTimeout(cacheTTLModels)
 	return 0
 }
 
@@ -533,6 +572,7 @@ func (c *ModelCloneNode) Open(ctx context.Context, flags uint32) (fs.FileHandle,
 func (c *ModelCloneNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
 	out.Mode = fuse.S_IFREG | 0444
 	setTimestamps(&out.Attr, c.startTime)
+	out.SetTimeout(cacheTTLModels)
 	return 0
 }
 
@@ -550,6 +590,7 @@ var _ = (fs.NodeReaddirer)((*NewDirNode)(nil))
 var _ = (fs.NodeGetattrer)((*NewDirNode)(nil))
 
 func (n *NewDirNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
+	setEntryTimeout(out, cacheTTLStatic)
 	if name == "clone" {
 		return n.NewInode(ctx, &CloneNode{state: n.state, startTime: n.startTime, diag: n.diag}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
 	}
@@ -565,6 +606,7 @@ func (n *NewDirNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) 
 func (n *NewDirNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
 	out.Mode = fuse.S_IFDIR | 0755
 	setTimestamps(&out.Attr, n.startTime)
+	out.SetTimeout(cacheTTLStatic)
 	return 0
 }
 
@@ -592,6 +634,7 @@ func (c *CloneNode) Open(ctx context.Context, flags uint32) (fs.FileHandle, uint
 func (c *CloneNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
 	out.Mode = fuse.S_IFREG | 0444
 	setTimestamps(&out.Attr, c.startTime)
+	out.SetTimeout(cacheTTLStatic)
 	return 0
 }
 
@@ -626,6 +669,7 @@ var _ = (fs.NodeGetattrer)((*ConversationListNode)(nil))
 
 func (c *ConversationListNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
 	defer diag.Track(c.diag, "ConversationListNode", "Lookup", name)()
+	setEntryTimeout(out, cacheTTLConversation)
 	// First check if it's a known local ID (the common case after Readdir adoption)
 	cs := c.state.Get(name)
 	if cs != nil {
@@ -882,6 +926,7 @@ func (c *ConversationListNode) fetchArchivedConversations() ([]shelley.Conversat
 func (c *ConversationListNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
 	out.Mode = fuse.S_IFDIR | 0755
 	setTimestamps(&out.Attr, c.startTime)
+	out.SetTimeout(cacheTTLConversation)
 	return 0
 }
 
@@ -982,6 +1027,7 @@ func (c *ConversationNode) buildConversationJSONMap() map[string]any {
 
 func (c *ConversationNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
 	defer diag.Track(c.diag, "ConversationNode", "Lookup", c.localID+"/"+name)()
+	setEntryTimeout(out, cacheTTLConversation)
 	// Special files with custom behavior
 	switch name {
 	case "ctl":
@@ -1165,6 +1211,7 @@ func (c *ConversationNode) Readdir(ctx context.Context) (fs.DirStream, syscall.E
 func (c *ConversationNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
 	out.Mode = fuse.S_IFDIR | 0755
 	c.getConversationTimestamps().ApplyWithFallback(&out.Attr, c.startTime)
+	out.SetTimeout(cacheTTLConversation)
 	return 0
 }
 
@@ -1343,8 +1390,8 @@ func (m *MessagesDirNode) Lookup(ctx context.Context, name string, out *fuse.Ent
 		}
 		// Message directories are immutable once created — cache aggressively.
 		// Populate attrs in EntryOut so the kernel has valid data to cache.
-		out.SetEntryTimeout(immutableTimeout)
-		out.SetAttrTimeout(immutableTimeout)
+		out.SetEntryTimeout(cacheTTLImmutable)
+		out.SetAttrTimeout(cacheTTLImmutable)
 		out.Attr.Mode = fuse.S_IFDIR | 0755
 		node.messageTimestamps().ApplyWithFallback(&out.Attr, m.startTime)
 		return m.NewInode(ctx, node, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
@@ -1423,8 +1470,8 @@ func (m *MessageDirNode) messageTime() time.Time {
 // setImmutableFieldAttrs populates the EntryOut with immutable cache timeouts
 // and file attrs for a MessageFieldNode, so the kernel has valid data to cache.
 func setImmutableFieldAttrs(out *fuse.EntryOut, value string, noNewline bool, t time.Time) {
-	out.SetEntryTimeout(immutableTimeout)
-	out.SetAttrTimeout(immutableTimeout)
+	out.SetEntryTimeout(cacheTTLImmutable)
+	out.SetAttrTimeout(cacheTTLImmutable)
 	out.Attr.Mode = fuse.S_IFREG | 0444
 	size := len(value)
 	if !noNewline {
@@ -1437,8 +1484,8 @@ func setImmutableFieldAttrs(out *fuse.EntryOut, value string, noNewline bool, t 
 // setImmutableDirAttrs populates the EntryOut with immutable cache timeouts
 // and directory attrs, so the kernel has valid data to cache.
 func setImmutableDirAttrs(out *fuse.EntryOut, t time.Time) {
-	out.SetEntryTimeout(immutableTimeout)
-	out.SetAttrTimeout(immutableTimeout)
+	out.SetEntryTimeout(cacheTTLImmutable)
+	out.SetAttrTimeout(cacheTTLImmutable)
 	out.Attr.Mode = fuse.S_IFDIR | 0755
 	setTimestamps(&out.Attr, t)
 }
@@ -1467,7 +1514,7 @@ func (m *MessageDirNode) Lookup(ctx context.Context, name string, out *fuse.Entr
 		if m.message.LLMData == nil || *m.message.LLMData == "" {
 			return nil, syscall.ENOENT
 		}
-		config := &jsonfs.Config{StartTime: t, CacheTimeout: immutableTimeout}
+		config := &jsonfs.Config{StartTime: t, CacheTimeout: cacheTTLImmutable}
 		node, err := jsonfs.NewNodeFromJSON([]byte(*m.message.LLMData), config)
 		if err != nil {
 			// If JSON parsing fails, return as a file
@@ -1480,7 +1527,7 @@ func (m *MessageDirNode) Lookup(ctx context.Context, name string, out *fuse.Entr
 		if m.message.UsageData == nil || *m.message.UsageData == "" {
 			return nil, syscall.ENOENT
 		}
-		config := &jsonfs.Config{StartTime: t, CacheTimeout: immutableTimeout}
+		config := &jsonfs.Config{StartTime: t, CacheTimeout: cacheTTLImmutable}
 		node, err := jsonfs.NewNodeFromJSON([]byte(*m.message.UsageData), config)
 		if err != nil {
 			// If JSON parsing fails, return as a file
@@ -1534,7 +1581,7 @@ func (m *MessageDirNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Err
 func (m *MessageDirNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
 	out.Mode = fuse.S_IFDIR | 0755
 	m.messageTimestamps().ApplyWithFallback(&out.Attr, m.startTime)
-	out.SetTimeout(immutableTimeout)
+	out.SetTimeout(cacheTTLImmutable)
 	return 0
 }
 
@@ -1571,7 +1618,7 @@ func (m *MessageFieldNode) Getattr(ctx context.Context, f fs.FileHandle, out *fu
 	}
 	out.Size = uint64(size)
 	setTimestamps(&out.Attr, m.startTime)
-	out.SetTimeout(immutableTimeout)
+	out.SetTimeout(cacheTTLImmutable)
 	return 0
 }
 
