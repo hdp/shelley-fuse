@@ -1,6 +1,6 @@
 ---
 id: sf-sevm
-status: closed
+status: open
 deps: []
 links: []
 created: 2026-02-04T13:16:41Z
@@ -43,3 +43,11 @@ Implementation complete. Added AnalyzeWaitingForInput function with comprehensiv
 **2026-02-06T15:36:06Z**
 
 Fixed critical bugs: (1) isAgentMessage() now checks only Type='shelley' instead of also requiring slug='agent', which was wrong for tool call messages. (2) Added LastAgentSlug field to WaitingForInputStatus and use it when constructing symlink target instead of hardcoding 'agent'. (3) Added test for 'tool call completed with no follow-up text' scenario. All tests pass.
+
+**2026-02-09T16:12:24Z**
+
+The waiting_for_input symlink got lost somehow in some refactoring. Readd it and make sure tests exercise it
+
+**2026-02-09T16:17:10Z**
+
+The code is still present, but even on archived conversations, which by definition should be waiting for input (since they're stopped), waiting_for_input isn't showing up in the conversation's directory listing
