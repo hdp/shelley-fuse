@@ -23,7 +23,7 @@ dev mount="/shelley" url="http://localhost:9999":
     just run-dev {{mount}} {{url}}
 
 run-dev mount="/shelley" url="http://localhost:9999":
-    mkdir -p {{mount}}
+    @mkdir -p {{mount}}
     ./shelley-fuse {{mount}} {{url}}
 
 # Start shelley-fuse for manual testing with autoreload
