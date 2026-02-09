@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"log"
 	"net"
@@ -1510,4 +1511,81 @@ func TestStartScriptNoInput(t *testing.T) {
 	if !strings.Contains(string(output), "no message") {
 		t.Errorf("Expected error about no message, got: %s", output)
 	}
+}
+
+// TestMessageCountFileSize verifies that messages/count reports accurate
+// file size via fstat after open. This is critical for SSHFS/SFTP access,
+// where the client reads the file size from fstat and only reads that many
+// bytes.
+func TestMessageCountFileSize(t *testing.T) {
+	skipIfNoFusermount(t)
+	skipIfNoShelley(t)
+
+	serverURL := startShelleyServer(t)
+	mountPoint := mountTestFS(t, serverURL)
+
+	// Clone and configure
+	data, err := ioutil.ReadFile(filepath.Join(mountPoint, "new", "clone"))
+	if err != nil {
+		t.Fatalf("Failed to read clone: %v", err)
+	}
+	convID := strings.TrimSpace(string(data))
+	if err := ioutil.WriteFile(filepath.Join(mountPoint, "conversation", convID, "ctl"), []byte("model=predictable"), 0644); err != nil {
+		t.Fatalf("Failed to write ctl: %v", err)
+	}
+
+	countPath := filepath.Join(mountPoint, "conversation", convID, "messages", "count")
+
+	// Before sending any message, count should be "0\n"
+	f, err := os.Open(countPath)
+	if err != nil {
+		t.Fatalf("Failed to open count: %v", err)
+	}
+	info, err := f.Stat()
+	if err != nil {
+		f.Close()
+		t.Fatalf("Failed to fstat count: %v", err)
+	}
+	countData, err := io.ReadAll(f)
+	f.Close()
+	if err != nil {
+		t.Fatalf("Failed to read count: %v", err)
+	}
+
+	if string(countData) != "0\n" {
+		t.Errorf("Expected \"0\\n\" before sending, got %q", string(countData))
+	}
+	if info.Size() != int64(len(countData)) {
+		t.Errorf("fstat size %d != read length %d (before sending)", info.Size(), len(countData))
+	}
+
+	// Send a message
+	if err := ioutil.WriteFile(filepath.Join(mountPoint, "conversation", convID, "send"), []byte("hello"), 0644); err != nil {
+		t.Fatalf("Failed to write send: %v", err)
+	}
+
+	// After sending, count should be non-zero and fstat size should match
+	f, err = os.Open(countPath)
+	if err != nil {
+		t.Fatalf("Failed to open count after send: %v", err)
+	}
+	info, err = f.Stat()
+	if err != nil {
+		f.Close()
+		t.Fatalf("Failed to fstat count after send: %v", err)
+	}
+	countData, err = io.ReadAll(f)
+	f.Close()
+	if err != nil {
+		t.Fatalf("Failed to read count after send: %v", err)
+	}
+
+	count := strings.TrimSpace(string(countData))
+	if count == "0" {
+		t.Error("Expected non-zero count after sending message")
+	}
+	if info.Size() != int64(len(countData)) {
+		t.Errorf("fstat size %d != read length %d (after sending)", info.Size(), len(countData))
+	}
+	t.Logf("Message count: %s (fstat size: %d)", count, info.Size())
 }

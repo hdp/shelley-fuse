@@ -404,14 +404,10 @@ type MessageCountNode struct {
 }
 
 var _ = (fs.NodeOpener)((*MessageCountNode)(nil))
-var _ = (fs.NodeReader)((*MessageCountNode)(nil))
 var _ = (fs.NodeGetattrer)((*MessageCountNode)(nil))
 
-func (m *MessageCountNode) Open(ctx context.Context, flags uint32) (fs.FileHandle, uint32, syscall.Errno) {
-	return nil, fuse.FOPEN_DIRECT_IO, 0
-}
-
-func (m *MessageCountNode) Read(ctx context.Context, f fs.FileHandle, dest []byte, off int64) (fuse.ReadResult, syscall.Errno) {
+// messageCountData computes the count string for this conversation.
+func (m *MessageCountNode) messageCountData() []byte {
 	cs := m.state.Get(m.localID)
 	value := "0"
 	if cs != nil && cs.Created && cs.ShelleyConversationID != "" {
@@ -423,18 +419,56 @@ func (m *MessageCountNode) Read(ctx context.Context, f fs.FileHandle, dest []byt
 			}
 		}
 	}
-	data := []byte(value + "\n")
-	return fuse.ReadResultData(readAt(data, dest, off)), 0
+	return []byte(value + "\n")
+}
+
+func (m *MessageCountNode) Open(ctx context.Context, flags uint32) (fs.FileHandle, uint32, syscall.Errno) {
+	// Compute content at open time so the file handle reports accurate size.
+	data := m.messageCountData()
+	cs := m.state.Get(m.localID)
+	var ts time.Time
+	if cs != nil && !cs.CreatedAt.IsZero() {
+		ts = cs.CreatedAt
+	} else {
+		ts = m.startTime
+	}
+	return &messageCountFileHandle{content: data, ts: ts}, fuse.FOPEN_DIRECT_IO, 0
 }
 
 func (m *MessageCountNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
+	// If called on an open file handle, delegate to it for accurate size.
+	if fga, ok := f.(fs.FileGetattrer); ok {
+		return fga.Getattr(ctx, out)
+	}
 	out.Mode = fuse.S_IFREG | 0444
+	// Without an open handle we don't know the exact size; report 0.
+	// DIRECT_IO ensures the kernel still issues a read.
 	cs := m.state.Get(m.localID)
 	if cs != nil && !cs.CreatedAt.IsZero() {
 		setTimestamps(&out.Attr, cs.CreatedAt)
 	} else {
 		setTimestamps(&out.Attr, m.startTime)
 	}
+	return 0
+}
+
+// messageCountFileHandle caches the count content computed at Open time.
+type messageCountFileHandle struct {
+	content []byte
+	ts      time.Time
+}
+
+var _ = (fs.FileReader)((*messageCountFileHandle)(nil))
+var _ = (fs.FileGetattrer)((*messageCountFileHandle)(nil))
+
+func (h *messageCountFileHandle) Read(ctx context.Context, dest []byte, off int64) (fuse.ReadResult, syscall.Errno) {
+	return fuse.ReadResultData(readAt(h.content, dest, off)), 0
+}
+
+func (h *messageCountFileHandle) Getattr(ctx context.Context, out *fuse.AttrOut) syscall.Errno {
+	out.Mode = fuse.S_IFREG | 0444
+	out.Size = uint64(len(h.content))
+	setTimestamps(&out.Attr, h.ts)
 	return 0
 }
 
