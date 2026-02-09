@@ -10,9 +10,11 @@ assignee: hdp
 ---
 # avoid hardcoding backend shelley url in systemd service
 
-The systemd service file currently has a hardcoded backend shelley URL. This should be configurable via environment variable or configuration file to allow easy deployment changes without modifying service files.
+The systemd service file currently hardcodes `http://localhost:9999` as the backend shelley URL. The service should instead dynamically discover the socket address from the `shelley.socket` unit to avoid duplication and ensure consistency.
 
 ## Acceptance Criteria
 
-1. Backend shelley URL is configurable via environment variable or config file\n2. Systemd service file reads configuration from the appropriate source\n3. Documentation updated with configuration instructions
+1. Service discovers backend URL from shelley.socket (via `systemctl show` or similar)
+2. No hardcoded URL in service file
+3. Falls back to reasonable default if socket configuration cannot be determined
 
