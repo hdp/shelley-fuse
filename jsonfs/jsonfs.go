@@ -175,6 +175,7 @@ type objectNode struct {
 var _ = (fs.NodeLookuper)((*objectNode)(nil))
 var _ = (fs.NodeReaddirer)((*objectNode)(nil))
 var _ = (fs.NodeGetattrer)((*objectNode)(nil))
+var _ = (fs.NodeOpendirHandler)((*objectNode)(nil))
 
 func (n *objectNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
 	value, ok := n.data[name]
@@ -207,6 +208,13 @@ func (n *objectNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) 
 	return fs.NewListDirStream(entries), 0
 }
 
+func (n *objectNode) OpendirHandle(ctx context.Context, flags uint32) (fs.FileHandle, uint32, syscall.Errno) {
+	if n.config.cacheTimeout() > 0 {
+		return nil, fuse.FOPEN_CACHE_DIR, 0
+	}
+	return nil, 0, 0
+}
+
 func (n *objectNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
 	out.Mode = fuse.S_IFDIR | 0755
 	setTimestamps(&out.Attr, n.config.startTime())
@@ -225,6 +233,7 @@ type arrayNode struct {
 var _ = (fs.NodeLookuper)((*arrayNode)(nil))
 var _ = (fs.NodeReaddirer)((*arrayNode)(nil))
 var _ = (fs.NodeGetattrer)((*arrayNode)(nil))
+var _ = (fs.NodeOpendirHandler)((*arrayNode)(nil))
 
 func (n *arrayNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
 	idx, err := strconv.Atoi(name)
@@ -248,6 +257,13 @@ func (n *arrayNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
 		})
 	}
 	return fs.NewListDirStream(entries), 0
+}
+
+func (n *arrayNode) OpendirHandle(ctx context.Context, flags uint32) (fs.FileHandle, uint32, syscall.Errno) {
+	if n.config.cacheTimeout() > 0 {
+		return nil, fuse.FOPEN_CACHE_DIR, 0
+	}
+	return nil, 0, 0
 }
 
 func (n *arrayNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.AttrOut) syscall.Errno {

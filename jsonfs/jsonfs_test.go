@@ -489,3 +489,51 @@ func TestCacheTimeout_ValueNodeOpen_NilConfig(t *testing.T) {
 		t.Errorf("expected FOPEN_DIRECT_IO (%d), got %d", fuse.FOPEN_DIRECT_IO, flags)
 	}
 }
+
+func TestOpendirHandle_ObjectNode_CacheDir(t *testing.T) {
+	// Positive CacheTimeout should return FOPEN_CACHE_DIR
+	node := &objectNode{data: map[string]any{"a": "1"}, config: &Config{CacheTimeout: time.Hour}}
+	_, flags, errno := node.OpendirHandle(context.Background(), 0)
+	if errno != 0 {
+		t.Fatalf("OpendirHandle failed with errno %d", errno)
+	}
+	if flags != fuse.FOPEN_CACHE_DIR {
+		t.Errorf("expected FOPEN_CACHE_DIR (%d), got %d", fuse.FOPEN_CACHE_DIR, flags)
+	}
+}
+
+func TestOpendirHandle_ObjectNode_NoCacheDir(t *testing.T) {
+	// Zero CacheTimeout should not set FOPEN_CACHE_DIR
+	node := &objectNode{data: map[string]any{"a": "1"}, config: &Config{}}
+	_, flags, errno := node.OpendirHandle(context.Background(), 0)
+	if errno != 0 {
+		t.Fatalf("OpendirHandle failed with errno %d", errno)
+	}
+	if flags != 0 {
+		t.Errorf("expected flags 0, got %d", flags)
+	}
+}
+
+func TestOpendirHandle_ArrayNode_CacheDir(t *testing.T) {
+	// Positive CacheTimeout should return FOPEN_CACHE_DIR
+	node := &arrayNode{data: []any{"a", "b"}, config: &Config{CacheTimeout: time.Hour}}
+	_, flags, errno := node.OpendirHandle(context.Background(), 0)
+	if errno != 0 {
+		t.Fatalf("OpendirHandle failed with errno %d", errno)
+	}
+	if flags != fuse.FOPEN_CACHE_DIR {
+		t.Errorf("expected FOPEN_CACHE_DIR (%d), got %d", fuse.FOPEN_CACHE_DIR, flags)
+	}
+}
+
+func TestOpendirHandle_ArrayNode_NoCacheDir(t *testing.T) {
+	// Zero CacheTimeout should not set FOPEN_CACHE_DIR
+	node := &arrayNode{data: []any{"a"}, config: &Config{}}
+	_, flags, errno := node.OpendirHandle(context.Background(), 0)
+	if errno != 0 {
+		t.Fatalf("OpendirHandle failed with errno %d", errno)
+	}
+	if flags != 0 {
+		t.Errorf("expected flags 0, got %d", flags)
+	}
+}
