@@ -166,10 +166,3 @@ rm conversation/$ID/archived
 # Check if archived
 test -e conversation/$ID/archived && echo archived
 ```
-
-## Advanced
-
-Each conversation has a `meta/` subdirectory providing conversation metadata
-(local_id, timestamps, etc.) as a directory of plain files. Each message
-directory also contains metadata files (`message_id`, `conversation_id`,
-`sequence_id`, `type`, `created_at`) alongside `content.md`.
