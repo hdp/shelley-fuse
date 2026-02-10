@@ -1,6 +1,6 @@
 ---
 id: sf-lcaj
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-02-09T16:49:14Z
