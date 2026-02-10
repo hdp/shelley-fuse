@@ -84,7 +84,7 @@ if [ -n "$status" ] && [ "$status" != "closed" ]; then
     ticket_file=".tickets/${ticket}.md"
     if worktree_exists; then
         (cd "$worktree_dir" && tk close "$ticket")
-            && git -C "$worktree_dir" commit --amend --no-edit -- "$ticket_file" 2>/dev/null || true
+        git -C "$worktree_dir" commit --amend --no-edit -- "$ticket_file" 2>/dev/null || true
     elif [ -f "$ticket_file" ]; then
         if branch_exists; then
             git checkout $ticket
