@@ -1589,3 +1589,68 @@ func TestMessageCountFileSize(t *testing.T) {
 	}
 	t.Logf("Message count: %s (fstat size: %d)", count, info.Size())
 }
+
+
+// TestArchivedConversationInDirectoryListing verifies that archived conversations
+// appear in /conversation/ directory listings for tab completion to work.
+func TestArchivedConversationInDirectoryListing(t *testing.T) {
+	skipIfNoFusermount(t)
+	skipIfNoShelley(t)
+
+	serverURL := startShelleyServer(t)
+	mountPoint := mountTestFS(t, serverURL)
+
+	// Create a conversation
+	localID, serverID := createConversation(t, mountPoint, "Test archived listing")
+
+	// Verify it appears in the listing
+	entries, err := ioutil.ReadDir(filepath.Join(mountPoint, "conversation"))
+	if err != nil {
+		t.Fatalf("Failed to read conversation dir: %v", err)
+	}
+	var found bool
+	for _, e := range entries {
+		if e.Name() == localID {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("Conversation %s not found in listing", localID)
+	}
+
+	// Archive it
+	archivedPath := filepath.Join(mountPoint, "conversation", localID, "archived")
+	f, err := os.Create(archivedPath)
+	if err != nil {
+		t.Fatalf("Failed to create archived file: %v", err)
+	}
+	f.Close()
+
+	// Verify it's archived
+	if _, err := os.Stat(archivedPath); err != nil {
+		t.Fatalf("Expected archived file to exist: %v", err)
+	}
+
+	// Verify it STILL appears in the directory listing after archiving
+	entries, err = ioutil.ReadDir(filepath.Join(mountPoint, "conversation"))
+	if err != nil {
+		t.Fatalf("Failed to read conversation dir after archiving: %v", err)
+	}
+
+	found = false
+	var foundServerID bool
+	for _, e := range entries {
+		if e.Name() == localID && e.IsDir() {
+			found = true
+		}
+		if e.Name() == serverID && e.Mode()&os.ModeSymlink != 0 {
+			foundServerID = true
+		}
+	}
+	if !found {
+		t.Errorf("Archived conversation local ID %s not found in directory listing", localID)
+	}
+	if !foundServerID {
+		t.Errorf("Archived conversation server ID symlink %s not found", serverID)
+	}
+}

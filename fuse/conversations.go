@@ -183,8 +183,26 @@ func (c *ConversationListNode) Readdir(ctx context.Context) (fs.DirStream, sysca
 			_, _ = c.state.AdoptWithMetadata(conv.ConversationID, slug, conv.CreatedAt, conv.UpdatedAt)
 		}
 	}
-	// Note: if fetchServerConversations fails, we still return local entries
-	// This is intentional - local state should always be accessible
+
+	// Also fetch archived conversations to prevent them from being filtered
+	// as stale. Archived conversations are valid — they just live on a
+	// different server endpoint (/api/conversations/archived).
+	archivedConvs, archivedErr := c.fetchArchivedConversations()
+	if archivedErr == nil {
+		for _, conv := range archivedConvs {
+			validServerIDs[conv.ConversationID] = true
+			slug := ""
+			if conv.Slug != nil {
+				slug = *conv.Slug
+			}
+			_, _ = c.state.AdoptWithMetadata(conv.ConversationID, slug, conv.CreatedAt, conv.UpdatedAt)
+		}
+	}
+
+	// Note: if fetchServerConversations fails, we still return local entries.
+	// This is intentional - local state should always be accessible.
+	// If fetchArchivedConversations fails, archived conversations may be
+	// filtered as stale, but they remain accessible via direct Lookup.
 
 	// Build entries: directories for local IDs, symlinks for server IDs and slugs
 	mappings := c.state.ListMappings()

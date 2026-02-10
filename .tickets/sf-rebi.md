@@ -1,6 +1,6 @@
 ---
 id: sf-rebi
-status: open
+status: in_progress
 deps: []
 links: []
 created: 2026-02-10T02:46:04Z
