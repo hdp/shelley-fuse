@@ -187,10 +187,14 @@ func (c *ConversationListNode) Readdir(ctx context.Context) (fs.DirStream, sysca
 	// Also fetch archived conversations to prevent them from being filtered
 	// as stale. Archived conversations are valid — they just live on a
 	// different server endpoint (/api/conversations/archived).
+	// However, we track them separately so they can be excluded from the
+	// directory listing while remaining accessible via direct Lookup.
+	archivedServerIDs := make(map[string]bool)
 	archivedConvs, archivedErr := c.fetchArchivedConversations()
 	if archivedErr == nil {
 		for _, conv := range archivedConvs {
 			validServerIDs[conv.ConversationID] = true
+			archivedServerIDs[conv.ConversationID] = true
 			slug := ""
 			if conv.Slug != nil {
 				slug = *conv.Slug
@@ -229,8 +233,8 @@ func (c *ConversationListNode) Readdir(ctx context.Context) (fs.DirStream, sysca
 		} else if !serverFetchSucceeded {
 			// Server fetch failed, include all to avoid data loss
 			filteredMappings = append(filteredMappings, cs)
-		} else if validServerIDs[cs.ShelleyConversationID] {
-			// Has server ID and it still exists on server
+		} else if validServerIDs[cs.ShelleyConversationID] && !archivedServerIDs[cs.ShelleyConversationID] {
+			// Has server ID, still exists on server, and is not archived
 			filteredMappings = append(filteredMappings, cs)
 		}
 		// Otherwise: has a Shelley ID that's not on server anymore - skip (stale)

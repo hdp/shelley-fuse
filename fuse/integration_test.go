@@ -1592,7 +1592,8 @@ func TestMessageCountFileSize(t *testing.T) {
 
 
 // TestArchivedConversationInDirectoryListing verifies that archived conversations
-// appear in /conversation/ directory listings for tab completion to work.
+// do NOT appear in /conversation/ directory listings, but are still accessible
+// via direct path (Lookup still works for tab-completion within the directory).
 func TestArchivedConversationInDirectoryListing(t *testing.T) {
 	skipIfNoFusermount(t)
 	skipIfNoShelley(t)
@@ -1603,7 +1604,7 @@ func TestArchivedConversationInDirectoryListing(t *testing.T) {
 	// Create a conversation
 	localID, serverID := createConversation(t, mountPoint, "Test archived listing")
 
-	// Verify it appears in the listing
+	// Verify it appears in the listing before archiving
 	entries, err := ioutil.ReadDir(filepath.Join(mountPoint, "conversation"))
 	if err != nil {
 		t.Fatalf("Failed to read conversation dir: %v", err)
@@ -1615,7 +1616,7 @@ func TestArchivedConversationInDirectoryListing(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Fatalf("Conversation %s not found in listing", localID)
+		t.Fatalf("Conversation %s not found in listing before archiving", localID)
 	}
 
 	// Archive it
@@ -1631,26 +1632,37 @@ func TestArchivedConversationInDirectoryListing(t *testing.T) {
 		t.Fatalf("Expected archived file to exist: %v", err)
 	}
 
-	// Verify it STILL appears in the directory listing after archiving
+	// Verify it does NOT appear in the directory listing after archiving
 	entries, err = ioutil.ReadDir(filepath.Join(mountPoint, "conversation"))
 	if err != nil {
 		t.Fatalf("Failed to read conversation dir after archiving: %v", err)
 	}
 
-	found = false
-	var foundServerID bool
 	for _, e := range entries {
-		if e.Name() == localID && e.IsDir() {
-			found = true
+		if e.Name() == localID {
+			t.Errorf("Archived conversation local ID %s should NOT appear in directory listing", localID)
 		}
-		if e.Name() == serverID && e.Mode()&os.ModeSymlink != 0 {
-			foundServerID = true
+		if e.Name() == serverID {
+			t.Errorf("Archived conversation server ID symlink %s should NOT appear in directory listing", serverID)
 		}
 	}
-	if !found {
-		t.Errorf("Archived conversation local ID %s not found in directory listing", localID)
+
+	// Verify the archived conversation is still accessible via direct path (Lookup)
+	// This ensures tab-completion within the archived conversation's directory still works
+	countPath := filepath.Join(mountPoint, "conversation", localID, "messages", "count")
+	data, err := ioutil.ReadFile(countPath)
+	if err != nil {
+		t.Errorf("Expected archived conversation to be accessible via direct path, got error: %v", err)
+	} else {
+		t.Logf("Archived conversation messages/count = %s", strings.TrimSpace(string(data)))
 	}
-	if !foundServerID {
-		t.Errorf("Archived conversation server ID symlink %s not found", serverID)
+
+	// Also verify access via server ID still works
+	countPathViaServerID := filepath.Join(mountPoint, "conversation", serverID, "messages", "count")
+	data, err = ioutil.ReadFile(countPathViaServerID)
+	if err != nil {
+		t.Errorf("Expected archived conversation to be accessible via server ID, got error: %v", err)
+	} else {
+		t.Logf("Archived conversation (via server ID) messages/count = %s", strings.TrimSpace(string(data)))
 	}
 }
