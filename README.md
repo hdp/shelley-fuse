@@ -86,18 +86,11 @@ just build
 # Run tests (requires /usr/local/bin/shelley and fusermount)
 just test
 
-# Start for manual testing
-just dev
-
-# Clean build artifacts
-just clean
+# Start for manual testing with auto-reloading on git commit
+just dev-reload
 ```
 
 ## Links
 
 - [Shelley](https://github.com/boldsoftware/shelley) — The AI conversation platform
 - [`fuse/README.md`](fuse/README.md) — Detailed filesystem usage documentation
-
-## License
-
-MIT
