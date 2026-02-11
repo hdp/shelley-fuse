@@ -12,7 +12,7 @@ import (
 func TestTrackAndDone(t *testing.T) {
 	tr := NewTracker()
 
-	done := tr.Track("ConversationDirNode", "Readdir", "/conversation")
+	h := tr.Track("ConversationDirNode", "Readdir", "/conversation")
 	ops := tr.InFlight()
 	if len(ops) != 1 {
 		t.Fatalf("expected 1 op, got %d", len(ops))
@@ -32,8 +32,11 @@ func TestTrackAndDone(t *testing.T) {
 	if ops[0].Started.IsZero() {
 		t.Error("expected non-zero Started")
 	}
+	if ops[0].Phase != "" {
+		t.Errorf("phase = %q, want empty", ops[0].Phase)
+	}
 
-	done()
+	h.Done()
 	ops = tr.InFlight()
 	if len(ops) != 0 {
 		t.Fatalf("expected 0 ops after done, got %d", len(ops))
@@ -42,9 +45,9 @@ func TestTrackAndDone(t *testing.T) {
 
 func TestDoneIdempotent(t *testing.T) {
 	tr := NewTracker()
-	done := tr.Track("X", "Y", "")
-	done()
-	done() // should not panic
+	h := tr.Track("X", "Y", "")
+	h.Done()
+	h.Done() // should not panic
 	if len(tr.InFlight()) != 0 {
 		t.Fatal("expected 0 ops")
 	}
@@ -86,15 +89,15 @@ func TestInFlightSameTimeSortsByID(t *testing.T) {
 
 func TestMultipleOps(t *testing.T) {
 	tr := NewTracker()
-	d1 := tr.Track("A", "Open", "")
-	d2 := tr.Track("B", "Write", "data")
-	d3 := tr.Track("C", "Read", "")
+	h1 := tr.Track("A", "Open", "")
+	h2 := tr.Track("B", "Write", "data")
+	h3 := tr.Track("C", "Read", "")
 
 	if len(tr.InFlight()) != 3 {
 		t.Fatal("expected 3 ops")
 	}
 
-	d2()
+	h2.Done()
 	ops := tr.InFlight()
 	if len(ops) != 2 {
 		t.Fatalf("expected 2 ops, got %d", len(ops))
@@ -105,8 +108,8 @@ func TestMultipleOps(t *testing.T) {
 		}
 	}
 
-	d1()
-	d3()
+	h1.Done()
+	h3.Done()
 	if len(tr.InFlight()) != 0 {
 		t.Fatal("expected 0 ops")
 	}
@@ -122,10 +125,10 @@ func TestDumpEmpty(t *testing.T) {
 
 func TestDumpWithOps(t *testing.T) {
 	tr := NewTracker()
-	d1 := tr.Track("SendNode", "Write", "conv=abc123")
-	d2 := tr.Track("CtlNode", "Read", "")
-	defer d1()
-	defer d2()
+	h1 := tr.Track("SendNode", "Write", "conv=abc123")
+	h2 := tr.Track("CtlNode", "Read", "")
+	defer h1.Done()
+	defer h2.Done()
 
 	out := tr.Dump()
 	if !strings.Contains(out, "2 in-flight operation(s):") {
@@ -171,17 +174,18 @@ func TestDumpFormatWithoutDetail(t *testing.T) {
 
 func TestPackageLevelTrackNil(t *testing.T) {
 	// Should not panic with nil tracker
-	done := Track(nil, "Node", "Method", "detail")
-	done() // no-op, should not panic
+	h := Track(nil, "Node", "Method", "detail")
+	h.SetPhase("test") // no-op, should not panic
+	h.Done()           // no-op, should not panic
 }
 
 func TestPackageLevelTrackNonNil(t *testing.T) {
 	tr := NewTracker()
-	done := Track(tr, "Node", "Method", "detail")
+	h := Track(tr, "Node", "Method", "detail")
 	if len(tr.InFlight()) != 1 {
 		t.Fatal("expected 1 op")
 	}
-	done()
+	h.Done()
 	if len(tr.InFlight()) != 0 {
 		t.Fatal("expected 0 ops")
 	}
@@ -189,9 +193,9 @@ func TestPackageLevelTrackNonNil(t *testing.T) {
 
 func TestIDsAreUnique(t *testing.T) {
 	tr := NewTracker()
-	var dones []func()
+	var handles []*OpHandle
 	for i := 0; i < 100; i++ {
-		dones = append(dones, tr.Track("N", "M", ""))
+		handles = append(handles, tr.Track("N", "M", ""))
 	}
 	ops := tr.InFlight()
 	seen := make(map[uint64]bool)
@@ -201,8 +205,8 @@ func TestIDsAreUnique(t *testing.T) {
 		}
 		seen[op.ID] = true
 	}
-	for _, d := range dones {
-		d()
+	for _, h := range handles {
+		h.Done()
 	}
 }
 
@@ -228,8 +232,8 @@ func TestHandlerTextEmpty(t *testing.T) {
 
 func TestHandlerTextWithOps(t *testing.T) {
 	tr := NewTracker()
-	d := tr.Track("SendNode", "Write", "conv=abc")
-	defer d()
+	h := tr.Track("SendNode", "Write", "conv=abc")
+	defer h.Done()
 
 	handler := tr.Handler()
 	req := httptest.NewRequest(http.MethodGet, "/diag", nil)
@@ -273,10 +277,10 @@ func TestHandlerJSONEmpty(t *testing.T) {
 
 func TestHandlerJSONWithOps(t *testing.T) {
 	tr := NewTracker()
-	d1 := tr.Track("CtlNode", "Read", "")
-	d2 := tr.Track("SendNode", "Write", "conv=xyz")
-	defer d1()
-	defer d2()
+	h1 := tr.Track("CtlNode", "Read", "")
+	h2 := tr.Track("SendNode", "Write", "conv=xyz")
+	defer h1.Done()
+	defer h2.Done()
 
 	handler := tr.Handler()
 	req := httptest.NewRequest(http.MethodGet, "/diag?json", nil)
@@ -317,6 +321,99 @@ func TestHandlerJSONQueryParamNoValue(t *testing.T) {
 	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
 		t.Errorf("Content-Type = %q, want application/json", ct)
 	}
+}
+
+func TestSetPhase(t *testing.T) {
+	tr := NewTracker()
+	h := tr.Track("SendNode", "Flush", "abc123")
+	defer h.Done()
+
+	// Initially no phase
+	ops := tr.InFlight()
+	if ops[0].Phase != "" {
+		t.Errorf("phase = %q, want empty", ops[0].Phase)
+	}
+
+	// Set a phase
+	h.SetPhase("HTTP POST StartConversation")
+	ops = tr.InFlight()
+	if ops[0].Phase != "HTTP POST StartConversation" {
+		t.Errorf("phase = %q, want %q", ops[0].Phase, "HTTP POST StartConversation")
+	}
+
+	// Update phase
+	h.SetPhase("MarkCreated")
+	ops = tr.InFlight()
+	if ops[0].Phase != "MarkCreated" {
+		t.Errorf("phase = %q, want %q", ops[0].Phase, "MarkCreated")
+	}
+}
+
+func TestSetPhaseAfterDone(t *testing.T) {
+	tr := NewTracker()
+	h := tr.Track("N", "M", "")
+	h.Done()
+	// SetPhase after Done should not panic
+	h.SetPhase("late")
+	if len(tr.InFlight()) != 0 {
+		t.Fatal("expected 0 ops")
+	}
+}
+
+func TestDumpWithPhase(t *testing.T) {
+	tr := NewTracker()
+	now := time.Now()
+	tr.mu.Lock()
+	tr.ops[11] = Op{ID: 11, Node: "ConvSendFileHandle", Method: "Flush", Detail: "1b9b6d6a", Phase: "HTTP POST StartConversation", Started: now}
+	tr.mu.Unlock()
+	out := tr.Dump()
+	// Format: "  [11] ConvSendFileHandle.Flush 1b9b6d6a [HTTP POST StartConversation] (0s)"
+	if !strings.Contains(out, "[11] ConvSendFileHandle.Flush 1b9b6d6a [HTTP POST StartConversation] (") {
+		t.Errorf("unexpected format: %q", out)
+	}
+}
+
+func TestDumpWithPhaseNoDetail(t *testing.T) {
+	tr := NewTracker()
+	now := time.Now()
+	tr.mu.Lock()
+	tr.ops[1] = Op{ID: 1, Node: "N", Method: "M", Phase: "loading", Started: now}
+	tr.mu.Unlock()
+	out := tr.Dump()
+	// Format: "  [1] N.M [loading] (0s)"
+	if !strings.Contains(out, "[1] N.M [loading] (") {
+		t.Errorf("unexpected format: %q", out)
+	}
+}
+
+func TestHandlerJSONWithPhase(t *testing.T) {
+	tr := NewTracker()
+	h := tr.Track("SendNode", "Flush", "abc")
+	h.SetPhase("HTTP POST")
+	defer h.Done()
+
+	handler := tr.Handler()
+	req := httptest.NewRequest(http.MethodGet, "/diag?json", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	var ops []Op
+	if err := json.NewDecoder(rec.Body).Decode(&ops); err != nil {
+		t.Fatalf("decode error: %v", err)
+	}
+	if len(ops) != 1 {
+		t.Fatalf("expected 1 op, got %d", len(ops))
+	}
+	if ops[0].Phase != "HTTP POST" {
+		t.Errorf("phase = %q, want %q", ops[0].Phase, "HTTP POST")
+	}
+}
+
+func TestOpHandleNilTracker(t *testing.T) {
+	// A no-op OpHandle (nil tracker) should be safe to use
+	h := &OpHandle{}
+	h.SetPhase("test") // should not panic
+	h.Done()           // should not panic
 }
 
 func TestGoroutineStacks(t *testing.T) {

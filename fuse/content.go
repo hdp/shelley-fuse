@@ -59,7 +59,7 @@ var _ = (fs.NodeOpener)((*ConvContentNode)(nil))
 var _ = (fs.NodeGetattrer)((*ConvContentNode)(nil))
 
 func (c *ConvContentNode) Open(ctx context.Context, flags uint32) (fs.FileHandle, uint32, syscall.Errno) {
-	defer diag.Track(c.diag, "ConvContentNode", "Open", c.localID)()
+	defer diag.Track(c.diag, "ConvContentNode", "Open", c.localID).Done()
 	// Fetch and cache content at open time to ensure consistent reads.
 	// Without caching, multiple read() calls would regenerate data each time,
 	// and if the conversation changed between reads, the result would be corrupted.
@@ -200,7 +200,7 @@ var _ = (fs.NodeReaddirer)((*QueryDirNode)(nil))
 var _ = (fs.NodeGetattrer)((*QueryDirNode)(nil))
 
 func (q *QueryDirNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
-	defer diag.Track(q.diag, "QueryDirNode", "Lookup", q.localID+"/"+name)()
+	defer diag.Track(q.diag, "QueryDirNode", "Lookup", q.localID+"/"+name).Done()
 	// If this is since/ (no person set), the child is a person directory
 	if q.kind == querySince && q.person == "" {
 		// Use a stable inode number so go-fuse reuses the existing node
@@ -407,7 +407,7 @@ func (q *QueryResultDirNode) symlinkPrefix() string {
 }
 
 func (q *QueryResultDirNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
-	defer diag.Track(q.diag, "QueryResultDirNode", "Lookup", q.localID+"/"+name)()
+	defer diag.Track(q.diag, "QueryResultDirNode", "Lookup", q.localID+"/"+name).Done()
 	snap, toolMap, err := q.getFilteredMessages()
 	if err != nil {
 		return nil, syscall.EIO
@@ -443,7 +443,7 @@ func (q *QueryResultDirNode) Lookup(ctx context.Context, name string, out *fuse.
 }
 
 func (q *QueryResultDirNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
-	defer diag.Track(q.diag, "QueryResultDirNode", "Readdir", q.localID)()
+	defer diag.Track(q.diag, "QueryResultDirNode", "Readdir", q.localID).Done()
 	snap, toolMap, err := q.getFilteredMessages()
 	if err != nil {
 		return nil, syscall.EIO

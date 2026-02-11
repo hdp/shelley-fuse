@@ -13,8 +13,8 @@ func TestRunShellDiagTimeoutIncludesDump(t *testing.T) {
 	tracker := diag.NewTracker()
 
 	// Simulate a stuck FUSE operation.
-	done := tracker.Track("SendNode", "Write", "conv=deadbeef")
-	defer done()
+	h := tracker.Track("SendNode", "Write", "conv=deadbeef")
+	defer h.Done()
 
 	// Use a very short timeout so the "sleep" command is killed quickly.
 	_, _, err := runShellDiagTimeout(t, t.TempDir(), "sleep 60", tracker, 100*time.Millisecond)
@@ -40,8 +40,8 @@ func TestRunShellDiagTimeoutIncludesDump(t *testing.T) {
 // include the diag dump.
 func TestRunShellDiagNonTimeoutNoDump(t *testing.T) {
 	tracker := diag.NewTracker()
-	done := tracker.Track("SendNode", "Write", "conv=deadbeef")
-	defer done()
+	h := tracker.Track("SendNode", "Write", "conv=deadbeef")
+	defer h.Done()
 
 	_, _, err := runShellDiag(t, t.TempDir(), "exit 1", tracker)
 	if err == nil {

@@ -19,7 +19,38 @@ type Op struct {
 	Node    string // Type name of the FUSE node (e.g. "ConversationDirNode")
 	Method  string // FUSE method (e.g. "Readdir", "Open", "Write")
 	Detail  string // Free-form detail (e.g. path, conversation ID)
+	Phase   string // Current sub-step (e.g. "HTTP POST StartConversation")
 	Started time.Time
+}
+
+// OpHandle is a handle to an in-flight operation that allows callers to
+// annotate sub-steps via SetPhase and to signal completion via Done.
+type OpHandle struct {
+	tracker *Tracker
+	id      uint64
+}
+
+// SetPhase updates the phase annotation for this in-flight operation.
+func (h *OpHandle) SetPhase(phase string) {
+	if h.tracker == nil {
+		return
+	}
+	h.tracker.mu.Lock()
+	if op, ok := h.tracker.ops[h.id]; ok {
+		op.Phase = phase
+		h.tracker.ops[h.id] = op
+	}
+	h.tracker.mu.Unlock()
+}
+
+// Done marks the operation as complete and removes it from the tracker.
+func (h *OpHandle) Done() {
+	if h.tracker == nil {
+		return
+	}
+	h.tracker.mu.Lock()
+	delete(h.tracker.ops, h.id)
+	h.tracker.mu.Unlock()
 }
 
 // Tracker records in-flight FUSE operations.
@@ -36,9 +67,9 @@ func NewTracker() *Tracker {
 	}
 }
 
-// Track records the start of a FUSE operation and returns a done function
-// that must be called when the operation completes.
-func (t *Tracker) Track(node, method, detail string) func() {
+// Track records the start of a FUSE operation and returns an OpHandle
+// whose Done method must be called when the operation completes.
+func (t *Tracker) Track(node, method, detail string) *OpHandle {
 	id := t.nextID.Add(1)
 	op := Op{
 		ID:      id,
@@ -50,11 +81,7 @@ func (t *Tracker) Track(node, method, detail string) func() {
 	t.mu.Lock()
 	t.ops[id] = op
 	t.mu.Unlock()
-	return func() {
-		t.mu.Lock()
-		delete(t.ops, id)
-		t.mu.Unlock()
-	}
+	return &OpHandle{tracker: t, id: id}
 }
 
 // InFlight returns a snapshot of all in-flight operations, sorted by start time.
@@ -85,11 +112,14 @@ func (t *Tracker) Dump() string {
 	fmt.Fprintf(&b, "%d in-flight operation(s):\n", len(ops))
 	for _, op := range ops {
 		elapsed := now.Sub(op.Started).Truncate(time.Millisecond)
+		fmt.Fprintf(&b, "  [%d] %s.%s", op.ID, op.Node, op.Method)
 		if op.Detail != "" {
-			fmt.Fprintf(&b, "  [%d] %s.%s %s (%s)\n", op.ID, op.Node, op.Method, op.Detail, elapsed)
-		} else {
-			fmt.Fprintf(&b, "  [%d] %s.%s (%s)\n", op.ID, op.Node, op.Method, elapsed)
+			fmt.Fprintf(&b, " %s", op.Detail)
 		}
+		if op.Phase != "" {
+			fmt.Fprintf(&b, " [%s]", op.Phase)
+		}
+		fmt.Fprintf(&b, " (%s)\n", elapsed)
 	}
 	return b.String()
 }
@@ -119,10 +149,10 @@ func (t *Tracker) Handler() http.Handler {
 }
 
 // Track is a package-level helper that is nil-safe: if t is nil, it returns
-// a no-op done function. This lets callers avoid nil checks.
-func Track(t *Tracker, node, method, detail string) func() {
+// a no-op OpHandle. This lets callers avoid nil checks.
+func Track(t *Tracker, node, method, detail string) *OpHandle {
 	if t == nil {
-		return func() {}
+		return &OpHandle{}
 	}
 	return t.Track(node, method, detail)
 }

@@ -66,7 +66,7 @@ func (m *MessagesDirNode) getConversationTime() time.Time {
 }
 
 func (m *MessagesDirNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
-	defer diag.Track(m.diag, "MessagesDirNode", "Lookup", m.localID+"/"+name)()
+	defer diag.Track(m.diag, "MessagesDirNode", "Lookup", m.localID+"/"+name).Done()
 	switch name {
 	case "last":
 		ino := stableIno("query-dir", m.localID, "last")
@@ -145,7 +145,7 @@ func (m *MessagesDirNode) Lookup(ctx context.Context, name string, out *fuse.Ent
 }
 
 func (m *MessagesDirNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
-	defer diag.Track(m.diag, "MessagesDirNode", "Readdir", m.localID)()
+	defer diag.Track(m.diag, "MessagesDirNode", "Readdir", m.localID).Done()
 	entries := []fuse.DirEntry{
 		{Name: "all.json", Mode: fuse.S_IFREG},
 		{Name: "all.md", Mode: fuse.S_IFREG},

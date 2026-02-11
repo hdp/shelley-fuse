@@ -27,7 +27,7 @@ var _ = (fs.NodeReaddirer)((*ModelsDirNode)(nil))
 var _ = (fs.NodeGetattrer)((*ModelsDirNode)(nil))
 
 func (m *ModelsDirNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
-	defer diag.Track(m.diag, "ModelsDirNode", "Lookup", name)()
+	defer diag.Track(m.diag, "ModelsDirNode", "Lookup", name).Done()
 	result, err := m.client.ListModels()
 	if err != nil {
 		return nil, syscall.EIO
@@ -60,7 +60,7 @@ func (m *ModelsDirNode) Lookup(ctx context.Context, name string, out *fuse.Entry
 }
 
 func (m *ModelsDirNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
-	defer diag.Track(m.diag, "ModelsDirNode", "Readdir", "")()
+	defer diag.Track(m.diag, "ModelsDirNode", "Readdir", "").Done()
 	result, err := m.client.ListModels()
 	if err != nil {
 		return nil, syscall.EIO
@@ -252,7 +252,7 @@ var _ = (fs.NodeOpener)((*ModelCloneNode)(nil))
 var _ = (fs.NodeGetattrer)((*ModelCloneNode)(nil))
 
 func (c *ModelCloneNode) Open(ctx context.Context, flags uint32) (fs.FileHandle, uint32, syscall.Errno) {
-	defer diag.Track(c.diag, "ModelCloneNode", "Open", c.model.Name())()
+	defer diag.Track(c.diag, "ModelCloneNode", "Open", c.model.Name()).Done()
 	id, err := c.state.Clone()
 	if err != nil {
 		return nil, 0, syscall.EIO
@@ -281,7 +281,7 @@ type CloneFileHandle struct {
 var _ = (fs.FileReader)((*CloneFileHandle)(nil))
 
 func (h *CloneFileHandle) Read(ctx context.Context, dest []byte, off int64) (fuse.ReadResult, syscall.Errno) {
-	defer diag.Track(h.diag, "CloneFileHandle", "Read", h.id)()
+	defer diag.Track(h.diag, "CloneFileHandle", "Read", h.id).Done()
 	data := []byte(h.id + "\n")
 	return fuse.ReadResultData(readAt(data, dest, off)), 0
 }

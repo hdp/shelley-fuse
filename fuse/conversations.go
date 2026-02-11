@@ -36,7 +36,7 @@ var _ = (fs.NodeReaddirer)((*ConversationListNode)(nil))
 var _ = (fs.NodeGetattrer)((*ConversationListNode)(nil))
 
 func (c *ConversationListNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
-	defer diag.Track(c.diag, "ConversationListNode", "Lookup", name)()
+	defer diag.Track(c.diag, "ConversationListNode", "Lookup", name).Done()
 	setEntryTimeout(out, cacheTTLConversation)
 	// First check if it's a known local ID (the common case after Readdir adoption)
 	cs := c.state.Get(name)
@@ -161,7 +161,7 @@ func (c *ConversationListNode) getConversationTimestamps(localID string) metadat
 }
 
 func (c *ConversationListNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
-	defer diag.Track(c.diag, "ConversationListNode", "Readdir", "")()
+	defer diag.Track(c.diag, "ConversationListNode", "Readdir", "").Done()
 	// Adopt any server conversations that aren't tracked locally, and update
 	// slugs for already-tracked conversations (slugs are always provided immediately).
 	serverConvs, err := c.fetchServerConversations()
@@ -416,7 +416,7 @@ func (c *ConversationNode) buildConversationJSONMap() map[string]any {
 }
 
 func (c *ConversationNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
-	defer diag.Track(c.diag, "ConversationNode", "Lookup", c.localID+"/"+name)()
+	defer diag.Track(c.diag, "ConversationNode", "Lookup", c.localID+"/"+name).Done()
 	setEntryTimeout(out, cacheTTLConversation)
 	// Special files with custom behavior
 	switch name {
@@ -545,7 +545,7 @@ func (c *ConversationNode) Lookup(ctx context.Context, name string, out *fuse.En
 }
 
 func (c *ConversationNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
-	defer diag.Track(c.diag, "ConversationNode", "Readdir", c.localID)()
+	defer diag.Track(c.diag, "ConversationNode", "Readdir", c.localID).Done()
 	// Special files always present
 	entries := []fuse.DirEntry{
 		{Name: "ctl", Mode: fuse.S_IFREG},
@@ -611,7 +611,7 @@ func (c *ConversationNode) Getattr(ctx context.Context, f fs.FileHandle, out *fu
 // Create handles creating files in the conversation directory.
 // Only "archived" can be created, which archives the conversation.
 func (c *ConversationNode) Create(ctx context.Context, name string, flags uint32, mode uint32, out *fuse.EntryOut) (*fs.Inode, fs.FileHandle, uint32, syscall.Errno) {
-	defer diag.Track(c.diag, "ConversationNode", "Create", c.localID+"/"+name)()
+	defer diag.Track(c.diag, "ConversationNode", "Create", c.localID+"/"+name).Done()
 	if name != "archived" {
 		return nil, nil, 0, syscall.EPERM
 	}
@@ -641,7 +641,7 @@ func (c *ConversationNode) Create(ctx context.Context, name string, flags uint32
 // Unlink handles removing files from the conversation directory.
 // Only "archived" can be removed, which unarchives the conversation.
 func (c *ConversationNode) Unlink(ctx context.Context, name string) syscall.Errno {
-	defer diag.Track(c.diag, "ConversationNode", "Unlink", c.localID+"/"+name)()
+	defer diag.Track(c.diag, "ConversationNode", "Unlink", c.localID+"/"+name).Done()
 	if name != "archived" {
 		return syscall.EPERM
 	}
@@ -819,7 +819,8 @@ func (h *ConvSendFileHandle) Write(ctx context.Context, data []byte, off int64) 
 // the message is sent. This ensures the conversation is created before close returns.
 // Note: Flush may be called multiple times for dup'd file descriptors.
 func (h *ConvSendFileHandle) Flush(ctx context.Context) syscall.Errno {
-	defer diag.Track(h.node.diag, "ConvSendFileHandle", "Flush", h.node.localID)()
+	op := diag.Track(h.node.diag, "ConvSendFileHandle", "Flush", h.node.localID)
+	defer op.Done()
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
@@ -842,11 +843,13 @@ func (h *ConvSendFileHandle) Flush(ctx context.Context) syscall.Errno {
 
 	if !cs.Created {
 		// First write: create the conversation on the Shelley backend
+		op.SetPhase("HTTP POST StartConversation")
 		result, err := h.node.client.StartConversation(message, cs.EffectiveModelID(), cs.Cwd)
 		if err != nil {
 			log.Printf("StartConversation failed for %s: %v", h.node.localID, err)
 			return syscall.EIO
 		}
+		op.SetPhase("MarkCreated")
 		if err := h.node.state.MarkCreated(h.node.localID, result.ConversationID, result.Slug); err != nil {
 			return syscall.EIO
 		}
@@ -855,6 +858,7 @@ func (h *ConvSendFileHandle) Flush(ctx context.Context) syscall.Errno {
 	} else {
 		// Subsequent writes: send message to existing conversation
 		// Pass the internal model ID to ensure we use the correct API identifier
+		op.SetPhase("HTTP POST SendMessage")
 		if err := h.node.client.SendMessage(cs.ShelleyConversationID, message, cs.EffectiveModelID()); err != nil {
 			log.Printf("SendMessage failed for conversation %s: %v", cs.ShelleyConversationID, err)
 			return syscall.EIO
