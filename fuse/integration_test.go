@@ -156,7 +156,31 @@ func mountTestFSFull(t *testing.T, serverURL string, cloneTimeout time.Duration)
 	go diagSrv.Serve(diagListener)
 	diagURL := fmt.Sprintf("http://%s/diag", diagListener.Addr().String())
 
+	// Start a watchdog that dumps diagnostics if the test is about to
+	// hit the go-test timeout. This fires 30s before the deadline so we
+	// get useful output instead of a bare "panic: test timed out".
+	watchdogDone := make(chan struct{})
+	if dl, ok := t.Deadline(); ok {
+		margin := 30 * time.Second
+		untilDeadline := time.Until(dl)
+		if untilDeadline > margin {
+			go func() {
+				timer := time.NewTimer(untilDeadline - margin)
+				defer timer.Stop()
+				select {
+				case <-timer.C:
+					fmt.Fprintf(os.Stderr, "\n=== DIAGNOSTIC DUMP (test %s approaching deadline) ===\n", t.Name())
+					fmt.Fprintf(os.Stderr, "--- In-flight FUSE operations ---\n%s", shelleyFS.Diag.Dump())
+					fmt.Fprintf(os.Stderr, "--- All goroutine stacks ---\n%s", diag.GoroutineStacks())
+					fmt.Fprintf(os.Stderr, "=== END DIAGNOSTIC DUMP ===\n\n")
+				case <-watchdogDone:
+				}
+			}()
+		}
+	}
+
 	t.Cleanup(func() {
+		close(watchdogDone)
 		diagSrv.Close()
 
 		done := make(chan struct{})
