@@ -109,17 +109,19 @@ func TestReadmeQuickStart(t *testing.T) {
 	t.Logf("Allocated conversation ID: %s", convID)
 
 	// Step 2: Configure model and working directory
-	// echo "model=predictable cwd=/tmp" > conversation/$ID/ctl
-	// (Using predictable model for testing)
-	runShellDiagOK(t, mountPoint, "echo 'model=predictable cwd=/tmp' > conversation/"+convID+"/ctl", tracker)
+	// echo "model=predictable cwd=<dir>" > conversation/$ID/ctl
+	// Use a dedicated temp dir, NOT /tmp itself — the shelley server walks
+	// the cwd for guidance files and would enter the FUSE mount under /tmp.
+	cwdDir := t.TempDir()
+	runShellDiagOK(t, mountPoint, "echo 'model=predictable cwd="+cwdDir+"' > conversation/"+convID+"/ctl", tracker)
 
 	// Verify ctl was written correctly
 	ctlContent := runShellDiagOK(t, mountPoint, "cat conversation/"+convID+"/ctl", tracker)
 	if !strings.Contains(ctlContent, "model=predictable") {
 		t.Errorf("Expected ctl to contain model=predictable, got: %s", ctlContent)
 	}
-	if !strings.Contains(ctlContent, "cwd=/tmp") {
-		t.Errorf("Expected ctl to contain cwd=/tmp, got: %s", ctlContent)
+	if !strings.Contains(ctlContent, "cwd="+cwdDir) {
+		t.Errorf("Expected ctl to contain cwd=%s, got: %s", cwdDir, ctlContent)
 	}
 
 	// Step 3: Send first message (creates conversation on backend)
@@ -399,8 +401,9 @@ func TestReadmeFullWorkflow(t *testing.T) {
 	convID := strings.TrimSpace(runShellDiagOK(t, mountPoint, "cat new/clone", tracker))
 	t.Logf("Step 1 - Allocated ID: %s", convID)
 
-	// 2. Configure model and cwd
-	runShellDiagOK(t, mountPoint, "echo 'model=predictable cwd=/tmp' > conversation/"+convID+"/ctl", tracker)
+	// 2. Configure model and cwd (use dedicated temp dir, not /tmp itself)
+	cwdDir := t.TempDir()
+	runShellDiagOK(t, mountPoint, "echo 'model=predictable cwd="+cwdDir+"' > conversation/"+convID+"/ctl", tracker)
 	t.Log("Step 2 - Configured model and cwd")
 
 	// 3. Check created status before sending message

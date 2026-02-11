@@ -78,6 +78,13 @@ func startShelleyServer(t *testing.T) string {
 		"-db", dbPath, "-predictable-only", "serve",
 		"-port", fmt.Sprintf("%d", port),
 		"-require-header", "X-Exedev-Userid")
+	// Set Dir to the temp directory so the server's working directory is
+	// isolated. Without this, if a conversation's cwd causes the server
+	// to walk the filesystem for guidance files (AGENTS.md etc.), it could
+	// walk into the FUSE mount under /tmp and deadlock: the server blocks
+	// on a FUSE syscall while the FUSE daemon blocks on an HTTP call back
+	// to the same server.
+	cmd.Dir = dbDir
 	cmd.Env = append(os.Environ(),
 		"FIREWORKS_API_KEY=", "ANTHROPIC_API_KEY=", "OPENAI_API_KEY=")
 
@@ -355,9 +362,16 @@ func TestConversationFlow(t *testing.T) {
 		t.Fatalf("Expected 8-char hex ID, got %q", convID)
 	}
 
+	// Use a dedicated temp dir for cwd, NOT /tmp itself. The shelley server
+	// walks the cwd tree looking for guidance files (AGENTS.md etc.). If cwd
+	// is /tmp, the walk enters the FUSE mount (which also lives under /tmp)
+	// and deadlocks: the server blocks on a FUSE syscall while the FUSE
+	// daemon blocks on an HTTP call back to the server.
+	cwdDir := t.TempDir()
+
 	// Write and read ctl
 	ctlPath := filepath.Join(mountPoint, "conversation", convID, "ctl")
-	if err := ioutil.WriteFile(ctlPath, []byte("model=predictable cwd=/tmp"), 0644); err != nil {
+	if err := ioutil.WriteFile(ctlPath, []byte("model=predictable cwd="+cwdDir), 0644); err != nil {
 		t.Fatalf("Failed to write ctl: %v", err)
 	}
 	data, err = ioutil.ReadFile(ctlPath)
@@ -365,7 +379,7 @@ func TestConversationFlow(t *testing.T) {
 		t.Fatalf("Failed to read ctl: %v", err)
 	}
 	content := string(data)
-	if !strings.Contains(content, "model=predictable") || !strings.Contains(content, "cwd=/tmp") {
+	if !strings.Contains(content, "model=predictable") || !strings.Contains(content, "cwd="+cwdDir) {
 		t.Errorf("ctl content mismatch: %q", content)
 	}
 
