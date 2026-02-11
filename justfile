@@ -18,11 +18,11 @@ test:
     go test ./...
 
 # Start shelley-fuse for manual testing (Ctrl+C to stop and unmount)
-dev mount="/shelley" url="http://localhost:9999":
+dev mount="~/mnt/shelley" url="http://localhost:9999":
     just build
     just run-dev {{mount}} {{url}}
 
-run-dev mount="/shelley" url="http://localhost:9999":
+run-dev mount="~/mnt/shelley" url="http://localhost:9999":
     @mkdir -p {{mount}}
     ./shelley-fuse {{mount}} {{url}}
 
