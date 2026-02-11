@@ -1,16 +1,12 @@
-# CLAUDE.md
+# AGENTS.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to AI coding agents working with code in this repository.
 
 ## Project Overview
 
-Shelley FUSE is a Go FUSE filesystem that exposes the Shelley API (an AI conversation platform, source at https://github.com/boldsoftware/shelley) as a mountable filesystem. Shell tools interact with Shelley conversations through standard file operations (cat, echo, ls).
+Shelley FUSE is a Go FUSE filesystem that exposes the Shelley API as a mountable filesystem. Shell tools interact with Shelley conversations through standard file operations (cat, echo, ls).
 
-## Filesystem Architecture
-
-The authoritative documentation for the filesystem layout, usage examples, and common operations lives in **`fuse/README.md`**. That file is embedded into the binary and served at the mountpoint as `/README.md`, making the filesystem self-documenting.
-
-**Read `fuse/README.md` before doing any feature work.**
+See the [root README.md](README.md) for project introduction and installation instructions.
 
 ## Build & Test Commands
 
@@ -41,6 +37,7 @@ It's idempotent — run it repeatedly until it exits 0. If the rebase has confli
 ### Core Packages
 
 - **`fuse/`** - FUSE filesystem implementation using `go-fuse/v2`. Contains the node hierarchy that maps filesystem paths to API calls. This is where most feature work happens.
+  - **`fuse/README.md`** - Embedded into the binary and served at the mountpoint as `/README.md`, making the filesystem self-documenting. This is the authoritative source for filesystem usage documentation.
 - **`shelley/`** - HTTP client for the Shelley REST API. Wraps conversation CRUD, model listing, and message parsing/formatting.
 - **`state/`** - Local conversation state management. Tracks the mapping between local FUSE conversation IDs and Shelley backend conversation IDs, persisted to `~/.shelley-fuse/state.json`.
 - **`cmd/shelley-fuse/`** - Main binary entry point. Parses args and mounts the filesystem.
