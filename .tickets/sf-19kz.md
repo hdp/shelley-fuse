@@ -11,8 +11,9 @@ assignee: hdp
 # Tests are hanging periodically again, now in ConversationFlow
 
 
+
 ## Notes
 
-**2026-02-11T03:38:44Z**
+**2026-02-11T13:30:21Z**
 
-With diagnostics fix (sf-xqmn), hang in TestConversationFlow is confirmed: ConvSendFileHandle.Flush and ConversationListNode.Readdir both stuck waiting on HTTP responses from the Shelley server. The Shelley server (started by startShelleyServer) is apparently not responding. Both calls are shelley.StartConversation and shelley.ListConversations — the shelley.Client has no HTTP timeout set.
+Last time this happened it was because the shell tests set cmd.Dir to the mount point, which caused the parent process to hang before exec'ing. These tests don't use a shell, but there may be a similar issue, or it may be completely different e.g. some deadlock
