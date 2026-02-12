@@ -182,6 +182,12 @@ func (s *Server) handler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// GET /api/models → models list (JSON array)
+	if path == "/api/models" && r.Method == "GET" {
+		s.serveModels(w, r)
+		return
+	}
+
 	// GET /api/conversations → conversation list
 	if path == "/api/conversations" && r.Method == "GET" {
 		var convs []shelley.Conversation
@@ -234,10 +240,18 @@ func (s *Server) handler(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) serveInit(w http.ResponseWriter, r *http.Request) {
-	modelsJSON, _ := json.Marshal(s.models)
 	defaultModelJSON, _ := json.Marshal(s.defaultModel)
 	w.Header().Set("Content-Type", "text/html")
 	fmt.Fprintf(w,
-		`<html><script>window.__SHELLEY_INIT__ = {"models": %s, "default_model": %s};</script></html>`,
-		modelsJSON, defaultModelJSON)
+		`<html><script>window.__SHELLEY_INIT__ = {"default_model": %s};</script></html>`,
+		defaultModelJSON)
+}
+
+func (s *Server) serveModels(w http.ResponseWriter, r *http.Request) {
+	models := s.models
+	if models == nil {
+		models = []shelley.Model{}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(models)
 }

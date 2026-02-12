@@ -345,12 +345,10 @@ func TestCachingClient_StartConversation_InvalidatesListCache(t *testing.T) {
 func TestCachingClient_ListModels_CachesResult(t *testing.T) {
 	var callCount int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/" {
+		if r.URL.Path == "/api/models" {
 			atomic.AddInt32(&callCount, 1)
-			modelsJSON, _ := json.Marshal([]Model{{ID: "test-model", Ready: true}})
-			fmt.Fprintf(w,
-				`<html><script>window.__SHELLEY_INIT__ = {"models": %s, "default_model": "test-model"};</script></html>`,
-				modelsJSON)
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode([]Model{{ID: "test-model", Ready: true}})
 			return
 		}
 		http.NotFound(w, r)
@@ -376,6 +374,45 @@ func TestCachingClient_ListModels_CachesResult(t *testing.T) {
 	_, err = caching.ListModels()
 	if err != nil {
 		t.Fatalf("Second ListModels failed: %v", err)
+	}
+	if atomic.LoadInt32(&callCount) != 1 {
+		t.Fatalf("Expected still 1 call, got %d", callCount)
+	}
+}
+
+// TestCachingClient_DefaultModel_CachesResult verifies caching of DefaultModel.
+func TestCachingClient_DefaultModel_CachesResult(t *testing.T) {
+	var callCount int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" {
+			atomic.AddInt32(&callCount, 1)
+			fmt.Fprintf(w,
+				`<html><script>window.__SHELLEY_INIT__ = {"default_model": "test-model"};</script></html>`)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL)
+	caching := NewCachingClient(client, 5*time.Second)
+
+	// First call hits backend
+	result, err := caching.DefaultModel()
+	if err != nil {
+		t.Fatalf("First DefaultModel failed: %v", err)
+	}
+	if result != "test-model" {
+		t.Fatalf("Unexpected result: %q", result)
+	}
+	if atomic.LoadInt32(&callCount) != 1 {
+		t.Fatalf("Expected 1 call, got %d", callCount)
+	}
+
+	// Second call uses cache
+	_, err = caching.DefaultModel()
+	if err != nil {
+		t.Fatalf("Second DefaultModel failed: %v", err)
 	}
 	if atomic.LoadInt32(&callCount) != 1 {
 		t.Fatalf("Expected still 1 call, got %d", callCount)
@@ -842,14 +879,12 @@ func TestCachingClient_Singleflight_ListModelsCoalesced(t *testing.T) {
 	var callCount int32
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/" {
+		if r.URL.Path == "/api/models" {
 			atomic.AddInt32(&callCount, 1)
 			// Simulate slow backend
 			time.Sleep(50 * time.Millisecond)
-			modelsJSON, _ := json.Marshal([]Model{{ID: "test", Ready: true}})
-			fmt.Fprintf(w,
-				`<html><script>window.__SHELLEY_INIT__ = {"models": %s, "default_model": "test"};</script></html>`,
-				modelsJSON)
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode([]Model{{ID: "test", Ready: true}})
 			return
 		}
 		http.NotFound(w, r)

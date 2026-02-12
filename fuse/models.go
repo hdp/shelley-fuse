@@ -28,20 +28,36 @@ var _ = (fs.NodeGetattrer)((*ModelsDirNode)(nil))
 
 func (m *ModelsDirNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
 	defer diag.Track(m.diag, "ModelsDirNode", "Lookup", name).Done()
-	result, err := m.client.ListModels()
-	if err != nil {
-		return nil, syscall.EIO
-	}
 
 	setEntryTimeout(out, cacheTTLModels)
 
 	// Handle "default" symlink — target uses display name
 	if name == "default" {
-		defName := result.DefaultModelName()
+		defModelID, err := m.client.DefaultModel()
+		if err != nil || defModelID == "" {
+			return nil, syscall.ENOENT
+		}
+		// Resolve model ID to display name
+		result, err := m.client.ListModels()
+		if err != nil {
+			return nil, syscall.EIO
+		}
+		defName := ""
+		for _, model := range result.Models {
+			if model.ID == defModelID {
+				defName = model.Name()
+				break
+			}
+		}
 		if defName == "" {
 			return nil, syscall.ENOENT
 		}
 		return m.NewInode(ctx, &SymlinkNode{target: defName, startTime: m.startTime}, fs.StableAttr{Mode: syscall.S_IFLNK}), 0
+	}
+
+	result, err := m.client.ListModels()
+	if err != nil {
+		return nil, syscall.EIO
 	}
 
 	// Primary lookup: match by display name
@@ -70,7 +86,8 @@ func (m *ModelsDirNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Errn
 	entries := make([]fuse.DirEntry, 0, len(result.Models)*2+1)
 
 	// Add "default" symlink if default model is set
-	if result.DefaultModel != "" {
+	defModelID, defErr := m.client.DefaultModel()
+	if defErr == nil && defModelID != "" {
 		entries = append(entries, fuse.DirEntry{Name: "default", Mode: syscall.S_IFLNK})
 	}
 

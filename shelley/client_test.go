@@ -9,19 +9,29 @@ import (
 	"testing"
 )
 
-// mockShelleyInitServer creates a test server that serves __SHELLEY_INIT__
-// with the given models and default model. This is the canonical way to
-// mock the Shelley backend's model discovery endpoint in the shelley package.
-// For external packages, use the mockserver package instead.
-func mockShelleyInitServer(t *testing.T, models []Model, defaultModel string) *httptest.Server {
+// mockShelleyServer creates a test server that serves both:
+// - GET /api/models: JSON array of models
+// - GET /: HTML page with __SHELLEY_INIT__ containing default_model
+// This is the canonical way to mock the Shelley backend's model discovery
+// endpoints in the shelley package. For external packages, use the mockserver
+// package instead.
+func mockShelleyServer(t *testing.T, models []Model, defaultModel string) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		modelsJSON, _ := json.Marshal(models)
-		defaultModelJSON, _ := json.Marshal(defaultModel)
-		w.Header().Set("Content-Type", "text/html")
-		fmt.Fprintf(w,
-			`<html><script>window.__SHELLEY_INIT__ = {"models": %s, "default_model": %s};</script></html>`,
-			modelsJSON, defaultModelJSON)
+		if r.URL.Path == "/api/models" {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(models)
+			return
+		}
+		if r.URL.Path == "/" || r.URL.Path == "" {
+			defaultModelJSON, _ := json.Marshal(defaultModel)
+			w.Header().Set("Content-Type", "text/html")
+			fmt.Fprintf(w,
+				`<html><script>window.__SHELLEY_INIT__ = {"default_model": %s};</script></html>`,
+				defaultModelJSON)
+			return
+		}
+		http.NotFound(w, r)
 	}))
 }
 
@@ -270,7 +280,6 @@ func TestModelsResultFindByName(t *testing.T) {
 			{ID: "custom-f999b9b0", DisplayName: "kimi-2.5-fireworks", Ready: true},
 			{ID: "claude-sonnet", DisplayName: "claude-sonnet", Ready: true},
 		},
-		DefaultModel: "predictable",
 	}
 
 	// Find by display name
@@ -305,40 +314,41 @@ func TestModelsResultFindByName(t *testing.T) {
 	}
 }
 
-func TestModelsResultDefaultModelName(t *testing.T) {
-	// Default model is a custom model with display name
-	result := &ModelsResult{
-		Models: []Model{
-			{ID: "predictable", Ready: true},
-			{ID: "custom-abc", DisplayName: "my-custom", Ready: true},
-		},
-		DefaultModel: "custom-abc",
-	}
-	if got := result.DefaultModelName(); got != "my-custom" {
-		t.Errorf("DefaultModelName() = %q, want %q", got, "my-custom")
-	}
+func TestDefaultModel(t *testing.T) {
+	server := mockShelleyServer(t, []Model{
+		{ID: "predictable", Ready: true},
+		{ID: "custom-abc", DisplayName: "my-custom", Ready: true},
+	}, "custom-abc")
+	defer server.Close()
 
-	// Default model is a built-in (no display name)
-	result.DefaultModel = "predictable"
-	if got := result.DefaultModelName(); got != "predictable" {
-		t.Errorf("DefaultModelName() = %q, want %q", got, "predictable")
+	client := NewClient(server.URL)
+	got, err := client.DefaultModel()
+	if err != nil {
+		t.Fatalf("DefaultModel failed: %v", err)
 	}
-
-	// No default model
-	result.DefaultModel = ""
-	if got := result.DefaultModelName(); got != "" {
-		t.Errorf("DefaultModelName() = %q, want %q", got, "")
+	if got != "custom-abc" {
+		t.Errorf("DefaultModel() = %q, want %q", got, "custom-abc")
 	}
+}
 
-	// Default model ID not found in list
-	result.DefaultModel = "nonexistent"
-	if got := result.DefaultModelName(); got != "" {
-		t.Errorf("DefaultModelName() = %q, want %q", got, "")
+func TestDefaultModel_Empty(t *testing.T) {
+	server := mockShelleyServer(t, []Model{
+		{ID: "predictable", Ready: true},
+	}, "")
+	defer server.Close()
+
+	client := NewClient(server.URL)
+	got, err := client.DefaultModel()
+	if err != nil {
+		t.Fatalf("DefaultModel failed: %v", err)
+	}
+	if got != "" {
+		t.Errorf("DefaultModel() = %q, want %q", got, "")
 	}
 }
 
 func TestListModelsDisplayName(t *testing.T) {
-	server := mockShelleyInitServer(t, []Model{
+	server := mockShelleyServer(t, []Model{
 		{ID: "predictable", Ready: true},
 		{ID: "custom-abc123", DisplayName: "kimi-2.5-fireworks", Ready: true},
 	}, "custom-abc123")
@@ -375,12 +385,35 @@ func TestListModelsDisplayName(t *testing.T) {
 	if result.Models[1].Name() != "kimi-2.5-fireworks" {
 		t.Errorf("Models[1].Name() = %q, want kimi-2.5-fireworks", result.Models[1].Name())
 	}
+}
 
-	// Default model resolves to display name
-	if result.DefaultModel != "custom-abc123" {
-		t.Errorf("DefaultModel = %q, want custom-abc123", result.DefaultModel)
+func TestListModelsWithNewFields(t *testing.T) {
+	server := mockShelleyServer(t, []Model{
+		{ID: "model-1", DisplayName: "Model One", Source: "fireworks", Ready: true, MaxContextTokens: 128000},
+		{ID: "model-2", Source: "anthropic", Ready: false, MaxContextTokens: 200000},
+	}, "")
+	defer server.Close()
+
+	client := NewClient(server.URL)
+	result, err := client.ListModels()
+	if err != nil {
+		t.Fatalf("ListModels failed: %v", err)
 	}
-	if got := result.DefaultModelName(); got != "kimi-2.5-fireworks" {
-		t.Errorf("DefaultModelName() = %q, want kimi-2.5-fireworks", got)
+
+	if len(result.Models) != 2 {
+		t.Fatalf("Expected 2 models, got %d", len(result.Models))
+	}
+
+	if result.Models[0].Source != "fireworks" {
+		t.Errorf("Models[0].Source = %q, want fireworks", result.Models[0].Source)
+	}
+	if result.Models[0].MaxContextTokens != 128000 {
+		t.Errorf("Models[0].MaxContextTokens = %d, want 128000", result.Models[0].MaxContextTokens)
+	}
+	if result.Models[1].Source != "anthropic" {
+		t.Errorf("Models[1].Source = %q, want anthropic", result.Models[1].Source)
+	}
+	if result.Models[1].MaxContextTokens != 200000 {
+		t.Errorf("Models[1].MaxContextTokens = %d, want 200000", result.Models[1].MaxContextTokens)
 	}
 }

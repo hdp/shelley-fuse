@@ -29,12 +29,14 @@ type CachingClient struct {
 	conversationsListCache *cacheEntry
 	archivedListCache      *cacheEntry
 	modelsCache            *cacheEntry
+	defaultModelCache      *cacheEntry
 }
 
 // cacheEntry holds cached data with an expiration time.
 type cacheEntry struct {
 	data      []byte
 	result    *ModelsResult // for models cache
+	strVal    string        // for DefaultModel cache
 	expiresAt time.Time
 }
 
@@ -222,6 +224,45 @@ func (c *CachingClient) ListModels() (ModelsResult, error) {
 	return result.(ModelsResult), nil
 }
 
+// DefaultModel returns the default model ID, using cache if available.
+// Uses singleflight to coalesce duplicate requests without holding locks during HTTP calls.
+func (c *CachingClient) DefaultModel() (string, error) {
+	// Fast path: check cache with read lock
+	if c.cacheTTL > 0 {
+		c.mu.RLock()
+		entry := c.defaultModelCache
+		c.mu.RUnlock()
+
+		if entry.isValid() {
+			return entry.strVal, nil
+		}
+	}
+
+	// Slow path: use singleflight to coalesce duplicate requests
+	result, err, _ := c.sf.Do("models:default", func() (interface{}, error) {
+		defaultModel, err := c.client.DefaultModel()
+		if err != nil {
+			return "", err
+		}
+
+		if c.cacheTTL > 0 {
+			c.mu.Lock()
+			c.defaultModelCache = &cacheEntry{
+				strVal:    defaultModel,
+				expiresAt: time.Now().Add(c.cacheTTL),
+			}
+			c.mu.Unlock()
+		}
+
+		return defaultModel, nil
+	})
+
+	if err != nil {
+		return "", err
+	}
+	return result.(string), nil
+}
+
 // StartConversation starts a new conversation and invalidates the conversations list cache.
 func (c *CachingClient) StartConversation(message, model, cwd string) (StartConversationResult, error) {
 	result, err := c.client.StartConversation(message, model, cwd)
@@ -274,6 +315,7 @@ func (c *CachingClient) InvalidateAll() {
 		c.conversationsListCache = nil
 		c.archivedListCache = nil
 		c.modelsCache = nil
+		c.defaultModelCache = nil
 		c.mu.Unlock()
 	}
 }

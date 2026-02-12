@@ -1,6 +1,6 @@
 ---
 id: sf-stos
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-02-11T02:28:54Z

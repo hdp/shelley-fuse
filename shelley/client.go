@@ -63,9 +63,11 @@ type Message struct {
 
 // Model represents an available model
 type Model struct {
-	ID          string `json:"id"`
-	DisplayName string `json:"display_name"`
-	Ready       bool   `json:"ready"`
+	ID               string `json:"id"`
+	DisplayName      string `json:"display_name,omitempty"`
+	Source           string `json:"source,omitempty"`
+	Ready            bool   `json:"ready"`
+	MaxContextTokens int    `json:"max_context_tokens,omitempty"`
 }
 
 // Name returns the user-facing name for this model.
@@ -79,8 +81,7 @@ func (m Model) Name() string {
 
 // ModelsResult holds the result of listing models
 type ModelsResult struct {
-	Models       []Model
-	DefaultModel string
+	Models []Model
 }
 
 // FindByName looks up a model by display name first, then by ID.
@@ -97,20 +98,6 @@ func (r *ModelsResult) FindByName(name string) *Model {
 		}
 	}
 	return nil
-}
-
-// DefaultModelName returns the display name of the default model.
-// Returns empty string if no default is configured or the default model is not found.
-func (r *ModelsResult) DefaultModelName() string {
-	if r.DefaultModel == "" {
-		return ""
-	}
-	for _, m := range r.Models {
-		if m.ID == r.DefaultModel {
-			return m.Name()
-		}
-	}
-	return ""
 }
 
 // StartConversationResult holds the response from starting a new conversation
@@ -236,13 +223,12 @@ func (c *Client) SendMessage(conversationID, message, model string) error {
 	return nil
 }
 
-// ListModels lists available models by parsing the HTML page to extract window.__SHELLEY_INIT__
+// ListModels lists available models by calling GET /api/models.
 func (c *Client) ListModels() (ModelsResult, error) {
-	req, err := http.NewRequest("GET", c.baseURL, nil)
+	req, err := http.NewRequest("GET", c.baseURL+"/api/models", nil)
 	if err != nil {
 		return ModelsResult{}, fmt.Errorf("failed to create request: %w", err)
 	}
-
 	req.Header.Set("X-Exedev-Userid", "1")
 
 	resp, err := c.httpClient.Do(req)
@@ -256,50 +242,50 @@ func (c *Client) ListModels() (ModelsResult, error) {
 		return ModelsResult{}, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(body))
 	}
 
-	// Read the response body
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return ModelsResult{}, fmt.Errorf("failed to read response body: %w", err)
+	var models []Model
+	if err := json.NewDecoder(resp.Body).Decode(&models); err != nil {
+		return ModelsResult{}, fmt.Errorf("failed to decode models response: %w", err)
 	}
 
-	// Parse HTML to extract window.__SHELLEY_INIT__
-	content := string(body)
+	return ModelsResult{Models: models}, nil
+}
+
+// DefaultModel fetches the default model ID from the server's HTML init data.
+// This is separate from ListModels because default_model is only available
+// in the HTML page's window.__SHELLEY_INIT__, not in the /api/models endpoint.
+func (c *Client) DefaultModel() (string, error) {
+	req, err := http.NewRequest("GET", c.baseURL, nil)
+	if err != nil {
+		return "", fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("X-Exedev-Userid", "1")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("failed to send request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(body))
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("failed to read response body: %w", err)
+	}
+
 	re := regexp.MustCompile(`window\.__SHELLEY_INIT__\s*=\s*({.*?});`)
-	match := re.FindStringSubmatch(content)
+	match := re.FindStringSubmatch(string(body))
 	if len(match) > 1 {
-		// Try to parse the JSON
 		var initData map[string]interface{}
 		if err := json.Unmarshal([]byte(match[1]), &initData); err == nil {
-			var result ModelsResult
-
-			// Extract default_model
-			result.DefaultModel = getString(initData, "default_model")
-
-			// Extract models list
-			if models, ok := initData["models"].([]interface{}); ok {
-				for _, m := range models {
-					if modelMap, ok := m.(map[string]interface{}); ok {
-						model := Model{
-							ID:          getString(modelMap, "id"),
-							DisplayName: getString(modelMap, "display_name"),
-							Ready:       getBool(modelMap, "ready"),
-						}
-						result.Models = append(result.Models, model)
-					}
-				}
-			}
-			return result, nil
+			return getString(initData, "default_model"), nil
 		}
 	}
 
-	// Fallback to a fixed list of models
-	return ModelsResult{
-		Models: []Model{
-			{ID: "predictable", Ready: true},
-			{ID: "qwen3-coder-fireworks", Ready: true},
-		},
-		DefaultModel: "",
-	}, nil
+	return "", nil
 }
 
 // ListConversations lists all conversations
@@ -475,12 +461,3 @@ func getString(m map[string]interface{}, key string) string {
 	return ""
 }
 
-// Helper function to safely get bool from map
-func getBool(m map[string]interface{}, key string) bool {
-	if v, ok := m[key]; ok {
-		if b, ok := v.(bool); ok {
-			return b
-		}
-	}
-	return false
-}

@@ -15,6 +15,9 @@ type ShelleyClient interface {
 	// ListModels lists available models.
 	ListModels() (ModelsResult, error)
 
+	// DefaultModel returns the default model ID.
+	DefaultModel() (string, error)
+
 	// StartConversation starts a new conversation.
 	StartConversation(message, model, cwd string) (StartConversationResult, error)
 

@@ -9,7 +9,7 @@ import (
 	"shelley-fuse/shelley"
 )
 
-func TestNew_ServesInitPage(t *testing.T) {
+func TestNew_ServesModelsAPI(t *testing.T) {
 	s := New(
 		WithModels([]shelley.Model{{ID: "test-model", Ready: true}}),
 		WithDefaultModel("test-model"),
@@ -24,8 +24,22 @@ func TestNew_ServesInitPage(t *testing.T) {
 	if len(result.Models) != 1 || result.Models[0].ID != "test-model" {
 		t.Errorf("unexpected models: %+v", result.Models)
 	}
-	if result.DefaultModel != "test-model" {
-		t.Errorf("unexpected default: %s", result.DefaultModel)
+}
+
+func TestNew_ServesDefaultModel(t *testing.T) {
+	s := New(
+		WithModels([]shelley.Model{{ID: "test-model", Ready: true}}),
+		WithDefaultModel("test-model"),
+	)
+	defer s.Close()
+
+	client := shelley.NewClient(s.URL)
+	defModel, err := client.DefaultModel()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if defModel != "test-model" {
+		t.Errorf("unexpected default: %s", defModel)
 	}
 }
 
