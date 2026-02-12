@@ -1,6 +1,6 @@
 ---
 id: sf-5fp4
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-02-11T14:35:12Z

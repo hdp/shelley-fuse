@@ -13,20 +13,64 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
 
-	"github.com/hanwen/go-fuse/v2/fs"
-	"shelley-fuse/fuse/diag"
 	"shelley-fuse/shelley"
 	"shelley-fuse/state"
 )
 
-// TestMain cleans up stale FUSE mounts from previous crashed test runs,
-// then runs all tests. Without this, stale mounts cause new test processes
-// to enter uninterruptible sleep (D state) when t.TempDir() cleanup or
-// other operations touch the dead mount paths.
+// testBinaryPath is the path to the compiled shelley-fuse binary used by
+// integration tests. Built once per test run via buildTestBinary.
+var testBinaryPath string
+var buildOnce sync.Once
+var buildErr error
+
+// buildTestBinary compiles the shelley-fuse binary to a temp directory.
+// It is called via sync.Once so the binary is built at most once per test run.
+func buildTestBinary(t *testing.T) string {
+	t.Helper()
+	buildOnce.Do(func() {
+		tmpDir, err := os.MkdirTemp("", "shelley-fuse-test-bin-*")
+		if err != nil {
+			buildErr = fmt.Errorf("create temp dir: %w", err)
+			return
+		}
+		binPath := filepath.Join(tmpDir, "shelley-fuse")
+		cmd := exec.Command("go", "build", "-o", binPath, "./cmd/shelley-fuse")
+		cmd.Dir = findModuleRoot()
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			buildErr = fmt.Errorf("go build: %w", err)
+			return
+		}
+		testBinaryPath = binPath
+	})
+	if buildErr != nil {
+		t.Fatalf("Failed to build shelley-fuse binary: %v", buildErr)
+	}
+	return testBinaryPath
+}
+
+// findModuleRoot walks up from the current working directory to find the
+// directory containing go.mod.
+func findModuleRoot() string {
+	dir, _ := os.Getwd()
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "."
+		}
+		dir = parent
+	}
+}
+
 func TestMain(m *testing.M) {
 	// Find and lazy-unmount any stale test FUSE mounts
 	out, err := exec.Command("mount").Output()
@@ -35,7 +79,8 @@ func TestMain(m *testing.M) {
 		for scanner.Scan() {
 			line := scanner.Text()
 			// Match test FUSE mounts: "rawBridge on /tmp/Test... type fuse.rawBridge ..."
-			if strings.Contains(line, "rawBridge") && strings.Contains(line, "/tmp/Test") {
+			// or "shelley-fuse on /tmp/Test... type fuse.shelley-fuse ..."
+			if (strings.Contains(line, "rawBridge") || strings.Contains(line, "shelley-fuse")) && strings.Contains(line, "/tmp/Test") {
 				fields := strings.Fields(line)
 				if len(fields) >= 3 {
 					mp := fields[2]
@@ -45,7 +90,15 @@ func TestMain(m *testing.M) {
 			}
 		}
 	}
-	os.Exit(m.Run())
+
+	code := m.Run()
+
+	// Clean up the test binary if it was built.
+	if testBinaryPath != "" {
+		os.RemoveAll(filepath.Dir(testBinaryPath))
+	}
+
+	os.Exit(code)
 }
 
 func skipIfNoFusermount(t *testing.T) {
@@ -109,63 +162,121 @@ func startShelleyServer(t *testing.T) string {
 	return ""
 }
 
-// testMount holds the resources created by mountTestFSFull: the FUSE mount,
-// state store, filesystem, and a diagnostics HTTP server.
+// testMount holds the resources created by mountTestFSFull: the FUSE mount
+// running in a child process, the state file path, and a diagnostics URL.
 type testMount struct {
 	MountPoint string
-	Store      *state.Store
-	FS         *FS
-	Diag       *diag.Tracker
-	DiagURL    string // e.g. "http://localhost:12345/diag"
+	StatePath  string        // path to the state.json written by the child process
+	DiagURL    string        // e.g. "http://localhost:12345/diag"
+}
+
+// reloadStore creates a fresh state.Store by re-reading the state file from
+// disk. The child FUSE process owns the file, so we must reload on each access.
+func reloadStore(t *testing.T, statePath string) *state.Store {
+	t.Helper()
+	store, err := state.NewStore(statePath)
+	if err != nil {
+		t.Fatalf("Failed to reload state store from %s: %v", statePath, err)
+	}
+	return store
 }
 
 func mountTestFS(t *testing.T, serverURL string) string {
 	return mountTestFSFull(t, serverURL, time.Hour).MountPoint
 }
 
-func mountTestFSWithStore(t *testing.T, serverURL string, cloneTimeout time.Duration) (string, *state.Store) {
-	tm := mountTestFSFull(t, serverURL, cloneTimeout)
-	return tm.MountPoint, tm.Store
-}
-
 func mountTestFSFull(t *testing.T, serverURL string, cloneTimeout time.Duration) *testMount {
 	t.Helper()
+	binPath := buildTestBinary(t)
+
 	tmpDir := t.TempDir()
 	mountPoint := filepath.Join(tmpDir, "mount")
 	if err := os.MkdirAll(mountPoint, 0755); err != nil {
 		t.Fatalf("Failed to create mount point: %v", err)
 	}
+	statePath := filepath.Join(tmpDir, "state.json")
 
-	client := shelley.NewClient(serverURL)
-	store, err := state.NewStore(filepath.Join(tmpDir, "state.json"))
+	// Create a pipe for the child to signal readiness.
+	readR, readW, err := os.Pipe()
 	if err != nil {
-		t.Fatalf("Failed to create state store: %v", err)
+		t.Fatalf("Failed to create ready pipe: %v", err)
 	}
 
-	shelleyFS := NewFS(client, store, cloneTimeout)
-	opts := &fs.Options{}
-	zero := time.Duration(0)
-	opts.EntryTimeout, opts.AttrTimeout, opts.NegativeTimeout = &zero, &zero, &zero
+	cmd := exec.Command(binPath,
+		"-state", statePath,
+		"-clone-timeout", cloneTimeout.String(),
+		"-diag-addr", "localhost:0",
+		"-ready-fd", "3",
+		"-cache-ttl", "0",
+		mountPoint, serverURL,
+	)
+	cmd.ExtraFiles = []*os.File{readW} // fd 3 in the child
+	cmd.Env = append(os.Environ(),
+		"FIREWORKS_API_KEY=", "ANTHROPIC_API_KEY=", "OPENAI_API_KEY=")
 
-	fssrv, err := fs.Mount(mountPoint, shelleyFS, opts)
+	// Capture stderr so we can parse the DIAG= line.
+	stderrR, stderrW, err := os.Pipe()
 	if err != nil {
-		t.Fatalf("Mount failed: %v", err)
+		t.Fatalf("Failed to create stderr pipe: %v", err)
+	}
+	cmd.Stderr = stderrW
+
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("Failed to start shelley-fuse: %v", err)
+	}
+	// Close the write ends in the parent.
+	readW.Close()
+	stderrW.Close()
+
+	// Parse the DIAG= line from stderr.
+	diagURL := ""
+	stderrDone := make(chan struct{})
+	go func() {
+		defer close(stderrDone)
+		scanner := bufio.NewScanner(stderrR)
+		for scanner.Scan() {
+			line := scanner.Text()
+			if strings.HasPrefix(line, "DIAG=") {
+				diagURL = strings.TrimPrefix(line, "DIAG=")
+			}
+			// Log all child stderr lines for debugging.
+			t.Logf("[shelley-fuse] %s", line)
+		}
+	}()
+
+	// Wait for "READY\n" on the read end of the pipe.
+	readyCh := make(chan error, 1)
+	go func() {
+		buf := make([]byte, 64)
+		n, err := readR.Read(buf)
+		readR.Close()
+		if err != nil {
+			readyCh <- fmt.Errorf("reading ready pipe: %w", err)
+			return
+		}
+		got := string(buf[:n])
+		if strings.TrimSpace(got) != "READY" {
+			readyCh <- fmt.Errorf("unexpected ready message: %q", got)
+			return
+		}
+		readyCh <- nil
+	}()
+
+	select {
+	case err := <-readyCh:
+		if err != nil {
+			cmd.Process.Kill()
+			cmd.Wait()
+			t.Fatalf("shelley-fuse ready signal failed: %v", err)
+		}
+	case <-time.After(30 * time.Second):
+		cmd.Process.Kill()
+		cmd.Wait()
+		t.Fatalf("Timed out waiting for shelley-fuse to become ready")
 	}
 
-	// Start a diag HTTP server on a random port.
-	diagListener, err := net.Listen("tcp", "localhost:0")
-	if err != nil {
-		t.Fatalf("Failed to listen for diag server: %v", err)
-	}
-	diagMux := http.NewServeMux()
-	diagMux.Handle("/diag", shelleyFS.Diag.Handler())
-	diagSrv := &http.Server{Handler: diagMux}
-	go diagSrv.Serve(diagListener)
-	diagURL := fmt.Sprintf("http://%s/diag", diagListener.Addr().String())
-
-	// Start a watchdog that dumps diagnostics if the test is about to
-	// hit the go-test timeout. This fires 30s before the deadline so we
-	// get useful output instead of a bare "panic: test timed out".
+	// Start a watchdog that fetches diagnostics if the test is about to
+	// hit the go-test timeout.
 	watchdogDone := make(chan struct{})
 	if dl, ok := t.Deadline(); ok {
 		margin := 30 * time.Second
@@ -177,8 +288,13 @@ func mountTestFSFull(t *testing.T, serverURL string, cloneTimeout time.Duration)
 				select {
 				case <-timer.C:
 					fmt.Fprintf(os.Stderr, "\n=== DIAGNOSTIC DUMP (test %s approaching deadline) ===\n", t.Name())
-					fmt.Fprintf(os.Stderr, "--- In-flight FUSE operations ---\n%s", shelleyFS.Diag.Dump())
-					fmt.Fprintf(os.Stderr, "--- All goroutine stacks ---\n%s", diag.GoroutineStacks())
+					if diagURL != "" {
+						if body, err := fetchDiag(diagURL); err == nil {
+							fmt.Fprintf(os.Stderr, "--- In-flight FUSE operations ---\n%s", body)
+						} else {
+							fmt.Fprintf(os.Stderr, "--- Failed to fetch diag: %v ---\n", err)
+						}
+					}
 					fmt.Fprintf(os.Stderr, "=== END DIAGNOSTIC DUMP ===\n\n")
 				case <-watchdogDone:
 				}
@@ -188,31 +304,46 @@ func mountTestFSFull(t *testing.T, serverURL string, cloneTimeout time.Duration)
 
 	t.Cleanup(func() {
 		close(watchdogDone)
-		diagSrv.Close()
 
-		done := make(chan struct{})
-		go func() { fssrv.Unmount(); close(done) }()
+		// SIGTERM → wait 5s → SIGKILL + fusermount -uz → wait 5s
+		cmd.Process.Signal(syscall.SIGTERM)
+		waitDone := make(chan struct{})
+		go func() { cmd.Wait(); close(waitDone) }()
 		select {
-		case <-done:
+		case <-waitDone:
 		case <-time.After(5 * time.Second):
-			// Lazy unmount (-z) detaches immediately even if busy,
-			// unblocking any stuck FUSE operations.
+			cmd.Process.Kill()
 			exec.Command("fusermount", "-uz", mountPoint).Run()
 			select {
-			case <-done:
+			case <-waitDone:
 			case <-time.After(5 * time.Second):
-				// Don't block forever — the mount is lazy-detached,
-				// the kernel will clean up when fds close.
+				// Don't block forever — the mount is lazy-detached.
 			}
 		}
+		// Wait for stderr goroutine to finish.
+		<-stderrDone
 	})
+
 	return &testMount{
 		MountPoint: mountPoint,
-		Store:      store,
-		FS:         shelleyFS,
-		Diag:       shelleyFS.Diag,
+		StatePath:  statePath,
 		DiagURL:    diagURL,
 	}
+}
+
+// fetchDiag fetches the diag URL and returns the body as a string.
+func fetchDiag(diagURL string) (string, error) {
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Get(diagURL)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+	return string(body), nil
 }
 
 // createConversation is a helper that clones, configures, and creates a conversation.
@@ -970,7 +1101,8 @@ func TestUnconversedIDsHiddenFromListing(t *testing.T) {
 	skipIfNoShelley(t)
 
 	serverURL := startShelleyServer(t)
-	mountPoint, store := mountTestFSWithStore(t, serverURL, time.Hour)
+	tm := mountTestFSFull(t, serverURL, time.Hour)
+	mountPoint := tm.MountPoint
 
 	// Clone
 	data, err := ioutil.ReadFile(filepath.Join(mountPoint, "new", "clone"))
@@ -980,7 +1112,7 @@ func TestUnconversedIDsHiddenFromListing(t *testing.T) {
 	convID := strings.TrimSpace(string(data))
 
 	// Exists in state but not created
-	cs := store.Get(convID)
+	cs := reloadStore(t, tm.StatePath).Get(convID)
 	if cs == nil || cs.Created {
 		t.Fatalf("Expected uncreated conversation in state")
 	}
@@ -1016,7 +1148,7 @@ func TestUnconversedIDsHiddenFromListing(t *testing.T) {
 	}
 
 	// State updated
-	cs = store.Get(convID)
+	cs = reloadStore(t, tm.StatePath).Get(convID)
 	if cs == nil || !cs.Created {
 		t.Error("Expected Created=true in state")
 	}
@@ -1028,19 +1160,20 @@ func TestUnconversedIDsCleanup(t *testing.T) {
 	skipIfNoShelley(t)
 
 	serverURL := startShelleyServer(t)
-	mountPoint, store := mountTestFSWithStore(t, serverURL, 100*time.Millisecond)
+	tm := mountTestFSFull(t, serverURL, 100*time.Millisecond)
+	mountPoint := tm.MountPoint
 
 	data, _ := ioutil.ReadFile(filepath.Join(mountPoint, "new", "clone"))
 	convID := strings.TrimSpace(string(data))
 
-	if store.Get(convID) == nil {
+	if reloadStore(t, tm.StatePath).Get(convID) == nil {
 		t.Fatal("Expected conversation in state")
 	}
 
 	time.Sleep(150 * time.Millisecond)
 	ioutil.ReadDir(filepath.Join(mountPoint, "conversation")) // trigger cleanup
 
-	if store.Get(convID) != nil {
+	if reloadStore(t, tm.StatePath).Get(convID) != nil {
 		t.Errorf("Conversation should be cleaned up")
 	}
 }
@@ -1051,7 +1184,8 @@ func TestUnconversedIDsNotCleanedUpBeforeTimeout(t *testing.T) {
 	skipIfNoShelley(t)
 
 	serverURL := startShelleyServer(t)
-	mountPoint, store := mountTestFSWithStore(t, serverURL, time.Hour)
+	tm := mountTestFSFull(t, serverURL, time.Hour)
+	mountPoint := tm.MountPoint
 
 	data, _ := ioutil.ReadFile(filepath.Join(mountPoint, "new", "clone"))
 	convID := strings.TrimSpace(string(data))
@@ -1060,7 +1194,7 @@ func TestUnconversedIDsNotCleanedUpBeforeTimeout(t *testing.T) {
 		ioutil.ReadDir(filepath.Join(mountPoint, "conversation"))
 	}
 
-	if store.Get(convID) == nil {
+	if reloadStore(t, tm.StatePath).Get(convID) == nil {
 		t.Error("Conversation should not be cleaned up before timeout")
 	}
 }
@@ -1071,14 +1205,15 @@ func TestCreatedConversationNotCleanedUp(t *testing.T) {
 	skipIfNoShelley(t)
 
 	serverURL := startShelleyServer(t)
-	mountPoint, store := mountTestFSWithStore(t, serverURL, 100*time.Millisecond)
+	tm := mountTestFSFull(t, serverURL, 100*time.Millisecond)
+	mountPoint := tm.MountPoint
 
 	localID, _ := createConversation(t, mountPoint, "Hello")
 
 	time.Sleep(150 * time.Millisecond)
 	ioutil.ReadDir(filepath.Join(mountPoint, "conversation"))
 
-	cs := store.Get(localID)
+	cs := reloadStore(t, tm.StatePath).Get(localID)
 	if cs == nil || !cs.Created {
 		t.Error("Created conversation should not be cleaned up")
 	}

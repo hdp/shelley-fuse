@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -83,6 +84,9 @@ func main() {
 	debug := flag.Bool("debug", false, "enable debug output")
 	cloneTimeout := flag.Duration("clone-timeout", time.Hour, "duration after which unconversed clone IDs are cleaned up")
 	cacheTTL := flag.Duration("cache-ttl", 3*time.Second, "cache TTL for backend responses (0 to disable caching)")
+	statePath := flag.String("state", "", "path to state.json (default: ~/.shelley-fuse/state.json)")
+	readyFD := flag.Int("ready-fd", 0, "fd number; when >0, write READY\\n to this fd after mount+diag are ready, then close it")
+	diagAddr := flag.String("diag-addr", "", "address for diag HTTP server (default: disabled)")
 	flag.Parse()
 
 	if flag.NArg() < 1 {
@@ -112,7 +116,7 @@ func main() {
 	}
 
 	// Create state store
-	store, err := state.NewStore("")
+	store, err := state.NewStore(*statePath)
 	if err != nil {
 		log.Fatalf("Failed to initialize state: %v", err)
 	}
@@ -134,6 +138,31 @@ func main() {
 	fssrv, err := fs.Mount(mountpoint, shelleyFS, opts)
 	if err != nil {
 		log.Fatalf("Mount failed: %v", err)
+	}
+
+	// Start diag HTTP server if requested.
+	if *diagAddr != "" {
+		diagListener, err := net.Listen("tcp", *diagAddr)
+		if err != nil {
+			log.Fatalf("Failed to listen for diag server on %s: %v", *diagAddr, err)
+		}
+		diagMux := http.NewServeMux()
+		diagMux.Handle("/diag", shelleyFS.Diag.Handler())
+		diagSrv := &http.Server{Handler: diagMux}
+		go diagSrv.Serve(diagListener)
+		fmt.Fprintf(os.Stderr, "DIAG=http://%s/diag\n", diagListener.Addr().String())
+	}
+
+	// Signal readiness via the ready-fd pipe if requested.
+	if *readyFD > 0 {
+		f := os.NewFile(uintptr(*readyFD), "ready-fd")
+		if f == nil {
+			log.Fatalf("Invalid ready-fd %d", *readyFD)
+		}
+		if _, err := f.WriteString("READY\n"); err != nil {
+			log.Fatalf("Failed to write to ready-fd: %v", err)
+		}
+		f.Close()
 	}
 
 	// Set up signal handling for clean unmount
