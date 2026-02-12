@@ -361,3 +361,9 @@ func (c *CachingClient) IsConversationArchived(conversationID string) (bool, err
 	// Don't cache this - it's a read that checks both endpoints
 	return c.client.IsConversationArchived(conversationID)
 }
+
+// IsConversationWorking checks if the agent is currently working on a conversation.
+func (c *CachingClient) IsConversationWorking(conversationID string) (bool, error) {
+	// Don't cache this - working state is volatile and should always be fresh
+	return c.client.IsConversationWorking(conversationID)
+}

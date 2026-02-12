@@ -126,6 +126,17 @@ func WithNewConversationHandler(h func(w http.ResponseWriter, r *http.Request)) 
 	}
 }
 
+// WithConversationWorking sets the working state for a conversation.
+// Must be applied after WithConversation or WithFullConversation.
+func WithConversationWorking(id string, working bool) Option {
+	return func(s *Server) {
+		if cd, ok := s.conversations[id]; ok {
+			cd.conv.Working = working
+			s.conversations[id] = cd
+		}
+	}
+}
+
 // WithErrorMode makes /api/conversations return the given HTTP status code.
 func WithErrorMode(statusCode int) Option {
 	return func(s *Server) {

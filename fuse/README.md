@@ -78,6 +78,7 @@ echo "Hello, Shelley!" > conversation/$ID/send
       ctl                → read/write config; read-only after first message
       send               → write here to send messages
       archived           → present when archived; touch to archive, rm to unarchive
+      working            → present when agent is working
       model              → symlink to ../../model/{model-id}
       cwd                → symlink to working directory
       id                 → Shelley server conversation ID

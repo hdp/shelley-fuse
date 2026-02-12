@@ -42,6 +42,7 @@ type Conversation struct {
 	Cwd            *string `json:"cwd"`
 	CreatedAt      string  `json:"created_at"`
 	UpdatedAt      string  `json:"updated_at"`
+	Working        bool    `json:"working"`
 }
 
 // StreamResponse represents a streaming response
@@ -384,6 +385,41 @@ func (c *Client) UnarchiveConversation(conversationID string) error {
 	}
 
 	return nil
+}
+
+// IsConversationWorking checks if the agent is currently working on a conversation.
+func (c *Client) IsConversationWorking(conversationID string) (bool, error) {
+	req, err := http.NewRequest("GET", c.baseURL+"/api/conversations", nil)
+	if err != nil {
+		return false, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("X-Exedev-Userid", "1")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return false, fmt.Errorf("failed to send request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return false, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(body))
+	}
+
+	var convs []Conversation
+	if err := json.NewDecoder(resp.Body).Decode(&convs); err != nil {
+		return false, fmt.Errorf("failed to decode response: %w", err)
+	}
+
+	for _, conv := range convs {
+		if conv.ConversationID == conversationID {
+			return conv.Working, nil
+		}
+	}
+
+	// Not found in active conversations list
+	return false, nil
 }
 
 // IsConversationArchived checks if a conversation is archived

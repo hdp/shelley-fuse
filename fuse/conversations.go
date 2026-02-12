@@ -3,7 +3,6 @@ package fuse
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"log"
 	"strings"
 	"sync"
@@ -481,37 +480,22 @@ func (c *ConversationNode) Lookup(ctx context.Context, name string, out *fuse.En
 			state:     c.state,
 			startTime: c.startTime,
 		}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
-	case "waiting_for_input":
-		// Symlink to messages/{NNN}-agent/llm_data/EndOfTurn when conversation is waiting for user input.
-		// Changes with every message → no entry caching (0 timeout, the default).
+	case "working":
+		// Presence/absence semantics: file exists only when agent is working.
+		// Can appear and disappear rapidly → short timeouts both ways.
 		cs := c.state.Get(c.localID)
 		if cs == nil || !cs.Created || cs.ShelleyConversationID == "" {
+			out.SetEntryTimeout(volatileEntryTimeout)
 			return nil, syscall.ENOENT
 		}
 
-		// Fetch and parse the conversation messages
-		convData, err := c.client.GetConversation(cs.ShelleyConversationID)
-		if err != nil {
-			return nil, syscall.EIO
-		}
-
-		result, err := c.parsedCache.GetOrParseResult(cs.ShelleyConversationID, convData)
-		if err != nil {
-			return nil, syscall.EIO
-		}
-
-		// Analyze conversation to determine if waiting for input
-		status := AnalyzeWaitingForInput(result.Messages, result.ToolMap)
-		if !status.Waiting {
+		working, err := c.client.IsConversationWorking(cs.ShelleyConversationID)
+		if err != nil || !working {
+			out.SetEntryTimeout(volatileEntryTimeout)
 			return nil, syscall.ENOENT
 		}
-
-		// Construct the symlink target: messages/{NNN}-agent/llm_data/EndOfTurn
-		// The directory name uses 0-based indexing (seqID-1)
-		agentDirName := messageFileBase(status.LastAgentSeqID, status.LastAgentSlug, result.MaxSeqID)
-		target := fmt.Sprintf("messages/%s/llm_data/EndOfTurn", agentDirName)
-
-		return c.NewInode(ctx, &SymlinkNode{target: target, startTime: c.getConversationTime()}, fs.StableAttr{Mode: syscall.S_IFLNK}), 0
+		out.SetEntryTimeout(volatileEntryTimeout)
+		return c.NewInode(ctx, &WorkingNode{startTime: c.getConversationTime()}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
 	}
 
 	// For all other fields, use jsonfs to expose conversation JSON data
@@ -573,17 +557,11 @@ func (c *ConversationNode) Readdir(ctx context.Context) (fs.DirStream, syscall.E
 		}
 	}
 
-	// Include waiting_for_input symlink only when conversation is waiting for user input
+	// Include working file only when the agent is currently working
 	if cs != nil && cs.Created && cs.ShelleyConversationID != "" {
-		convData, err := c.client.GetConversation(cs.ShelleyConversationID)
-		if err == nil {
-			msgs, toolMap, err := c.parsedCache.GetOrParse(cs.ShelleyConversationID, convData)
-			if err == nil {
-				status := AnalyzeWaitingForInput(msgs, toolMap)
-				if status.Waiting {
-					entries = append(entries, fuse.DirEntry{Name: "waiting_for_input", Mode: syscall.S_IFLNK})
-				}
-			}
+		working, err := c.client.IsConversationWorking(cs.ShelleyConversationID)
+		if err == nil && working {
+			entries = append(entries, fuse.DirEntry{Name: "working", Mode: fuse.S_IFREG})
 		}
 	}
 
@@ -1000,6 +978,33 @@ func (c *CwdSymlinkNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse
 	}
 	return 0
 }
+
+// --- WorkingNode: empty presence file indicating agent is working ---
+
+type WorkingNode struct {
+	fs.Inode
+	startTime time.Time
+}
+
+var _ = (fs.NodeOpener)((*WorkingNode)(nil))
+var _ = (fs.NodeReader)((*WorkingNode)(nil))
+var _ = (fs.NodeGetattrer)((*WorkingNode)(nil))
+
+func (w *WorkingNode) Open(ctx context.Context, flags uint32) (fs.FileHandle, uint32, syscall.Errno) {
+	return nil, fuse.FOPEN_DIRECT_IO, 0
+}
+
+func (w *WorkingNode) Read(ctx context.Context, fh fs.FileHandle, dest []byte, off int64) (fuse.ReadResult, syscall.Errno) {
+	return fuse.ReadResultData(nil), 0
+}
+
+func (w *WorkingNode) Getattr(ctx context.Context, fh fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
+	out.Mode = fuse.S_IFREG | 0444
+	out.Size = 0
+	setTimestamps(&out.Attr, w.startTime)
+	return 0
+}
+
 // --- ArchivedNode: presence/absence file for archived status ---
 // When present, the conversation is archived. Touch to archive, rm to unarchive.
 

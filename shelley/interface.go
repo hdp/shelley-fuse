@@ -32,6 +32,9 @@ type ShelleyClient interface {
 
 	// IsConversationArchived checks if a conversation is archived.
 	IsConversationArchived(conversationID string) (bool, error)
+
+	// IsConversationWorking checks if the agent is currently working on a conversation.
+	IsConversationWorking(conversationID string) (bool, error)
 }
 
 // Verify that Client implements ShelleyClient at compile time.
