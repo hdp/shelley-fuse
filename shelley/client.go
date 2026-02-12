@@ -38,6 +38,8 @@ type ChatRequest struct {
 type Conversation struct {
 	ConversationID string  `json:"conversation_id"`
 	Slug           *string `json:"slug"`
+	Model          *string `json:"model"`
+	Cwd            *string `json:"cwd"`
 	CreatedAt      string  `json:"created_at"`
 	UpdatedAt      string  `json:"updated_at"`
 }

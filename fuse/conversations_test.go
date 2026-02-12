@@ -1687,13 +1687,13 @@ func TestTimestamps_APIMetadataFallbackToLocalTime(t *testing.T) {
 func TestTimestamps_ConversationUpdatedAtUpdatesOnReadopt(t *testing.T) {
 	// First adoption with older timestamps
 	store := testStore(t)
-	_, err := store.AdoptWithMetadata("conv-update-test", "slug", "2024-01-01T00:00:00Z", "2024-01-05T00:00:00Z")
+	_, err := store.AdoptWithMetadata("conv-update-test", "slug", "2024-01-01T00:00:00Z", "2024-01-05T00:00:00Z", "")
 	if err != nil {
 		t.Fatalf("First adoption failed: %v", err)
 	}
 
 	// Re-adopt with newer updated_at
-	_, err = store.AdoptWithMetadata("conv-update-test", "", "", "2024-01-10T00:00:00Z")
+	_, err = store.AdoptWithMetadata("conv-update-test", "", "", "2024-01-10T00:00:00Z", "")
 	if err != nil {
 		t.Fatalf("Second adoption failed: %v", err)
 	}
@@ -1811,5 +1811,143 @@ func TestConversationAPITimestampFields_UncreatedConversation(t *testing.T) {
 		if e.Name() == "created_at" || e.Name() == "updated_at" {
 			t.Errorf("%s should not be listed for uncreated conversation", e.Name())
 		}
+	}
+}
+
+func TestAdoptedConversation_ModelSymlink(t *testing.T) {
+	// Test that conversations adopted from the server with a model field
+	// get a working model symlink.
+	modelName := "claude-sonnet-4-5"
+	convs := []shelley.Conversation{
+		{
+			ConversationID: "conv-with-model",
+			Slug:           strPtr("test-model-slug"),
+			Model:          strPtr(modelName),
+			CreatedAt:      "2024-06-01T10:00:00Z",
+			UpdatedAt:      "2024-06-01T11:00:00Z",
+		},
+	}
+
+	server := mockConversationsServer(t, convs)
+	defer server.Close()
+
+	client := shelley.NewClient(server.URL)
+	store := testStore(t)
+	shelleyFS := NewFS(client, store, 0)
+
+	tmpDir := t.TempDir()
+	opts := &fs.Options{}
+	entryTimeout := time.Duration(0)
+	attrTimeout := time.Duration(0)
+	negativeTimeout := time.Duration(0)
+	opts.EntryTimeout = &entryTimeout
+	opts.AttrTimeout = &attrTimeout
+	opts.NegativeTimeout = &negativeTimeout
+
+	fssrv, err := fs.Mount(tmpDir, shelleyFS, opts)
+	if err != nil {
+		t.Fatalf("Mount failed: %v", err)
+	}
+	defer fssrv.Unmount()
+
+	// Trigger adoption by reading the conversation list directory
+	entries, err := ioutil.ReadDir(filepath.Join(tmpDir, "conversation"))
+	if err != nil {
+		t.Fatalf("Failed to read conversation dir: %v", err)
+	}
+
+	// Find the local ID (the directory entry, not symlinks)
+	var localID string
+	for _, e := range entries {
+		if e.IsDir() {
+			localID = e.Name()
+			break
+		}
+	}
+	if localID == "" {
+		t.Fatal("No conversation directory found after adoption")
+	}
+
+	// Check that the model symlink exists
+	modelPath := filepath.Join(tmpDir, "conversation", localID, "model")
+	info, err := os.Lstat(modelPath)
+	if err != nil {
+		t.Fatalf("Failed to lstat model symlink: %v", err)
+	}
+
+	// Verify it's a symlink
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Errorf("Expected symlink, got mode %v", info.Mode())
+	}
+
+	// Read the symlink target
+	target, err := os.Readlink(modelPath)
+	if err != nil {
+		t.Fatalf("Failed to readlink: %v", err)
+	}
+
+	expectedTarget := "../../model/" + modelName
+	if target != expectedTarget {
+		t.Errorf("Expected target %q, got %q", expectedTarget, target)
+	}
+}
+
+func TestAdoptedConversation_NoModel(t *testing.T) {
+	// Test that conversations adopted without a model field don't have a model symlink.
+	convs := []shelley.Conversation{
+		{
+			ConversationID: "conv-no-model",
+			Slug:           strPtr("test-no-model-slug"),
+			CreatedAt:      "2024-06-01T10:00:00Z",
+			UpdatedAt:      "2024-06-01T11:00:00Z",
+		},
+	}
+
+	server := mockConversationsServer(t, convs)
+	defer server.Close()
+
+	client := shelley.NewClient(server.URL)
+	store := testStore(t)
+	shelleyFS := NewFS(client, store, 0)
+
+	tmpDir := t.TempDir()
+	opts := &fs.Options{}
+	entryTimeout := time.Duration(0)
+	attrTimeout := time.Duration(0)
+	negativeTimeout := time.Duration(0)
+	opts.EntryTimeout = &entryTimeout
+	opts.AttrTimeout = &attrTimeout
+	opts.NegativeTimeout = &negativeTimeout
+
+	fssrv, err := fs.Mount(tmpDir, shelleyFS, opts)
+	if err != nil {
+		t.Fatalf("Mount failed: %v", err)
+	}
+	defer fssrv.Unmount()
+
+	// Trigger adoption
+	entries, err := ioutil.ReadDir(filepath.Join(tmpDir, "conversation"))
+	if err != nil {
+		t.Fatalf("Failed to read conversation dir: %v", err)
+	}
+
+	var localID string
+	for _, e := range entries {
+		if e.IsDir() {
+			localID = e.Name()
+			break
+		}
+	}
+	if localID == "" {
+		t.Fatal("No conversation directory found after adoption")
+	}
+
+	// Model symlink should NOT exist
+	modelPath := filepath.Join(tmpDir, "conversation", localID, "model")
+	_, err = os.Lstat(modelPath)
+	if err == nil {
+		t.Error("Expected model symlink to not exist when no model is set")
+	} else if !os.IsNotExist(err) {
+		t.Errorf("Expected ENOENT, got: %v", err)
 	}
 }

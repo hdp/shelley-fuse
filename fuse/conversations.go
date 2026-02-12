@@ -97,17 +97,22 @@ func (c *ConversationListNode) Lookup(ctx context.Context, name string, out *fus
 	return nil, syscall.ENOENT
 }
 
+// derefStr safely dereferences a *string, returning "" for nil.
+func derefStr(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return *p
+}
+
 // lookupInConversationList searches for a conversation by ID or slug in the given list.
 // If found, it adopts the conversation locally and returns a symlink to the local ID.
 func (c *ConversationListNode) lookupInConversationList(ctx context.Context, name string, convs []shelley.Conversation) (*fs.Inode, syscall.Errno) {
 	for _, conv := range convs {
 		if conv.ConversationID == name {
 			// Adopt this server conversation locally with API metadata
-			slug := ""
-			if conv.Slug != nil {
-				slug = *conv.Slug
-			}
-			localID, err := c.state.AdoptWithMetadata(name, slug, conv.CreatedAt, conv.UpdatedAt)
+			slug := derefStr(conv.Slug)
+			localID, err := c.state.AdoptWithMetadata(name, slug, conv.CreatedAt, conv.UpdatedAt, derefStr(conv.Model))
 			if err != nil {
 				return nil, syscall.EIO
 			}
@@ -120,7 +125,7 @@ func (c *ConversationListNode) lookupInConversationList(ctx context.Context, nam
 		}
 		// Also check by slug for not-yet-adopted conversations
 		if conv.Slug != nil && *conv.Slug == name {
-			localID, err := c.state.AdoptWithMetadata(conv.ConversationID, *conv.Slug, conv.CreatedAt, conv.UpdatedAt)
+			localID, err := c.state.AdoptWithMetadata(conv.ConversationID, *conv.Slug, conv.CreatedAt, conv.UpdatedAt, derefStr(conv.Model))
 			if err != nil {
 				return nil, syscall.EIO
 			}
@@ -173,14 +178,10 @@ func (c *ConversationListNode) Readdir(ctx context.Context) (fs.DirStream, sysca
 	if serverFetchSucceeded {
 		for _, conv := range serverConvs {
 			validServerIDs[conv.ConversationID] = true
-			slug := ""
-			if conv.Slug != nil {
-				slug = *conv.Slug
-			}
 			// AdoptWithMetadata handles the case where a conversation is not yet tracked locally
 			// and also updates API timestamps. Errors are non-fatal; worst case the conversation
 			// won't appear in this listing but will be adopted on next Lookup
-			_, _ = c.state.AdoptWithMetadata(conv.ConversationID, slug, conv.CreatedAt, conv.UpdatedAt)
+			_, _ = c.state.AdoptWithMetadata(conv.ConversationID, derefStr(conv.Slug), conv.CreatedAt, conv.UpdatedAt, derefStr(conv.Model))
 		}
 	}
 
@@ -195,11 +196,7 @@ func (c *ConversationListNode) Readdir(ctx context.Context) (fs.DirStream, sysca
 		for _, conv := range archivedConvs {
 			validServerIDs[conv.ConversationID] = true
 			archivedServerIDs[conv.ConversationID] = true
-			slug := ""
-			if conv.Slug != nil {
-				slug = *conv.Slug
-			}
-			_, _ = c.state.AdoptWithMetadata(conv.ConversationID, slug, conv.CreatedAt, conv.UpdatedAt)
+			_, _ = c.state.AdoptWithMetadata(conv.ConversationID, derefStr(conv.Slug), conv.CreatedAt, conv.UpdatedAt, derefStr(conv.Model))
 		}
 	}
 
