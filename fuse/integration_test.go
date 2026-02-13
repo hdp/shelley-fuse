@@ -783,7 +783,7 @@ func TestServerConversationAdoption(t *testing.T) {
 	for _, e := range entries {
 		if e.Mode()&os.ModeSymlink != 0 {
 			symlinks = append(symlinks, e)
-		} else if e.IsDir() {
+		} else if e.IsDir() && e.Name() != "last" {
 			dirs = append(dirs, e)
 		}
 	}
@@ -839,7 +839,7 @@ func TestServerConversationAdoption(t *testing.T) {
 	entries2, _ := ioutil.ReadDir(filepath.Join(mountPoint, "conversation"))
 	var dirs2 []os.FileInfo
 	for _, e := range entries2 {
-		if e.IsDir() && e.Mode()&os.ModeSymlink == 0 {
+		if e.IsDir() && e.Mode()&os.ModeSymlink == 0 && e.Name() != "last" {
 			dirs2 = append(dirs2, e)
 		}
 	}
@@ -1900,5 +1900,95 @@ func TestDeleteConversation(t *testing.T) {
 	body, _ := ioutil.ReadAll(resp.Body)
 	if strings.Contains(string(body), serverID) {
 		t.Errorf("Expected conversation %s to be deleted from server, but found in: %s", serverID, string(body))
+	}
+}
+
+// TestLastDirectory tests the /conversation/last/ directory with real conversations.
+func TestLastDirectory(t *testing.T) {
+	skipIfNoFusermount(t)
+	skipIfNoShelley(t)
+
+	serverURL := startShelleyServer(t)
+	mountPoint := mountTestFS(t, serverURL)
+
+	// Create two conversations with small delay to ensure ordering
+	localID1, _ := createConversation(t, mountPoint, "First conversation")
+	time.Sleep(1500 * time.Millisecond)
+	localID2, _ := createConversation(t, mountPoint, "Second conversation")
+
+	// last/ should be a directory
+	info, err := os.Stat(filepath.Join(mountPoint, "conversation", "last"))
+	if err != nil {
+		t.Fatalf("Stat conversation/last failed: %v", err)
+	}
+	if !info.IsDir() {
+		t.Error("Expected last to be a directory")
+	}
+
+	// last/1 should be a symlink to the most recent conversation (localID2)
+	target, err := os.Readlink(filepath.Join(mountPoint, "conversation", "last", "1"))
+	if err != nil {
+		t.Fatalf("Readlink last/1 failed: %v", err)
+	}
+	if target != "../"+localID2 {
+		t.Errorf("last/1 target = %q, want %q", target, "../"+localID2)
+	}
+
+	// last/2 should be a symlink to the older conversation (localID1)
+	target, err = os.Readlink(filepath.Join(mountPoint, "conversation", "last", "2"))
+	if err != nil {
+		t.Fatalf("Readlink last/2 failed: %v", err)
+	}
+	if target != "../"+localID1 {
+		t.Errorf("last/2 target = %q, want %q", target, "../"+localID1)
+	}
+
+	// Stat through symlink should resolve to conversation directory
+	info, err = os.Stat(filepath.Join(mountPoint, "conversation", "last", "1"))
+	if err != nil {
+		t.Fatalf("Stat last/1 (follow) failed: %v", err)
+	}
+	if !info.IsDir() {
+		t.Error("Expected last/1 to resolve to a directory")
+	}
+
+	// Should be able to read fuse_id through the symlink
+	data, err := os.ReadFile(filepath.Join(mountPoint, "conversation", "last", "1", "fuse_id"))
+	if err != nil {
+		t.Fatalf("Failed to read fuse_id through last/1: %v", err)
+	}
+	if strings.TrimSpace(string(data)) != localID2 {
+		t.Errorf("fuse_id = %q, want %q", strings.TrimSpace(string(data)), localID2)
+	}
+
+	// last/3 should not exist (only 2 conversations)
+	_, err = os.Readlink(filepath.Join(mountPoint, "conversation", "last", "3"))
+	if err == nil {
+		t.Error("Expected error for last/3 with only 2 conversations")
+	}
+
+	// Readdir should list entries
+	entries, err := os.ReadDir(filepath.Join(mountPoint, "conversation", "last"))
+	if err != nil {
+		t.Fatalf("ReadDir last/ failed: %v", err)
+	}
+	if len(entries) < 2 {
+		t.Errorf("Expected at least 2 entries in last/, got %d", len(entries))
+	}
+
+	// last should appear in conversation/ listing
+	convEntries, err := os.ReadDir(filepath.Join(mountPoint, "conversation"))
+	if err != nil {
+		t.Fatalf("ReadDir conversation/ failed: %v", err)
+	}
+	foundLast := false
+	for _, e := range convEntries {
+		if e.Name() == "last" {
+			foundLast = true
+			break
+		}
+	}
+	if !foundLast {
+		t.Error("Expected 'last' in conversation/ listing")
 	}
 }

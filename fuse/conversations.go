@@ -3,7 +3,10 @@ package fuse
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -38,6 +41,17 @@ var _ = (fs.NodeRmdirer)((*ConversationListNode)(nil))
 func (c *ConversationListNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
 	defer diag.Track(c.diag, "ConversationListNode", "Lookup", name).Done()
 	setEntryTimeout(out, cacheTTLConversation)
+
+	// Handle the "last" virtual directory
+	if name == "last" {
+		return c.NewInode(ctx, &ConversationLastDirNode{
+			client:    c.client,
+			state:     c.state,
+			startTime: c.startTime,
+			diag:      c.diag,
+		}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
+	}
+
 	// First check if it's a known local ID (the common case after Readdir adoption)
 	cs := c.state.Get(name)
 	if cs != nil {
@@ -240,6 +254,10 @@ func (c *ConversationListNode) Readdir(ctx context.Context) (fs.DirStream, sysca
 	// Track names we've used to avoid duplicates
 	usedNames := make(map[string]bool)
 	var entries []fuse.DirEntry
+
+	// Add the "last" virtual directory
+	entries = append(entries, fuse.DirEntry{Name: "last", Mode: fuse.S_IFDIR})
+	usedNames["last"] = true
 
 	// First add all local IDs as directories (they take priority)
 	for _, cs := range filteredMappings {
@@ -1298,3 +1316,137 @@ func (c *ContinueNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.A
 	return 0
 }
 
+
+// --- ConversationLastDirNode: /conversation/last/ directory ---
+// Provides symlinks last/1, last/2, ... pointing to conversations sorted by
+// created_at descending (most recent first). Includes both active and archived
+// conversations.
+
+type ConversationLastDirNode struct {
+	fs.Inode
+	client    shelley.ShelleyClient
+	state     *state.Store
+	startTime time.Time
+	diag      *diag.Tracker
+}
+
+var _ = (fs.NodeLookuper)((*ConversationLastDirNode)(nil))
+var _ = (fs.NodeReaddirer)((*ConversationLastDirNode)(nil))
+var _ = (fs.NodeGetattrer)((*ConversationLastDirNode)(nil))
+
+// fetchAllConversationsSorted retrieves all conversations (active + archived),
+// adopts them into local state, and returns them sorted by created_at descending.
+func (n *ConversationLastDirNode) fetchAllConversationsSorted() []shelley.Conversation {
+	var all []shelley.Conversation
+	seen := make(map[string]bool)
+
+	// Fetch active conversations
+	data, err := n.client.ListConversations()
+	if err == nil {
+		var convs []shelley.Conversation
+		if err := json.Unmarshal(data, &convs); err == nil {
+			for _, conv := range convs {
+				if !seen[conv.ConversationID] {
+					seen[conv.ConversationID] = true
+					all = append(all, conv)
+				}
+			}
+		}
+	}
+
+	// Fetch archived conversations
+	data, err = n.client.ListArchivedConversations()
+	if err == nil {
+		var convs []shelley.Conversation
+		if err := json.Unmarshal(data, &convs); err == nil {
+			for _, conv := range convs {
+				if !seen[conv.ConversationID] {
+					seen[conv.ConversationID] = true
+					all = append(all, conv)
+				}
+			}
+		}
+	}
+
+	// Adopt all into local state
+	for _, conv := range all {
+		_, _ = n.state.AdoptWithMetadata(
+			conv.ConversationID,
+			derefStr(conv.Slug),
+			conv.CreatedAt,
+			conv.UpdatedAt,
+			derefStr(conv.Model),
+			derefStr(conv.Cwd),
+		)
+	}
+
+	// Sort by created_at descending (most recent first)
+	sort.Slice(all, func(i, j int) bool {
+		// Parse RFC3339 timestamps; empty or unparseable sorts last
+		ti, erri := time.Parse(time.RFC3339, all[i].CreatedAt)
+		tj, errj := time.Parse(time.RFC3339, all[j].CreatedAt)
+		if erri != nil && errj != nil {
+			return false
+		}
+		if erri != nil {
+			return false // i has no time, sorts after j
+		}
+		if errj != nil {
+			return true // j has no time, sorts after i
+		}
+		return ti.After(tj)
+	})
+
+	return all
+}
+
+func (n *ConversationLastDirNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
+	defer diag.Track(n.diag, "ConversationLastDirNode", "Lookup", name).Done()
+	setEntryTimeout(out, cacheTTLConversation)
+
+	// Parse N from name (must be a positive integer)
+	num, err := strconv.Atoi(name)
+	if err != nil || num < 1 {
+		return nil, syscall.ENOENT
+	}
+
+	all := n.fetchAllConversationsSorted()
+	if num > len(all) {
+		return nil, syscall.ENOENT
+	}
+
+	// N is 1-indexed: last/1 = most recent = index 0
+	conv := all[num-1]
+
+	// Find the local ID for this conversation
+	localID := n.state.GetByShelleyID(conv.ConversationID)
+	if localID == "" {
+		return nil, syscall.ENOENT
+	}
+
+	target := fmt.Sprintf("../%s", localID)
+	return n.NewInode(ctx, &SymlinkNode{target: target, startTime: n.startTime}, fs.StableAttr{Mode: syscall.S_IFLNK}), 0
+}
+
+func (n *ConversationLastDirNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
+	defer diag.Track(n.diag, "ConversationLastDirNode", "Readdir", "").Done()
+
+	all := n.fetchAllConversationsSorted()
+
+	entries := make([]fuse.DirEntry, len(all))
+	for i := range all {
+		entries[i] = fuse.DirEntry{
+			Name: strconv.Itoa(i + 1),
+			Mode: syscall.S_IFLNK,
+		}
+	}
+
+	return fs.NewListDirStream(entries), 0
+}
+
+func (n *ConversationLastDirNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
+	out.Mode = fuse.S_IFDIR | 0755
+	setTimestamps(&out.Attr, n.startTime)
+	out.SetTimeout(cacheTTLConversation)
+	return 0
+}

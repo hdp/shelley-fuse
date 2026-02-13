@@ -48,7 +48,7 @@ func TestConversationListNode_ReaddirLocalOnly(t *testing.T) {
 		entry, _ := stream.Next()
 		if entry.Mode&syscall.S_IFLNK != 0 {
 			symlinks = append(symlinks, entry.Name)
-		} else {
+		} else if entry.Name != "last" {
 			dirs = append(dirs, entry.Name)
 		}
 	}
@@ -103,7 +103,7 @@ func TestConversationListNode_ReaddirServerConversationsAdopted(t *testing.T) {
 		entry, _ := stream.Next()
 		if entry.Mode&syscall.S_IFLNK != 0 {
 			symlinks = append(symlinks, entry.Name)
-		} else if entry.Mode&syscall.S_IFDIR != 0 {
+		} else if entry.Mode&syscall.S_IFDIR != 0 && entry.Name != "last" {
 			dirs = append(dirs, entry.Name)
 		}
 	}
@@ -196,7 +196,7 @@ func TestConversationListNode_ReaddirMergedLocalAndServer(t *testing.T) {
 		entry, _ := stream.Next()
 		if entry.Mode&syscall.S_IFLNK != 0 {
 			symlinks = append(symlinks, entry.Name)
-		} else if entry.Mode&syscall.S_IFDIR != 0 {
+		} else if entry.Mode&syscall.S_IFDIR != 0 && entry.Name != "last" {
 			dirs = append(dirs, entry.Name)
 		}
 	}
@@ -291,7 +291,7 @@ func TestConversationListNode_ReaddirServerError(t *testing.T) {
 		entry, _ := stream.Next()
 		if entry.Mode&syscall.S_IFLNK != 0 {
 			symlinks = append(symlinks, entry.Name)
-		} else {
+		} else if entry.Name != "last" {
 			dirs = append(dirs, entry.Name)
 		}
 	}
@@ -373,9 +373,9 @@ func TestConversationListNode_ReaddirFiltersStaleConversations(t *testing.T) {
 		}
 	}
 
-	// Verify total count: 3 entries (1 dir + 2 symlinks for server ID and slug)
-	if len(names) != 3 {
-		t.Errorf("expected 3 entries, got %d: %v", len(names), names)
+	// Verify total count: 4 entries (1 dir + 2 symlinks for server ID and slug + "last" dir)
+	if len(names) != 4 {
+		t.Errorf("expected 4 entries, got %d: %v", len(names), names)
 	}
 }
 
@@ -420,8 +420,8 @@ func TestConversationListNode_ReaddirShowsStaleWhenServerFails(t *testing.T) {
 		}
 	}
 
-	if len(names) != 2 {
-		t.Errorf("expected 2 entries when server fails, got %d: %v", len(names), names)
+	if len(names) != 3 {
+		t.Errorf("expected 3 entries when server fails, got %d: %v", len(names), names)
 	}
 }
 
@@ -638,7 +638,7 @@ func TestConversationListingMounted(t *testing.T) {
 	for _, entry := range entries {
 		if entry.Mode()&os.ModeSymlink != 0 {
 			symlinks = append(symlinks, entry.Name())
-		} else if entry.IsDir() {
+		} else if entry.IsDir() && entry.Name() != "last" {
 			dirs = append(dirs, entry.Name())
 		}
 	}
@@ -718,7 +718,7 @@ func TestConversationListNode_ReaddirUpdatesEmptySlugs(t *testing.T) {
 		entry, _ := stream.Next()
 		if entry.Mode&syscall.S_IFLNK != 0 {
 			symlinks = append(symlinks, entry.Name)
-		} else if entry.Mode&syscall.S_IFDIR != 0 {
+		} else if entry.Mode&syscall.S_IFDIR != 0 && entry.Name != "last" {
 			dirs = append(dirs, entry.Name)
 		}
 	}
@@ -783,7 +783,7 @@ func TestConversationListNode_ReaddirWithSlugs(t *testing.T) {
 		entry, _ := stream.Next()
 		if entry.Mode&syscall.S_IFLNK != 0 {
 			symlinks = append(symlinks, entry.Name)
-		} else if entry.Mode&syscall.S_IFDIR != 0 {
+		} else if entry.Mode&syscall.S_IFDIR != 0 && entry.Name != "last" {
 			dirs = append(dirs, entry.Name)
 		}
 	}
@@ -2337,5 +2337,329 @@ func TestConversationListNode_Rmdir_ConversationDisappearsFromReaddir(t *testing
 		if e.Name() == id {
 			t.Error("expected conversation to disappear from listing after delete")
 		}
+	}
+}
+
+// --- Tests for ConversationLastDirNode ---
+
+func TestLastDir_Lookup_MostRecent(t *testing.T) {
+	// Create 3 conversations with different created_at timestamps
+	conv1 := shelley.Conversation{
+		ConversationID: "conv-oldest",
+		CreatedAt:      "2024-01-01T00:00:00Z",
+	}
+	conv2 := shelley.Conversation{
+		ConversationID: "conv-middle",
+		CreatedAt:      "2024-06-01T00:00:00Z",
+	}
+	conv3 := shelley.Conversation{
+		ConversationID: "conv-newest",
+		CreatedAt:      "2024-12-01T00:00:00Z",
+	}
+
+	server := mockserver.New(
+		mockserver.WithFullConversation(conv1, nil),
+		mockserver.WithFullConversation(conv2, nil),
+		mockserver.WithFullConversation(conv3, nil),
+	)
+	defer server.Close()
+
+	store := testStore(t)
+	mountDir, cleanup := mountTestFSWithServer(t, server, store)
+	defer cleanup()
+
+	// last/1 should be a symlink pointing to the most recent conversation
+	lastPath := filepath.Join(mountDir, "conversation", "last", "1")
+	target, err := os.Readlink(lastPath)
+	if err != nil {
+		t.Fatalf("Readlink last/1 failed: %v", err)
+	}
+
+	// The target should be ../{localID} where localID maps to conv-newest
+	localID := store.GetByShelleyID("conv-newest")
+	if localID == "" {
+		t.Fatal("conv-newest not adopted")
+	}
+	expected := "../" + localID
+	if target != expected {
+		t.Errorf("last/1 target = %q, want %q", target, expected)
+	}
+}
+
+func TestLastDir_Lookup_SecondMostRecent(t *testing.T) {
+	conv1 := shelley.Conversation{
+		ConversationID: "conv-oldest",
+		CreatedAt:      "2024-01-01T00:00:00Z",
+	}
+	conv2 := shelley.Conversation{
+		ConversationID: "conv-middle",
+		CreatedAt:      "2024-06-01T00:00:00Z",
+	}
+	conv3 := shelley.Conversation{
+		ConversationID: "conv-newest",
+		CreatedAt:      "2024-12-01T00:00:00Z",
+	}
+
+	server := mockserver.New(
+		mockserver.WithFullConversation(conv1, nil),
+		mockserver.WithFullConversation(conv2, nil),
+		mockserver.WithFullConversation(conv3, nil),
+	)
+	defer server.Close()
+
+	store := testStore(t)
+	mountDir, cleanup := mountTestFSWithServer(t, server, store)
+	defer cleanup()
+
+	// last/2 should point to the second most recent
+	target, err := os.Readlink(filepath.Join(mountDir, "conversation", "last", "2"))
+	if err != nil {
+		t.Fatalf("Readlink last/2 failed: %v", err)
+	}
+
+	localID := store.GetByShelleyID("conv-middle")
+	if localID == "" {
+		t.Fatal("conv-middle not adopted")
+	}
+	if target != "../"+localID {
+		t.Errorf("last/2 target = %q, want %q", target, "../"+localID)
+	}
+
+	// last/3 should point to the oldest
+	target, err = os.Readlink(filepath.Join(mountDir, "conversation", "last", "3"))
+	if err != nil {
+		t.Fatalf("Readlink last/3 failed: %v", err)
+	}
+
+	localID = store.GetByShelleyID("conv-oldest")
+	if localID == "" {
+		t.Fatal("conv-oldest not adopted")
+	}
+	if target != "../"+localID {
+		t.Errorf("last/3 target = %q, want %q", target, "../"+localID)
+	}
+}
+
+func TestLastDir_Lookup_OutOfRange_ReturnsENOENT(t *testing.T) {
+	conv := shelley.Conversation{
+		ConversationID: "conv-1",
+		CreatedAt:      "2024-01-01T00:00:00Z",
+	}
+
+	server := mockserver.New(
+		mockserver.WithFullConversation(conv, nil),
+	)
+	defer server.Close()
+
+	store := testStore(t)
+	mountDir, cleanup := mountTestFSWithServer(t, server, store)
+	defer cleanup()
+
+	// last/2 should return ENOENT when only 1 conversation exists
+	_, err := os.Readlink(filepath.Join(mountDir, "conversation", "last", "2"))
+	if err == nil {
+		t.Error("Expected error for last/2 with only 1 conversation")
+	} else if !os.IsNotExist(err) {
+		t.Errorf("Expected ENOENT, got: %v", err)
+	}
+}
+
+func TestLastDir_Lookup_Zero_ReturnsENOENT(t *testing.T) {
+	conv := shelley.Conversation{
+		ConversationID: "conv-1",
+		CreatedAt:      "2024-01-01T00:00:00Z",
+	}
+
+	server := mockserver.New(
+		mockserver.WithFullConversation(conv, nil),
+	)
+	defer server.Close()
+
+	store := testStore(t)
+	mountDir, cleanup := mountTestFSWithServer(t, server, store)
+	defer cleanup()
+
+	// last/0 is invalid (1-indexed)
+	_, err := os.Readlink(filepath.Join(mountDir, "conversation", "last", "0"))
+	if err == nil {
+		t.Error("Expected error for last/0")
+	} else if !os.IsNotExist(err) {
+		t.Errorf("Expected ENOENT, got: %v", err)
+	}
+}
+
+func TestLastDir_Lookup_NonNumeric_ReturnsENOENT(t *testing.T) {
+	conv := shelley.Conversation{
+		ConversationID: "conv-1",
+		CreatedAt:      "2024-01-01T00:00:00Z",
+	}
+
+	server := mockserver.New(
+		mockserver.WithFullConversation(conv, nil),
+	)
+	defer server.Close()
+
+	store := testStore(t)
+	mountDir, cleanup := mountTestFSWithServer(t, server, store)
+	defer cleanup()
+
+	// last/abc is invalid
+	_, err := os.Readlink(filepath.Join(mountDir, "conversation", "last", "abc"))
+	if err == nil {
+		t.Error("Expected error for last/abc")
+	} else if !os.IsNotExist(err) {
+		t.Errorf("Expected ENOENT, got: %v", err)
+	}
+}
+
+func TestLastDir_Readdir_ListsEntries(t *testing.T) {
+	conv1 := shelley.Conversation{
+		ConversationID: "conv-a",
+		CreatedAt:      "2024-01-01T00:00:00Z",
+	}
+	conv2 := shelley.Conversation{
+		ConversationID: "conv-b",
+		CreatedAt:      "2024-06-01T00:00:00Z",
+	}
+	conv3 := shelley.Conversation{
+		ConversationID: "conv-c",
+		CreatedAt:      "2024-12-01T00:00:00Z",
+	}
+
+	server := mockserver.New(
+		mockserver.WithFullConversation(conv1, nil),
+		mockserver.WithFullConversation(conv2, nil),
+		mockserver.WithFullConversation(conv3, nil),
+	)
+	defer server.Close()
+
+	store := testStore(t)
+	mountDir, cleanup := mountTestFSWithServer(t, server, store)
+	defer cleanup()
+
+	entries, err := os.ReadDir(filepath.Join(mountDir, "conversation", "last"))
+	if err != nil {
+		t.Fatalf("ReadDir last/ failed: %v", err)
+	}
+
+	if len(entries) != 3 {
+		t.Fatalf("Expected 3 entries, got %d", len(entries))
+	}
+
+	// Entries should be "1", "2", "3"
+	names := make(map[string]bool)
+	for _, e := range entries {
+		names[e.Name()] = true
+	}
+	for _, expected := range []string{"1", "2", "3"} {
+		if !names[expected] {
+			t.Errorf("Expected entry %q in readdir", expected)
+		}
+	}
+}
+
+func TestLastDir_Readdir_Empty(t *testing.T) {
+	// No conversations on the server
+	server := mockserver.New()
+	defer server.Close()
+
+	store := testStore(t)
+	mountDir, cleanup := mountTestFSWithServer(t, server, store)
+	defer cleanup()
+
+	entries, err := os.ReadDir(filepath.Join(mountDir, "conversation", "last"))
+	if err != nil {
+		t.Fatalf("ReadDir last/ failed: %v", err)
+	}
+
+	if len(entries) != 0 {
+		t.Errorf("Expected 0 entries for empty server, got %d", len(entries))
+	}
+}
+
+func TestLastDir_AppearsInConversationListReaddir(t *testing.T) {
+	server := mockserver.New()
+	defer server.Close()
+
+	store := testStore(t)
+	mountDir, cleanup := mountTestFSWithServer(t, server, store)
+	defer cleanup()
+
+	entries, err := os.ReadDir(filepath.Join(mountDir, "conversation"))
+	if err != nil {
+		t.Fatalf("ReadDir conversation/ failed: %v", err)
+	}
+
+	found := false
+	for _, e := range entries {
+		if e.Name() == "last" {
+			found = true
+			if !e.IsDir() {
+				t.Error("Expected 'last' to be a directory")
+			}
+			break
+		}
+	}
+	if !found {
+		t.Error("Expected 'last' in conversation/ readdir")
+	}
+}
+
+func TestLastDir_Stat_IsDirectory(t *testing.T) {
+	server := mockserver.New()
+	defer server.Close()
+
+	store := testStore(t)
+	mountDir, cleanup := mountTestFSWithServer(t, server, store)
+	defer cleanup()
+
+	info, err := os.Stat(filepath.Join(mountDir, "conversation", "last"))
+	if err != nil {
+		t.Fatalf("Stat conversation/last failed: %v", err)
+	}
+	if !info.IsDir() {
+		t.Error("Expected last to be a directory")
+	}
+	if info.Mode().Perm() != 0755 {
+		t.Errorf("Expected mode 0755, got %o", info.Mode().Perm())
+	}
+}
+
+func TestLastDir_SymlinkResolvesToConversation(t *testing.T) {
+	conv := shelley.Conversation{
+		ConversationID: "conv-resolve",
+		CreatedAt:      "2024-01-15T10:30:00Z",
+	}
+
+	server := mockserver.New(
+		mockserver.WithFullConversation(conv, nil),
+	)
+	defer server.Close()
+
+	store := testStore(t)
+	mountDir, cleanup := mountTestFSWithServer(t, server, store)
+	defer cleanup()
+
+	// Stat (follow symlink) should resolve to the conversation directory
+	info, err := os.Stat(filepath.Join(mountDir, "conversation", "last", "1"))
+	if err != nil {
+		t.Fatalf("Stat last/1 failed: %v", err)
+	}
+	if !info.IsDir() {
+		t.Error("Expected last/1 to resolve to a directory")
+	}
+
+	// Should be able to read files inside the resolved conversation
+	data, err := os.ReadFile(filepath.Join(mountDir, "conversation", "last", "1", "fuse_id"))
+	if err != nil {
+		t.Fatalf("Failed to read fuse_id through last/1: %v", err)
+	}
+
+	localID := store.GetByShelleyID("conv-resolve")
+	if localID == "" {
+		t.Fatal("conv-resolve not adopted")
+	}
+	if strings.TrimSpace(string(data)) != localID {
+		t.Errorf("fuse_id = %q, want %q", strings.TrimSpace(string(data)), localID)
 	}
 }

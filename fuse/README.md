@@ -74,6 +74,10 @@ echo "Hello, Shelley!" > conversation/$ID/send
     start                → executable: pipe message on stdin → clones, sets cwd to caller's
                            $PWD, sends message, prints conversation ID (default model)
   conversation/          → all conversations
+    last/                → most recent conversations
+      1                  → symlink to the most recently created conversation
+      2                  → symlink to the second most recently created conversation
+      {N}                → symlink to the Nth most recently created conversation
     {id}/                → directory per conversation
       ctl                → read/write config; read-only after first message
       send               → write here to send messages
@@ -143,6 +147,12 @@ ID=$(echo "Explain FUSE" | new/start)
 # List conversations
 ls conversation/
 
+# Access the most recent conversation
+cat conversation/last/1/messages/last/1/0/content.md
+
+# Read the fuse_id of the 2nd most recent conversation
+cat conversation/last/2/fuse_id
+
 # List the last 2 messages
 ls conversation/$ID/messages/last/2/
 # 0 -> ../../003-user
@@ -173,9 +183,6 @@ rm conversation/$ID/archived
 
 # Check if archived
 test -e conversation/$ID/archived && echo archived
-
-# Permanently delete a conversation
-rmdir conversation/$ID
 
 # Permanently delete a conversation
 rmdir conversation/$ID

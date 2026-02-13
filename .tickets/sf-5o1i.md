@@ -1,6 +1,6 @@
 ---
 id: sf-5o1i
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-02-11T13:14:50Z
