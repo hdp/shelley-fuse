@@ -79,6 +79,7 @@ echo "Hello, Shelley!" > conversation/$ID/send
       send               → write here to send messages
       archived           → present when archived; touch to archive, rm to unarchive
       working            → present when agent is working
+      continue           → read to create a new conversation continuing this one
       model              → symlink to ../../model/{model-id}
       cwd                → symlink to working directory
       id                 → Shelley server conversation ID
@@ -170,4 +171,8 @@ rm conversation/$ID/archived
 
 # Check if archived
 test -e conversation/$ID/archived && echo archived
+
+# Continue a conversation (creates a new conversation with a summary of the old one)
+NEW_ID=$(cat conversation/$ID/continue)
+echo "Follow-up question" > conversation/$NEW_ID/send
 ```

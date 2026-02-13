@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"io/ioutil"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
@@ -1949,5 +1950,216 @@ func TestAdoptedConversation_NoModel(t *testing.T) {
 		t.Error("Expected model symlink to not exist when no model is set")
 	} else if !os.IsNotExist(err) {
 		t.Errorf("Expected ENOENT, got: %v", err)
+	}
+}
+
+func TestContinueNode_NotPresentForUncreatedConversation(t *testing.T) {
+	server := mockserver.New()
+	defer server.Close()
+
+	store := testStore(t)
+	// Clone creates an uncreated conversation
+	id, err := store.Clone()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	mountDir, cleanup := mountTestFSWithServer(t, server, store)
+	defer cleanup()
+
+	// "continue" should not exist for uncreated conversations
+	_, err = os.Stat(filepath.Join(mountDir, "conversation", id, "continue"))
+	if err == nil {
+		t.Error("Expected 'continue' to not exist for uncreated conversation")
+	} else if !os.IsNotExist(err) {
+		t.Errorf("Expected ENOENT, got: %v", err)
+	}
+}
+
+func TestContinueNode_PresentForCreatedConversation(t *testing.T) {
+	conv := shelley.Conversation{ConversationID: "server-conv-1"}
+	server := mockserver.New(
+		mockserver.WithFullConversation(conv, nil),
+	)
+	defer server.Close()
+
+	store := testStore(t)
+	// Clone and mark created to simulate a conversation that exists on the backend
+	id, err := store.Clone()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MarkCreated(id, "server-conv-1", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	mountDir, cleanup := mountTestFSWithServer(t, server, store)
+	defer cleanup()
+
+	// "continue" should exist for created conversations
+	info, err := os.Stat(filepath.Join(mountDir, "conversation", id, "continue"))
+	if err != nil {
+		t.Fatalf("Expected 'continue' to exist: %v", err)
+	}
+	if info.IsDir() {
+		t.Error("Expected 'continue' to be a file, not a directory")
+	}
+	if info.Mode().Perm() != 0444 {
+		t.Errorf("Expected mode 0444, got %o", info.Mode().Perm())
+	}
+}
+
+func TestContinueNode_ReturnsNewConversationID(t *testing.T) {
+	conv := shelley.Conversation{ConversationID: "server-conv-1"}
+	server := mockserver.New(
+		mockserver.WithFullConversation(conv, nil),
+	)
+	defer server.Close()
+
+	store := testStore(t)
+	id, err := store.Clone()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MarkCreated(id, "server-conv-1", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	mountDir, cleanup := mountTestFSWithServer(t, server, store)
+	defer cleanup()
+
+	// Read "continue" to trigger the continue API call
+	data, err := os.ReadFile(filepath.Join(mountDir, "conversation", id, "continue"))
+	if err != nil {
+		t.Fatalf("Failed to read continue: %v", err)
+	}
+
+	newID := strings.TrimSpace(string(data))
+	if len(newID) != 8 {
+		t.Fatalf("expected 8-character hex local ID, got %q", newID)
+	}
+
+	// The new conversation should be adopted in local state
+	cs := store.Get(newID)
+	if cs == nil {
+		t.Fatal("expected new conversation to exist in state")
+	}
+	if !cs.Created {
+		t.Error("expected new conversation to be marked as created")
+	}
+	if !strings.HasPrefix(cs.ShelleyConversationID, "continued-server-conv-1-") {
+		t.Errorf("expected server ID to start with 'continued-server-conv-1-', got %q", cs.ShelleyConversationID)
+	}
+
+	// The new conversation directory should be accessible
+	_, err = os.Stat(filepath.Join(mountDir, "conversation", newID))
+	if err != nil {
+		t.Fatalf("Expected new conversation directory to exist: %v", err)
+	}
+}
+
+func TestContinueNode_UniqueIDs(t *testing.T) {
+	conv := shelley.Conversation{ConversationID: "server-conv-1"}
+	server := mockserver.New(
+		mockserver.WithFullConversation(conv, nil),
+	)
+	defer server.Close()
+
+	store := testStore(t)
+	id, err := store.Clone()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MarkCreated(id, "server-conv-1", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	mountDir, cleanup := mountTestFSWithServer(t, server, store)
+	defer cleanup()
+
+	// Read continue twice, should get different IDs
+	data1, err := os.ReadFile(filepath.Join(mountDir, "conversation", id, "continue"))
+	if err != nil {
+		t.Fatalf("First continue read failed: %v", err)
+	}
+	data2, err := os.ReadFile(filepath.Join(mountDir, "conversation", id, "continue"))
+	if err != nil {
+		t.Fatalf("Second continue read failed: %v", err)
+	}
+
+	id1 := strings.TrimSpace(string(data1))
+	id2 := strings.TrimSpace(string(data2))
+	if id1 == id2 {
+		t.Errorf("expected unique IDs, both are %q", id1)
+	}
+}
+
+func TestContinueNode_InReaddir(t *testing.T) {
+	conv := shelley.Conversation{ConversationID: "server-conv-1"}
+	server := mockserver.New(
+		mockserver.WithFullConversation(conv, nil),
+	)
+	defer server.Close()
+
+	store := testStore(t)
+	id, err := store.Clone()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MarkCreated(id, "server-conv-1", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	mountDir, cleanup := mountTestFSWithServer(t, server, store)
+	defer cleanup()
+
+	entries, err := os.ReadDir(filepath.Join(mountDir, "conversation", id))
+	if err != nil {
+		t.Fatalf("ReadDir failed: %v", err)
+	}
+
+	found := false
+	for _, e := range entries {
+		if e.Name() == "continue" {
+			found = true
+			if e.IsDir() {
+				t.Error("Expected 'continue' to be a file, not a directory")
+			}
+			break
+		}
+	}
+	if !found {
+		t.Error("Expected 'continue' in directory listing")
+	}
+}
+
+func TestContinueNode_ServerError(t *testing.T) {
+	conv := shelley.Conversation{ConversationID: "server-conv-1"}
+	// Use a custom continue handler that returns an error
+	server := mockserver.New(
+		mockserver.WithFullConversation(conv, nil),
+		mockserver.WithContinueHandler(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte("internal error"))
+		}),
+	)
+	defer server.Close()
+
+	store := testStore(t)
+	id, err := store.Clone()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MarkCreated(id, "server-conv-1", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	mountDir, cleanup := mountTestFSWithServer(t, server, store)
+	defer cleanup()
+
+	// Reading continue should fail when server returns an error
+	_, err = os.ReadFile(filepath.Join(mountDir, "conversation", id, "continue"))
+	if err == nil {
+		t.Error("Expected error when server returns 500")
 	}
 }

@@ -50,6 +50,10 @@ type Server struct {
 	// If nil, returns 404.
 	newConvHandler func(w http.ResponseWriter, r *http.Request)
 
+	// continueHandler is called for POST /api/conversations/continue.
+	// If nil, uses a default handler that validates and creates a new conversation.
+	continueHandler func(w http.ResponseWriter, r *http.Request)
+
 	// errorMode, if set, returns this status code for /api/conversations.
 	errorMode int
 
@@ -126,6 +130,13 @@ func WithChatHandler(h func(w http.ResponseWriter, r *http.Request)) Option {
 func WithNewConversationHandler(h func(w http.ResponseWriter, r *http.Request)) Option {
 	return func(s *Server) {
 		s.newConvHandler = h
+	}
+}
+
+// WithContinueHandler sets a custom handler for POST /api/conversations/continue.
+func WithContinueHandler(h func(w http.ResponseWriter, r *http.Request)) Option {
+	return func(s *Server) {
+		s.continueHandler = h
 	}
 }
 
@@ -232,6 +243,16 @@ func (s *Server) handler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// POST /api/conversations/continue → continue conversation
+	if path == "/api/conversations/continue" && r.Method == "POST" {
+		if s.continueHandler != nil {
+			s.continueHandler(w, r)
+			return
+		}
+		s.handleContinueDefault(w, r)
+		return
+	}
+
 	// GET /api/conversation/{id}/subagents → subagents list
 	if strings.HasPrefix(path, "/api/conversation/") && strings.HasSuffix(path, "/subagents") && r.Method == "GET" {
 		convID := strings.TrimPrefix(path, "/api/conversation/")
@@ -279,6 +300,43 @@ func (s *Server) handler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	http.NotFound(w, r)
+}
+
+// continueSeqNum is used to generate unique conversation IDs for continue operations.
+var continueSeqNum int32
+
+func (s *Server) handleContinueDefault(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		SourceConversationID string `json:"source_conversation_id"`
+		Model                string `json:"model,omitempty"`
+		Cwd                  string `json:"cwd,omitempty"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		fmt.Fprintf(w, "invalid JSON: %v", err)
+		return
+	}
+	if req.SourceConversationID == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		fmt.Fprint(w, "source_conversation_id is required")
+		return
+	}
+	if _, ok := s.conversations[req.SourceConversationID]; !ok {
+		w.WriteHeader(http.StatusNotFound)
+		fmt.Fprintf(w, "conversation %s not found", req.SourceConversationID)
+		return
+	}
+	newID := fmt.Sprintf("continued-%s-%d", req.SourceConversationID, atomic.AddInt32(&continueSeqNum, 1))
+	// Register the new conversation so it appears in list endpoints
+	s.conversations[newID] = conversationData{
+		conv:     shelley.Conversation{ConversationID: newID},
+		messages: nil,
+	}
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(map[string]string{
+		"status":          "created",
+		"conversation_id": newID,
+	})
 }
 
 func (s *Server) serveInit(w http.ResponseWriter, r *http.Request) {

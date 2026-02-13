@@ -373,6 +373,23 @@ func (c *CachingClient) IsConversationWorking(conversationID string) (bool, erro
 	return c.client.IsConversationWorking(conversationID)
 }
 
+// ContinueConversation creates a new conversation from an existing one and invalidates the conversations list cache.
+func (c *CachingClient) ContinueConversation(sourceConversationID, model, cwd string) (ContinueConversationResult, error) {
+	result, err := c.client.ContinueConversation(sourceConversationID, model, cwd)
+	if err != nil {
+		return result, err
+	}
+
+	// Invalidate conversations list cache since a new conversation was created
+	if c.cacheTTL > 0 {
+		c.mu.Lock()
+		c.conversationsListCache = nil
+		c.mu.Unlock()
+	}
+
+	return result, nil
+}
+
 // ListSubagents lists child conversations (subagents) for a conversation, using cache if available.
 // Uses singleflight to coalesce duplicate requests without holding locks during HTTP calls.
 // The returned byte slice must not be modified by callers.

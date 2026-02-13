@@ -480,6 +480,19 @@ func (c *ConversationNode) Lookup(ctx context.Context, name string, out *fuse.En
 			state:     c.state,
 			startTime: c.startTime,
 		}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
+	case "continue":
+		cs := c.state.Get(c.localID)
+		if cs == nil || !cs.Created || cs.ShelleyConversationID == "" {
+			out.SetEntryTimeout(negTimeout)
+			return nil, syscall.ENOENT
+		}
+		return c.NewInode(ctx, &ContinueNode{
+			localID:   c.localID,
+			client:    c.client,
+			state:     c.state,
+			startTime: c.startTime,
+			diag:      c.diag,
+		}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
 	case "subagents":
 		cs := c.state.Get(c.localID)
 		if cs == nil || !cs.Created || cs.ShelleyConversationID == "" {
@@ -578,8 +591,9 @@ func (c *ConversationNode) Readdir(ctx context.Context) (fs.DirStream, syscall.E
 		}
 	}
 
-	// Include subagents directory for created conversations
+	// Include subagents directory and continue file for created conversations
 	if cs != nil && cs.Created && cs.ShelleyConversationID != "" {
+		entries = append(entries, fuse.DirEntry{Name: "continue", Mode: fuse.S_IFREG})
 		entries = append(entries, fuse.DirEntry{Name: "subagents", Mode: fuse.S_IFDIR})
 	}
 
@@ -1197,5 +1211,55 @@ func (a *ArchivedNode) Read(ctx context.Context, f fs.FileHandle, dest []byte, o
 func (a *ArchivedNode) Setattr(ctx context.Context, f fs.FileHandle, in *fuse.SetAttrIn, out *fuse.AttrOut) syscall.Errno {
 	// Accept time changes (from touch) silently - just return current attributes
 	return a.Getattr(ctx, f, out)
+}
+
+// --- ContinueNode: /conversation/{id}/continue — creates a new conversation from an existing one ---
+// Reading this file calls POST /api/conversations/continue on the Shelley server,
+// creates a new local conversation entry, and returns the new local ID.
+
+type ContinueNode struct {
+	fs.Inode
+	localID   string
+	client    shelley.ShelleyClient
+	state     *state.Store
+	startTime time.Time
+	diag      *diag.Tracker
+}
+
+var _ = (fs.NodeOpener)((*ContinueNode)(nil))
+var _ = (fs.NodeGetattrer)((*ContinueNode)(nil))
+
+func (c *ContinueNode) Open(ctx context.Context, flags uint32) (fs.FileHandle, uint32, syscall.Errno) {
+	defer diag.Track(c.diag, "ContinueNode", "Open", c.localID).Done()
+	cs := c.state.Get(c.localID)
+	if cs == nil || !cs.Created || cs.ShelleyConversationID == "" {
+		return nil, 0, syscall.ENOENT
+	}
+
+	result, err := c.client.ContinueConversation(cs.ShelleyConversationID, "", "")
+	if err != nil {
+		log.Printf("ContinueConversation failed for %s: %v", c.localID, err)
+		return nil, 0, syscall.EIO
+	}
+
+	// Adopt the new conversation into local state
+	newLocalID, err := c.state.AdoptWithMetadata(result.ConversationID, "", "", "", "", "")
+	if err != nil {
+		log.Printf("AdoptWithMetadata failed for continued conversation %s: %v", result.ConversationID, err)
+		return nil, 0, syscall.EIO
+	}
+
+	return &CloneFileHandle{id: newLocalID, diag: c.diag}, fuse.FOPEN_DIRECT_IO, 0
+}
+
+func (c *ContinueNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
+	out.Mode = fuse.S_IFREG | 0444
+	cs := c.state.Get(c.localID)
+	if cs != nil && !cs.CreatedAt.IsZero() {
+		setTimestamps(&out.Attr, cs.CreatedAt)
+	} else {
+		setTimestamps(&out.Attr, c.startTime)
+	}
+	return 0
 }
 

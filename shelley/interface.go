@@ -38,6 +38,9 @@ type ShelleyClient interface {
 
 	// ListSubagents lists child conversations (subagents) for a conversation.
 	ListSubagents(conversationID string) ([]byte, error)
+
+	// ContinueConversation creates a new conversation from an existing one with a summary.
+	ContinueConversation(sourceConversationID, model, cwd string) (ContinueConversationResult, error)
 }
 
 // Verify that Client implements ShelleyClient at compile time.

@@ -506,6 +506,71 @@ func (c *Client) ListSubagents(conversationID string) ([]byte, error) {
 	return io.ReadAll(resp.Body)
 }
 
+// ContinueConversationRequest represents a request to continue a conversation
+type ContinueConversationRequest struct {
+	SourceConversationID string `json:"source_conversation_id"`
+	Model                string `json:"model,omitempty"`
+	Cwd                  string `json:"cwd,omitempty"`
+}
+
+// ContinueConversationResult holds the response from continuing a conversation
+type ContinueConversationResult struct {
+	ConversationID string
+}
+
+// ContinueConversation creates a new conversation from an existing one with a summary.
+// The source conversation's messages are summarized and added as the first message
+// in the new conversation. The agent is NOT started — the user must send a message
+// to trigger the agent.
+func (c *Client) ContinueConversation(sourceConversationID, model, cwd string) (ContinueConversationResult, error) {
+	reqBody := ContinueConversationRequest{
+		SourceConversationID: sourceConversationID,
+	}
+
+	if model != "" {
+		reqBody.Model = model
+	}
+
+	if cwd != "" {
+		reqBody.Cwd = cwd
+	}
+
+	body, err := json.Marshal(reqBody)
+	if err != nil {
+		return ContinueConversationResult{}, fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	req, err := http.NewRequest("POST", c.baseURL+"/api/conversations/continue", bytes.NewBuffer(body))
+	if err != nil {
+		return ContinueConversationResult{}, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Shelley-Request", "1")
+	req.Header.Set("X-Exedev-Userid", "1")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return ContinueConversationResult{}, fmt.Errorf("failed to send request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusCreated {
+		body, _ := io.ReadAll(resp.Body)
+		return ContinueConversationResult{}, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(body))
+	}
+
+	var result struct {
+		ConversationID string `json:"conversation_id"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return ContinueConversationResult{}, fmt.Errorf("failed to decode response: %w", err)
+	}
+
+	return ContinueConversationResult{ConversationID: result.ConversationID}, nil
+}
+
 // Helper function to safely get string from map
 func getString(m map[string]interface{}, key string) string {
 	if v, ok := m[key]; ok {
