@@ -417,3 +417,52 @@ func TestListModelsWithNewFields(t *testing.T) {
 		t.Errorf("Models[1].MaxContextTokens = %d, want 200000", result.Models[1].MaxContextTokens)
 	}
 }
+
+func TestDeleteConversation(t *testing.T) {
+	var capturedRequest *http.Request
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedRequest = r
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"status":"deleted"}`))
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL)
+
+	err := client.DeleteConversation("test-conversation-id")
+	if err != nil {
+		t.Fatalf("DeleteConversation failed: %v", err)
+	}
+
+	if capturedRequest.Method != "POST" {
+		t.Errorf("Expected POST request, got %s", capturedRequest.Method)
+	}
+
+	if capturedRequest.URL.Path != "/api/conversation/test-conversation-id/delete" {
+		t.Errorf("Expected path '/api/conversation/test-conversation-id/delete', got '%s'", capturedRequest.URL.Path)
+	}
+
+	if capturedRequest.Header.Get("X-Exedev-Userid") != "1" {
+		t.Errorf("Expected X-Exedev-Userid header '1', got '%s'", capturedRequest.Header.Get("X-Exedev-Userid"))
+	}
+
+	if capturedRequest.Header.Get("X-Shelley-Request") != "1" {
+		t.Errorf("Expected X-Shelley-Request header '1', got '%s'", capturedRequest.Header.Get("X-Shelley-Request"))
+	}
+}
+
+func TestDeleteConversationError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		w.Write([]byte("not found"))
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL)
+
+	err := client.DeleteConversation("nonexistent")
+	if err == nil {
+		t.Fatal("Expected error for non-existent conversation")
+	}
+}

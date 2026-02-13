@@ -1157,3 +1157,108 @@ func TestAdoptWithMetadataCwdPersistence(t *testing.T) {
 		t.Errorf("expected Cwd persisted as /home/user/project, got %s", cs.Cwd)
 	}
 }
+
+func TestForceDelete(t *testing.T) {
+	s, err := NewStore(tempStatePath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Clone a conversation (uncreated)
+	id, err := s.Clone()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify it exists
+	if s.Get(id) == nil {
+		t.Fatal("expected conversation to exist")
+	}
+
+	// ForceDelete should work on uncreated conversations
+	if err := s.ForceDelete(id); err != nil {
+		t.Fatalf("ForceDelete failed: %v", err)
+	}
+
+	// Verify it's gone
+	if s.Get(id) != nil {
+		t.Error("expected conversation to be deleted")
+	}
+}
+
+func TestForceDeleteCreatedConversation(t *testing.T) {
+	s, err := NewStore(tempStatePath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Clone and mark created
+	id, _ := s.Clone()
+	_ = s.MarkCreated(id, "shelley-123", "slug")
+
+	// Regular Delete should refuse
+	if err := s.Delete(id); err == nil {
+		t.Error("expected regular Delete to fail on created conversation")
+	}
+
+	// ForceDelete should succeed on created conversations
+	if err := s.ForceDelete(id); err != nil {
+		t.Fatalf("ForceDelete failed: %v", err)
+	}
+
+	// Verify it's gone
+	if s.Get(id) != nil {
+		t.Error("expected conversation to be deleted")
+	}
+
+	// Verify it doesn't appear in List
+	for _, listID := range s.List() {
+		if listID == id {
+			t.Error("deleted conversation should not appear in List")
+		}
+	}
+}
+
+func TestForceDeleteNotFound(t *testing.T) {
+	s, err := NewStore(tempStatePath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.ForceDelete("nonexistent"); err == nil {
+		t.Error("expected error for nonexistent conversation")
+	}
+}
+
+func TestForceDeletePersistence(t *testing.T) {
+	path := tempStatePath(t)
+
+	s1, err := NewStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Clone two conversations and mark them both created
+	id1, _ := s1.Clone()
+	_ = s1.MarkCreated(id1, "shelley-1", "slug-1")
+	id2, _ := s1.Clone()
+	_ = s1.MarkCreated(id2, "shelley-2", "slug-2")
+
+	// ForceDelete one
+	if err := s1.ForceDelete(id1); err != nil {
+		t.Fatalf("ForceDelete failed: %v", err)
+	}
+
+	// Load into fresh store and verify persistence
+	s2, err := NewStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if s2.Get(id1) != nil {
+		t.Error("force-deleted conversation should not persist")
+	}
+	if s2.Get(id2) == nil {
+		t.Error("non-deleted conversation should persist")
+	}
+}

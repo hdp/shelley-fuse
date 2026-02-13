@@ -1839,3 +1839,66 @@ func TestArchivedConversationInDirectoryListing(t *testing.T) {
 		t.Logf("Archived conversation (via server ID) messages/count = %s", strings.TrimSpace(string(data)))
 	}
 }
+
+func TestDeleteConversation(t *testing.T) {
+	skipIfNoFusermount(t)
+	skipIfNoShelley(t)
+
+	serverURL := startShelleyServer(t)
+	mountPoint := mountTestFS(t, serverURL)
+
+	// Create a conversation using the helper
+	localID, serverID := createConversation(t, mountPoint, "Hello for delete test")
+	t.Logf("Created conversation: local=%s server=%s", localID, serverID)
+
+	convDir := filepath.Join(mountPoint, "conversation")
+
+	// Verify the conversation exists and is created
+	createdPath := filepath.Join(convDir, localID, "created")
+	if _, err := os.Stat(createdPath); err != nil {
+		t.Fatalf("Expected conversation to be created: %v", err)
+	}
+
+	// Verify it appears in conversation listing
+	entries, err := os.ReadDir(convDir)
+	if err != nil {
+		t.Fatalf("ReadDir failed: %v", err)
+	}
+	found := false
+	for _, e := range entries {
+		if e.Name() == localID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("Expected conversation in listing before delete")
+	}
+
+	// Delete the conversation via rmdir
+	convPath := filepath.Join(convDir, localID)
+	if err := syscall.Rmdir(convPath); err != nil {
+		t.Fatalf("Rmdir failed: %v", err)
+	}
+	t.Log("Successfully deleted conversation via rmdir")
+
+	// Verify it no longer appears in local state
+	_, err = os.Stat(convPath)
+	if err == nil {
+		t.Error("Expected conversation directory to no longer be accessible")
+	}
+
+	// Verify it's been deleted from the server too
+	client := &http.Client{Timeout: 10 * time.Second}
+	req, _ := http.NewRequest("GET", serverURL+"/api/conversations", nil)
+	req.Header.Set("X-Exedev-Userid", "1")
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("Failed to list conversations from server: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := ioutil.ReadAll(resp.Body)
+	if strings.Contains(string(body), serverID) {
+		t.Errorf("Expected conversation %s to be deleted from server, but found in: %s", serverID, string(body))
+	}
+}

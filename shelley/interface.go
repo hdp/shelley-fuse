@@ -30,6 +30,9 @@ type ShelleyClient interface {
 	// UnarchiveConversation unarchives a conversation.
 	UnarchiveConversation(conversationID string) error
 
+	// DeleteConversation permanently deletes a conversation.
+	DeleteConversation(conversationID string) error
+
 	// IsConversationArchived checks if a conversation is archived.
 	IsConversationArchived(conversationID string) (bool, error)
 

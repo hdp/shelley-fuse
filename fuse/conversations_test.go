@@ -2163,3 +2163,179 @@ func TestContinueNode_ServerError(t *testing.T) {
 		t.Error("Expected error when server returns 500")
 	}
 }
+
+func TestConversationListNode_Rmdir_CreatedConversation(t *testing.T) {
+	conv := shelley.Conversation{ConversationID: "server-conv-1"}
+	server := mockserver.New(
+		mockserver.WithFullConversation(conv, nil),
+	)
+	defer server.Close()
+
+	store := testStore(t)
+	id, err := store.Clone()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MarkCreated(id, "server-conv-1", "test-slug"); err != nil {
+		t.Fatal(err)
+	}
+
+	mountDir, cleanup := mountTestFSWithServer(t, server, store)
+	defer cleanup()
+
+	convPath := filepath.Join(mountDir, "conversation", id)
+
+	// Verify the conversation directory exists
+	if _, err := os.Stat(convPath); err != nil {
+		t.Fatalf("expected conversation directory to exist: %v", err)
+	}
+
+	// rmdir should remove the conversation
+	if err := syscall.Rmdir(convPath); err != nil {
+		t.Fatalf("Rmdir failed: %v", err)
+	}
+
+	// Verify conversation is gone from state
+	if store.Get(id) != nil {
+		t.Error("expected conversation to be removed from state")
+	}
+}
+
+func TestConversationListNode_Rmdir_UncreatedConversation(t *testing.T) {
+	server := mockserver.New()
+	defer server.Close()
+
+	store := testStore(t)
+	id, err := store.Clone()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	mountDir, cleanup := mountTestFSWithServer(t, server, store)
+	defer cleanup()
+
+	convPath := filepath.Join(mountDir, "conversation", id)
+
+	// rmdir on uncreated conversation should work (local cleanup only)
+	if err := syscall.Rmdir(convPath); err != nil {
+		t.Fatalf("Rmdir failed on uncreated conversation: %v", err)
+	}
+
+	// Verify conversation is gone from state
+	if store.Get(id) != nil {
+		t.Error("expected conversation to be removed from state")
+	}
+}
+
+func TestConversationListNode_Rmdir_NonexistentConversation(t *testing.T) {
+	server := mockserver.New()
+	defer server.Close()
+
+	store := testStore(t)
+
+	mountDir, cleanup := mountTestFSWithServer(t, server, store)
+	defer cleanup()
+
+	convPath := filepath.Join(mountDir, "conversation", "nonexistent-id")
+
+	// rmdir on nonexistent conversation should return ENOENT
+	err := syscall.Rmdir(convPath)
+	if err != syscall.ENOENT {
+		t.Errorf("expected ENOENT, got %v", err)
+	}
+}
+
+func TestConversationListNode_Rmdir_ServerError(t *testing.T) {
+	// Server that returns 500 for delete requests
+	conv := shelley.Conversation{ConversationID: "server-conv-err"}
+	server := mockserver.New(
+		mockserver.WithFullConversation(conv, nil),
+		mockserver.WithErrorMode(0), // not in error mode by default
+	)
+	defer server.Close()
+
+	store := testStore(t)
+	id, err := store.Clone()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MarkCreated(id, "server-conv-err", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	// Close the server to simulate network errors
+	server.Close()
+
+	mountDir, cleanup := mountTestFSWithServer(t, server, store)
+	defer cleanup()
+
+	convPath := filepath.Join(mountDir, "conversation", id)
+
+	// rmdir should fail with EIO when server is down
+	err = syscall.Rmdir(convPath)
+	if err == nil {
+		t.Error("expected error when server is down")
+	}
+
+	// Conversation should still be in state since server delete failed
+	if store.Get(id) == nil {
+		t.Error("conversation should still exist in state after server error")
+	}
+}
+
+func TestConversationListNode_Rmdir_ConversationDisappearsFromReaddir(t *testing.T) {
+	conv := shelley.Conversation{ConversationID: "server-conv-rmdir"}
+	server := mockserver.New(
+		mockserver.WithFullConversation(conv, nil),
+	)
+	defer server.Close()
+
+	store := testStore(t)
+	id, err := store.Clone()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MarkCreated(id, "server-conv-rmdir", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	mountDir, cleanup := mountTestFSWithServer(t, server, store)
+	defer cleanup()
+
+	convDir := filepath.Join(mountDir, "conversation")
+
+	// Before delete: should appear in listing
+	entries, err := os.ReadDir(convDir)
+	if err != nil {
+		t.Fatalf("ReadDir failed: %v", err)
+	}
+
+	found := false
+	for _, e := range entries {
+		if e.Name() == id {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("expected conversation in listing before delete")
+	}
+
+	// Delete the conversation
+	convPath := filepath.Join(convDir, id)
+	if err := syscall.Rmdir(convPath); err != nil {
+		t.Fatalf("Rmdir failed: %v", err)
+	}
+
+	// After delete: should not appear in listing
+	entries, err = os.ReadDir(convDir)
+	if err != nil {
+		t.Fatalf("ReadDir after delete failed: %v", err)
+	}
+
+	for _, e := range entries {
+		if e.Name() == id {
+			t.Error("expected conversation to disappear from listing after delete")
+		}
+	}
+}

@@ -20,6 +20,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 
 	"shelley-fuse/shelley"
@@ -28,6 +29,8 @@ import (
 // Server wraps an httptest.Server with a preconfigured Shelley mock backend.
 type Server struct {
 	*httptest.Server
+
+	mu sync.Mutex
 
 	// FetchCount tracks the total number of requests to /api/conversation/{id}
 	// endpoints. Use this in tests that verify caching behavior.
@@ -224,10 +227,12 @@ func (s *Server) handler(w http.ResponseWriter, r *http.Request) {
 
 	// GET /api/conversations → conversation list
 	if path == "/api/conversations" && r.Method == "GET" {
+		s.mu.Lock()
 		var convs []shelley.Conversation
 		for _, cd := range s.conversations {
 			convs = append(convs, cd.conv)
 		}
+		s.mu.Unlock()
 		data, _ := json.Marshal(convs)
 		w.Write(data)
 		return
@@ -257,6 +262,7 @@ func (s *Server) handler(w http.ResponseWriter, r *http.Request) {
 	if strings.HasPrefix(path, "/api/conversation/") && strings.HasSuffix(path, "/subagents") && r.Method == "GET" {
 		convID := strings.TrimPrefix(path, "/api/conversation/")
 		convID = strings.TrimSuffix(convID, "/subagents")
+		s.mu.Lock()
 		childIDs := s.subagents[convID]
 		var children []shelley.Conversation
 		for _, childID := range childIDs {
@@ -264,11 +270,32 @@ func (s *Server) handler(w http.ResponseWriter, r *http.Request) {
 				children = append(children, cd.conv)
 			}
 		}
+		s.mu.Unlock()
 		if children == nil {
 			children = []shelley.Conversation{}
 		}
 		data, _ := json.Marshal(children)
 		w.Write(data)
+		return
+	}
+
+	// POST /api/conversation/{id}/delete → delete conversation
+	if strings.HasSuffix(path, "/delete") && r.Method == "POST" {
+		convID := strings.TrimPrefix(path, "/api/conversation/")
+		convID = strings.TrimSuffix(convID, "/delete")
+		s.mu.Lock()
+		_, exists := s.conversations[convID]
+		if exists {
+			delete(s.conversations, convID)
+		}
+		s.mu.Unlock()
+		if !exists {
+			w.WriteHeader(http.StatusNotFound)
+			fmt.Fprintf(w, "conversation %s not found", convID)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"status":"deleted"}`)
 		return
 	}
 
@@ -285,7 +312,10 @@ func (s *Server) handler(w http.ResponseWriter, r *http.Request) {
 	// GET /api/conversation/{id} → conversation detail
 	if strings.HasPrefix(path, "/api/conversation/") && r.Method == "GET" {
 		convID := strings.TrimPrefix(path, "/api/conversation/")
-		if cd, ok := s.conversations[convID]; ok {
+		s.mu.Lock()
+		cd, ok := s.conversations[convID]
+		s.mu.Unlock()
+		if ok {
 			atomic.AddInt32(&s.fetchCount, 1)
 			if cd.rawDetail != nil {
 				w.Write(cd.rawDetail)
@@ -321,17 +351,22 @@ func (s *Server) handleContinueDefault(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, "source_conversation_id is required")
 		return
 	}
-	if _, ok := s.conversations[req.SourceConversationID]; !ok {
+	s.mu.Lock()
+	_, sourceExists := s.conversations[req.SourceConversationID]
+	s.mu.Unlock()
+	if !sourceExists {
 		w.WriteHeader(http.StatusNotFound)
 		fmt.Fprintf(w, "conversation %s not found", req.SourceConversationID)
 		return
 	}
 	newID := fmt.Sprintf("continued-%s-%d", req.SourceConversationID, atomic.AddInt32(&continueSeqNum, 1))
 	// Register the new conversation so it appears in list endpoints
+	s.mu.Lock()
 	s.conversations[newID] = conversationData{
 		conv:     shelley.Conversation{ConversationID: newID},
 		messages: nil,
 	}
+	s.mu.Unlock()
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(map[string]string{
 		"status":          "created",

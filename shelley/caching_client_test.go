@@ -920,3 +920,83 @@ func TestCachingClient_Singleflight_ListModelsCoalesced(t *testing.T) {
 		t.Errorf("Expected 1 HTTP call due to singleflight, got %d", count)
 	}
 }
+
+// TestCachingClient_DeleteConversation_InvalidatesCache verifies that deleting
+// a conversation invalidates all related caches.
+func TestCachingClient_DeleteConversation_InvalidatesCache(t *testing.T) {
+	var getCount, listCount, archivedCount, deleteCount int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/api/conversation/conv-123" && r.Method == "GET":
+			atomic.AddInt32(&getCount, 1)
+			w.Write([]byte(`{"messages":[]}`))
+		case r.URL.Path == "/api/conversations" && r.Method == "GET":
+			atomic.AddInt32(&listCount, 1)
+			data, _ := json.Marshal([]Conversation{{ConversationID: "conv-123"}})
+			w.Write(data)
+		case r.URL.Path == "/api/conversations/archived" && r.Method == "GET":
+			atomic.AddInt32(&archivedCount, 1)
+			w.Write([]byte(`[]`))
+		case r.URL.Path == "/api/conversation/conv-123/subagents" && r.Method == "GET":
+			w.Write([]byte(`[]`))
+		case r.URL.Path == "/api/conversation/conv-123/delete" && r.Method == "POST":
+			atomic.AddInt32(&deleteCount, 1)
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{"status":"deleted"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL)
+	caching := NewCachingClient(client, 5*time.Second)
+
+	// Populate caches
+	_, _ = caching.GetConversation("conv-123")
+	_, _ = caching.ListConversations()
+	_, _ = caching.ListArchivedConversations()
+	_, _ = caching.ListSubagents("conv-123")
+	if atomic.LoadInt32(&getCount) != 1 {
+		t.Fatalf("Expected 1 GET call, got %d", getCount)
+	}
+	if atomic.LoadInt32(&listCount) != 1 {
+		t.Fatalf("Expected 1 list call, got %d", listCount)
+	}
+
+	// Verify caches are working
+	_, _ = caching.GetConversation("conv-123")
+	_, _ = caching.ListConversations()
+	_, _ = caching.ListArchivedConversations()
+	if atomic.LoadInt32(&getCount) != 1 {
+		t.Fatalf("Expected still 1 GET call (cached), got %d", getCount)
+	}
+	if atomic.LoadInt32(&listCount) != 1 {
+		t.Fatalf("Expected still 1 list call (cached), got %d", listCount)
+	}
+
+	// Delete conversation - should invalidate all related caches
+	err := caching.DeleteConversation("conv-123")
+	if err != nil {
+		t.Fatalf("DeleteConversation failed: %v", err)
+	}
+	if atomic.LoadInt32(&deleteCount) != 1 {
+		t.Fatalf("Expected 1 delete call, got %d", deleteCount)
+	}
+
+	// All caches should be invalidated
+	_, _ = caching.GetConversation("conv-123")
+	if atomic.LoadInt32(&getCount) != 2 {
+		t.Fatalf("Expected 2 GET calls after delete invalidation, got %d", getCount)
+	}
+
+	_, _ = caching.ListConversations()
+	if atomic.LoadInt32(&listCount) != 2 {
+		t.Fatalf("Expected 2 list calls after delete invalidation, got %d", listCount)
+	}
+
+	_, _ = caching.ListArchivedConversations()
+	if atomic.LoadInt32(&archivedCount) != 2 {
+		t.Fatalf("Expected 2 archived list calls after delete invalidation, got %d", archivedCount)
+	}
+}

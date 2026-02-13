@@ -361,6 +361,25 @@ func (c *CachingClient) UnarchiveConversation(conversationID string) error {
 	return nil
 }
 
+// DeleteConversation permanently deletes a conversation and invalidates all related caches.
+func (c *CachingClient) DeleteConversation(conversationID string) error {
+	err := c.client.DeleteConversation(conversationID)
+	if err != nil {
+		return err
+	}
+
+	if c.cacheTTL > 0 {
+		c.mu.Lock()
+		c.conversationsListCache = nil
+		c.archivedListCache = nil
+		delete(c.conversationCache, conversationID)
+		delete(c.subagentsCache, conversationID)
+		c.mu.Unlock()
+	}
+
+	return nil
+}
+
 // IsConversationArchived checks if a conversation is archived.
 func (c *CachingClient) IsConversationArchived(conversationID string) (bool, error) {
 	// Don't cache this - it's a read that checks both endpoints

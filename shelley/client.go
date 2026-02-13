@@ -387,6 +387,30 @@ func (c *Client) UnarchiveConversation(conversationID string) error {
 	return nil
 }
 
+// DeleteConversation permanently deletes a conversation.
+func (c *Client) DeleteConversation(conversationID string) error {
+	req, err := http.NewRequest("POST", c.baseURL+"/api/conversation/"+conversationID+"/delete", nil)
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("X-Exedev-Userid", "1")
+	req.Header.Set("X-Shelley-Request", "1")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to send request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(body))
+	}
+
+	return nil
+}
+
 // IsConversationWorking checks if the agent is currently working on a conversation.
 func (c *Client) IsConversationWorking(conversationID string) (bool, error) {
 	req, err := http.NewRequest("GET", c.baseURL+"/api/conversations", nil)

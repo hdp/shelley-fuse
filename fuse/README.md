@@ -78,6 +78,8 @@ echo "Hello, Shelley!" > conversation/$ID/send
       ctl                → read/write config; read-only after first message
       send               → write here to send messages
       archived           → present when archived; touch to archive, rm to unarchive
+                           # rmdir conversation/$ID to permanently delete
+      # rmdir to permanently delete
       working            → present when agent is working
       continue           → read to create a new conversation continuing this one
       model              → symlink to ../../model/{model-id}
@@ -171,6 +173,12 @@ rm conversation/$ID/archived
 
 # Check if archived
 test -e conversation/$ID/archived && echo archived
+
+# Permanently delete a conversation
+rmdir conversation/$ID
+
+# Permanently delete a conversation
+rmdir conversation/$ID
 
 # Continue a conversation (creates a new conversation with a summary of the old one)
 NEW_ID=$(cat conversation/$ID/continue)

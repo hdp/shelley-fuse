@@ -33,6 +33,7 @@ type ConversationListNode struct {
 var _ = (fs.NodeLookuper)((*ConversationListNode)(nil))
 var _ = (fs.NodeReaddirer)((*ConversationListNode)(nil))
 var _ = (fs.NodeGetattrer)((*ConversationListNode)(nil))
+var _ = (fs.NodeRmdirer)((*ConversationListNode)(nil))
 
 func (c *ConversationListNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
 	defer diag.Track(c.diag, "ConversationListNode", "Lookup", name).Done()
@@ -313,6 +314,40 @@ func (c *ConversationListNode) Getattr(ctx context.Context, f fs.FileHandle, out
 	out.Mode = fuse.S_IFDIR | 0755
 	setTimestamps(&out.Attr, c.startTime)
 	out.SetTimeout(cacheTTLConversation)
+	return 0
+}
+
+// Rmdir handles `rmdir conversation/{id}` to permanently delete a conversation.
+// Only works on local IDs (not server IDs or slugs, which are symlinks).
+func (c *ConversationListNode) Rmdir(ctx context.Context, name string) syscall.Errno {
+	defer diag.Track(c.diag, "ConversationListNode", "Rmdir", name).Done()
+
+	cs := c.state.Get(name)
+	if cs == nil {
+		return syscall.ENOENT
+	}
+
+	if !cs.Created || cs.ShelleyConversationID == "" {
+		// Not yet created on the backend — just clean up local state
+		_ = c.state.ForceDelete(name)
+		return 0
+	}
+
+	// Delete from the server
+	if err := c.client.DeleteConversation(cs.ShelleyConversationID); err != nil {
+		log.Printf("DeleteConversation failed for %s (%s): %v", name, cs.ShelleyConversationID, err)
+		return syscall.EIO
+	}
+
+	// Invalidate the parsed message cache
+	c.parsedCache.Invalidate(cs.ShelleyConversationID)
+
+	// Remove from local state
+	if err := c.state.ForceDelete(name); err != nil {
+		log.Printf("ForceDelete failed for %s: %v", name, err)
+		// Server delete succeeded, so don't return error — state will be cleaned up on next Readdir
+	}
+
 	return 0
 }
 

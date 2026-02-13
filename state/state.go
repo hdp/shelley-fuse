@@ -220,6 +220,20 @@ func (s *Store) Delete(id string) error {
 	return s.saveLocked()
 }
 
+// ForceDelete removes a conversation from local state regardless of its created status.
+// Used when a conversation has been permanently deleted on the server.
+func (s *Store) ForceDelete(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, ok := s.Conversations[id]; !ok {
+		return fmt.Errorf("conversation %s not found", id)
+	}
+
+	delete(s.Conversations, id)
+	return s.saveLocked()
+}
+
 // ListMappings returns all conversations with their server IDs and slugs.
 // Used by FUSE to create symlinks for alternative access paths.
 func (s *Store) ListMappings() []ConversationState {
