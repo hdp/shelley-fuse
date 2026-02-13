@@ -480,6 +480,19 @@ func (c *ConversationNode) Lookup(ctx context.Context, name string, out *fuse.En
 			state:     c.state,
 			startTime: c.startTime,
 		}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
+	case "subagents":
+		cs := c.state.Get(c.localID)
+		if cs == nil || !cs.Created || cs.ShelleyConversationID == "" {
+			out.SetEntryTimeout(negTimeout)
+			return nil, syscall.ENOENT
+		}
+		return c.NewInode(ctx, &SubagentsDirNode{
+			localID:   c.localID,
+			client:    c.client,
+			state:     c.state,
+			startTime: c.startTime,
+			diag:      c.diag,
+		}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
 	case "working":
 		// Presence/absence semantics: file exists only when agent is working.
 		// Can appear and disappear rapidly → short timeouts both ways.
@@ -563,6 +576,11 @@ func (c *ConversationNode) Readdir(ctx context.Context) (fs.DirStream, syscall.E
 		if err == nil && working {
 			entries = append(entries, fuse.DirEntry{Name: "working", Mode: fuse.S_IFREG})
 		}
+	}
+
+	// Include subagents directory for created conversations
+	if cs != nil && cs.Created && cs.ShelleyConversationID != "" {
+		entries = append(entries, fuse.DirEntry{Name: "subagents", Mode: fuse.S_IFDIR})
 	}
 
 	// Add JSON fields from conversation data via jsonfs
@@ -1002,6 +1020,124 @@ func (w *WorkingNode) Getattr(ctx context.Context, fh fs.FileHandle, out *fuse.A
 	out.Mode = fuse.S_IFREG | 0444
 	out.Size = 0
 	setTimestamps(&out.Attr, w.startTime)
+	return 0
+}
+
+// --- SubagentsDirNode: /conversation/{id}/subagents/ directory ---
+// Lists child conversations (subagents) as symlinks pointing to ../../{localID}.
+
+type SubagentsDirNode struct {
+	fs.Inode
+	localID   string
+	client    shelley.ShelleyClient
+	state     *state.Store
+	startTime time.Time
+	diag      *diag.Tracker
+}
+
+var _ = (fs.NodeLookuper)((*SubagentsDirNode)(nil))
+var _ = (fs.NodeReaddirer)((*SubagentsDirNode)(nil))
+var _ = (fs.NodeGetattrer)((*SubagentsDirNode)(nil))
+
+// fetchSubagents retrieves and adopts subagent conversations for this conversation.
+func (n *SubagentsDirNode) fetchSubagents() ([]shelley.Conversation, error) {
+	cs := n.state.Get(n.localID)
+	if cs == nil || !cs.Created || cs.ShelleyConversationID == "" {
+		return nil, nil
+	}
+
+	data, err := n.client.ListSubagents(cs.ShelleyConversationID)
+	if err != nil {
+		return nil, err
+	}
+
+	var convs []shelley.Conversation
+	if err := json.Unmarshal(data, &convs); err != nil {
+		return nil, err
+	}
+
+	// Adopt each subagent into local state
+	for _, conv := range convs {
+		_, _ = n.state.AdoptWithMetadata(
+			conv.ConversationID,
+			derefStr(conv.Slug),
+			conv.CreatedAt,
+			conv.UpdatedAt,
+			derefStr(conv.Model),
+			derefStr(conv.Cwd),
+		)
+	}
+
+	return convs, nil
+}
+
+func (n *SubagentsDirNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
+	defer diag.Track(n.diag, "SubagentsDirNode", "Lookup", n.localID+"/subagents/"+name).Done()
+	setEntryTimeout(out, cacheTTLConversation)
+
+	convs, err := n.fetchSubagents()
+	if err != nil {
+		return nil, syscall.EIO
+	}
+
+	for _, conv := range convs {
+		localID := n.state.GetByShelleyID(conv.ConversationID)
+		if localID == "" {
+			continue
+		}
+
+		if name == localID || name == conv.ConversationID || (conv.Slug != nil && name == *conv.Slug) {
+			target := "../../" + localID
+			return n.NewInode(ctx, &SymlinkNode{target: target, startTime: n.startTime}, fs.StableAttr{Mode: syscall.S_IFLNK}), 0
+		}
+	}
+
+	return nil, syscall.ENOENT
+}
+
+func (n *SubagentsDirNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
+	defer diag.Track(n.diag, "SubagentsDirNode", "Readdir", n.localID+"/subagents").Done()
+
+	convs, err := n.fetchSubagents()
+	if err != nil {
+		return fs.NewListDirStream(nil), 0
+	}
+
+	usedNames := make(map[string]bool)
+	var entries []fuse.DirEntry
+
+	for _, conv := range convs {
+		localID := n.state.GetByShelleyID(conv.ConversationID)
+		if localID == "" {
+			continue
+		}
+
+		// Add symlink for local ID
+		if !usedNames[localID] {
+			entries = append(entries, fuse.DirEntry{Name: localID, Mode: syscall.S_IFLNK})
+			usedNames[localID] = true
+		}
+
+		// Add symlink for server ID if it doesn't conflict
+		if !usedNames[conv.ConversationID] {
+			entries = append(entries, fuse.DirEntry{Name: conv.ConversationID, Mode: syscall.S_IFLNK})
+			usedNames[conv.ConversationID] = true
+		}
+
+		// Add symlink for slug if valid and doesn't conflict
+		if conv.Slug != nil && *conv.Slug != "" && isValidFilename(*conv.Slug) && !usedNames[*conv.Slug] {
+			entries = append(entries, fuse.DirEntry{Name: *conv.Slug, Mode: syscall.S_IFLNK})
+			usedNames[*conv.Slug] = true
+		}
+	}
+
+	return fs.NewListDirStream(entries), 0
+}
+
+func (n *SubagentsDirNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
+	out.Mode = fuse.S_IFDIR | 0755
+	setTimestamps(&out.Attr, n.startTime)
+	out.SetTimeout(cacheTTLConversation)
 	return 0
 }
 

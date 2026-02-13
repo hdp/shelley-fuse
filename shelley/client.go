@@ -487,6 +487,25 @@ func (c *Client) IsConversationArchived(conversationID string) (bool, error) {
 	return false, nil
 }
 
+// ListSubagents lists child conversations (subagents) for a conversation.
+func (c *Client) ListSubagents(conversationID string) ([]byte, error) {
+	req, err := http.NewRequest("GET", c.baseURL+"/api/conversation/"+conversationID+"/subagents", nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("X-Exedev-Userid", "1")
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to send request: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(body))
+	}
+	return io.ReadAll(resp.Body)
+}
+
 // Helper function to safely get string from map
 func getString(m map[string]interface{}, key string) string {
 	if v, ok := m[key]; ok {

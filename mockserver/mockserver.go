@@ -39,6 +39,9 @@ type Server struct {
 	// conversations is keyed by conversation ID.
 	conversations map[string]conversationData
 
+	// subagents maps parent conversation ID to child conversation IDs
+	subagents map[string][]string
+
 	// chatHandler is called for POST /api/conversation/{id}/chat.
 	// If nil, returns 200 OK.
 	chatHandler func(w http.ResponseWriter, r *http.Request)
@@ -152,9 +155,18 @@ func WithRequestHook(h func(r *http.Request)) Option {
 }
 
 // New creates and starts a mock Shelley backend server.
+// WithSubagent registers a child conversation (subagent) under a parent conversation.
+// Both parent and child must be registered via WithConversation or WithFullConversation.
+func WithSubagent(parentID, childID string) Option {
+	return func(s *Server) {
+		s.subagents[parentID] = append(s.subagents[parentID], childID)
+	}
+}
+
 func New(opts ...Option) *Server {
 	s := &Server{
 		conversations: make(map[string]conversationData),
+		subagents:     make(map[string][]string),
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -217,6 +229,25 @@ func (s *Server) handler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		http.NotFound(w, r)
+		return
+	}
+
+	// GET /api/conversation/{id}/subagents → subagents list
+	if strings.HasPrefix(path, "/api/conversation/") && strings.HasSuffix(path, "/subagents") && r.Method == "GET" {
+		convID := strings.TrimPrefix(path, "/api/conversation/")
+		convID = strings.TrimSuffix(convID, "/subagents")
+		childIDs := s.subagents[convID]
+		var children []shelley.Conversation
+		for _, childID := range childIDs {
+			if cd, ok := s.conversations[childID]; ok {
+				children = append(children, cd.conv)
+			}
+		}
+		if children == nil {
+			children = []shelley.Conversation{}
+		}
+		data, _ := json.Marshal(children)
+		w.Write(data)
 		return
 	}
 

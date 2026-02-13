@@ -35,6 +35,9 @@ type ShelleyClient interface {
 
 	// IsConversationWorking checks if the agent is currently working on a conversation.
 	IsConversationWorking(conversationID string) (bool, error)
+
+	// ListSubagents lists child conversations (subagents) for a conversation.
+	ListSubagents(conversationID string) ([]byte, error)
 }
 
 // Verify that Client implements ShelleyClient at compile time.

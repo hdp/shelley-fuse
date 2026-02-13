@@ -25,6 +25,9 @@ type CachingClient struct {
 	// Per-conversation cache for GetConversation results
 	conversationCache map[string]*cacheEntry
 
+	// Per-conversation cache for ListSubagents results
+	subagentsCache map[string]*cacheEntry
+
 	// Global caches
 	conversationsListCache *cacheEntry
 	archivedListCache      *cacheEntry
@@ -47,6 +50,7 @@ func NewCachingClient(client *Client, cacheTTL time.Duration) *CachingClient {
 		client:            client,
 		cacheTTL:          cacheTTL,
 		conversationCache: make(map[string]*cacheEntry),
+		subagentsCache:    make(map[string]*cacheEntry),
 	}
 }
 
@@ -312,6 +316,7 @@ func (c *CachingClient) InvalidateAll() {
 	if c.cacheTTL > 0 {
 		c.mu.Lock()
 		c.conversationCache = make(map[string]*cacheEntry)
+		c.subagentsCache = make(map[string]*cacheEntry)
 		c.conversationsListCache = nil
 		c.archivedListCache = nil
 		c.modelsCache = nil
@@ -366,4 +371,44 @@ func (c *CachingClient) IsConversationArchived(conversationID string) (bool, err
 func (c *CachingClient) IsConversationWorking(conversationID string) (bool, error) {
 	// Don't cache this - working state is volatile and should always be fresh
 	return c.client.IsConversationWorking(conversationID)
+}
+
+// ListSubagents lists child conversations (subagents) for a conversation, using cache if available.
+// Uses singleflight to coalesce duplicate requests without holding locks during HTTP calls.
+// The returned byte slice must not be modified by callers.
+func (c *CachingClient) ListSubagents(conversationID string) ([]byte, error) {
+	// Fast path: check cache with read lock
+	if c.cacheTTL > 0 {
+		c.mu.RLock()
+		entry := c.subagentsCache[conversationID]
+		c.mu.RUnlock()
+
+		if entry.isValid() {
+			return entry.data, nil
+		}
+	}
+
+	// Slow path: use singleflight to coalesce duplicate requests
+	result, err, _ := c.sf.Do("subagents:"+conversationID, func() (interface{}, error) {
+		data, err := c.client.ListSubagents(conversationID)
+		if err != nil {
+			return nil, err
+		}
+
+		if c.cacheTTL > 0 {
+			c.mu.Lock()
+			c.subagentsCache[conversationID] = &cacheEntry{
+				data:      data,
+				expiresAt: time.Now().Add(c.cacheTTL),
+			}
+			c.mu.Unlock()
+		}
+
+		return data, nil
+	})
+
+	if err != nil {
+		return nil, err
+	}
+	return result.([]byte), nil
 }

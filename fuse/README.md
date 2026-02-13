@@ -85,6 +85,10 @@ echo "Hello, Shelley!" > conversation/$ID/send
       fuse_id            → local FUSE conversation ID
       slug               → conversation slug (if set)
       created            → present if created on backend (absence = not created)
+      subagents/         → child conversations (subagents)
+        {local-id}       → symlink to ../../{local-id}
+        {server-id}      → symlink to ../../{local-id}
+        {slug}           → symlink to ../../{local-id}
       messages/          → all message content
         all.json         → full conversation as JSON
         all.md           → full conversation as Markdown
