@@ -575,6 +575,28 @@ func (c *ConversationNode) Lookup(ctx context.Context, name string, out *fuse.En
 		}
 		out.SetEntryTimeout(volatileEntryTimeout)
 		return c.NewInode(ctx, &WorkingNode{startTime: c.getConversationTime()}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
+	case "cancel":
+		// Presence/absence semantics: file exists only when agent is working.
+		// Writing anything to it cancels the in-progress agent loop.
+		cs := c.state.Get(c.localID)
+		if cs == nil || !cs.Created || cs.ShelleyConversationID == "" {
+			out.SetEntryTimeout(volatileEntryTimeout)
+			return nil, syscall.ENOENT
+		}
+
+		working, err := c.client.IsConversationWorking(cs.ShelleyConversationID)
+		if err != nil || !working {
+			out.SetEntryTimeout(volatileEntryTimeout)
+			return nil, syscall.ENOENT
+		}
+		out.SetEntryTimeout(volatileEntryTimeout)
+		return c.NewInode(ctx, &CancelNode{
+			localID:   c.localID,
+			client:    c.client,
+			state:     c.state,
+			startTime: c.getConversationTime(),
+			diag:      c.diag,
+		}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
 	}
 
 	// For all other fields, use jsonfs to expose conversation JSON data
@@ -636,11 +658,12 @@ func (c *ConversationNode) Readdir(ctx context.Context) (fs.DirStream, syscall.E
 		}
 	}
 
-	// Include working file only when the agent is currently working
+	// Include working and cancel files only when the agent is currently working
 	if cs != nil && cs.Created && cs.ShelleyConversationID != "" {
 		working, err := c.client.IsConversationWorking(cs.ShelleyConversationID)
 		if err == nil && working {
 			entries = append(entries, fuse.DirEntry{Name: "working", Mode: fuse.S_IFREG})
+			entries = append(entries, fuse.DirEntry{Name: "cancel", Mode: fuse.S_IFREG})
 		}
 	}
 
@@ -1087,6 +1110,85 @@ func (w *WorkingNode) Getattr(ctx context.Context, fh fs.FileHandle, out *fuse.A
 	out.Mode = fuse.S_IFREG | 0444
 	out.Size = 0
 	setTimestamps(&out.Attr, w.startTime)
+	return 0
+}
+
+// --- CancelNode: write-only file to cancel an in-progress agent loop ---
+// Only exists when the conversation is working. Writing anything to it cancels the agent.
+
+type CancelNode struct {
+	fs.Inode
+	localID   string
+	client    shelley.ShelleyClient
+	state     *state.Store
+	startTime time.Time
+	diag      *diag.Tracker
+}
+
+var _ = (fs.NodeOpener)((*CancelNode)(nil))
+var _ = (fs.NodeGetattrer)((*CancelNode)(nil))
+var _ = (fs.NodeSetattrer)((*CancelNode)(nil))
+
+func (n *CancelNode) Open(ctx context.Context, flags uint32) (fs.FileHandle, uint32, syscall.Errno) {
+	return &CancelFileHandle{
+		node: n,
+	}, fuse.FOPEN_DIRECT_IO, 0
+}
+
+func (n *CancelNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
+	out.Mode = fuse.S_IFREG | 0222
+	cs := n.state.Get(n.localID)
+	if cs != nil && !cs.CreatedAt.IsZero() {
+		setTimestamps(&out.Attr, cs.CreatedAt)
+	} else {
+		setTimestamps(&out.Attr, n.startTime)
+	}
+	return 0
+}
+
+func (n *CancelNode) Setattr(ctx context.Context, f fs.FileHandle, in *fuse.SetAttrIn, out *fuse.AttrOut) syscall.Errno {
+	return n.Getattr(ctx, f, out)
+}
+
+// CancelFileHandle buffers writes and sends cancel on Flush (close).
+type CancelFileHandle struct {
+	node    *CancelNode
+	buffer  []byte
+	flushed bool
+	mu      sync.Mutex
+}
+
+var _ = (fs.FileWriter)((*CancelFileHandle)(nil))
+var _ = (fs.FileFlusher)((*CancelFileHandle)(nil))
+
+func (h *CancelFileHandle) Write(ctx context.Context, data []byte, off int64) (uint32, syscall.Errno) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.buffer = append(h.buffer, data...)
+	return uint32(len(data)), 0
+}
+
+func (h *CancelFileHandle) Flush(ctx context.Context) syscall.Errno {
+	op := diag.Track(h.node.diag, "CancelFileHandle", "Flush", h.node.localID)
+	defer op.Done()
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	if h.flushed {
+		return 0
+	}
+	h.flushed = true
+
+	cs := h.node.state.Get(h.node.localID)
+	if cs == nil || !cs.Created || cs.ShelleyConversationID == "" {
+		return syscall.ENOENT
+	}
+
+	if err := h.node.client.CancelConversation(cs.ShelleyConversationID); err != nil {
+		log.Printf("CancelConversation failed for %s (%s): %v", h.node.localID, cs.ShelleyConversationID, err)
+		return syscall.EIO
+	}
+
 	return 0
 }
 

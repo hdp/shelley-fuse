@@ -30,6 +30,9 @@ type ShelleyClient interface {
 	// UnarchiveConversation unarchives a conversation.
 	UnarchiveConversation(conversationID string) error
 
+	// CancelConversation cancels an in-progress agent loop for a conversation.
+	CancelConversation(conversationID string) error
+
 	// DeleteConversation permanently deletes a conversation.
 	DeleteConversation(conversationID string) error
 

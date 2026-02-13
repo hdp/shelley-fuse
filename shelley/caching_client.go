@@ -361,6 +361,21 @@ func (c *CachingClient) UnarchiveConversation(conversationID string) error {
 	return nil
 }
 
+// CancelConversation cancels an in-progress agent loop and invalidates the conversation cache.
+func (c *CachingClient) CancelConversation(conversationID string) error {
+	err := c.client.CancelConversation(conversationID)
+	if err != nil {
+		return err
+	}
+	// Invalidate this conversation's cache since working state changed
+	if c.cacheTTL > 0 {
+		c.mu.Lock()
+		delete(c.conversationCache, conversationID)
+		c.mu.Unlock()
+	}
+	return nil
+}
+
 // DeleteConversation permanently deletes a conversation and invalidates all related caches.
 func (c *CachingClient) DeleteConversation(conversationID string) error {
 	err := c.client.DeleteConversation(conversationID)

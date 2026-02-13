@@ -279,6 +279,27 @@ func (s *Server) handler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// POST /api/conversation/{id}/cancel → cancel in-progress agent loop
+	if strings.HasSuffix(path, "/cancel") && r.Method == "POST" {
+		convID := strings.TrimPrefix(path, "/api/conversation/")
+		convID = strings.TrimSuffix(convID, "/cancel")
+		s.mu.Lock()
+		cd, exists := s.conversations[convID]
+		if exists {
+			cd.conv.Working = false
+			s.conversations[convID] = cd
+		}
+		s.mu.Unlock()
+		if !exists {
+			w.WriteHeader(http.StatusNotFound)
+			fmt.Fprintf(w, "conversation %s not found", convID)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"status":"cancelled"}`)
+		return
+	}
+
 	// POST /api/conversation/{id}/delete → delete conversation
 	if strings.HasSuffix(path, "/delete") && r.Method == "POST" {
 		convID := strings.TrimPrefix(path, "/api/conversation/")

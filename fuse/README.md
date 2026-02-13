@@ -85,6 +85,7 @@ echo "Hello, Shelley!" > conversation/$ID/send
                            # rmdir conversation/$ID to permanently delete
       # rmdir to permanently delete
       working            → present when agent is working
+      cancel             → write to cancel in-progress agent (only present when working)
       continue           → read to create a new conversation continuing this one
       model              → symlink to ../../model/{model-id}
       cwd                → symlink to working directory
@@ -186,6 +187,9 @@ test -e conversation/$ID/archived && echo archived
 
 # Permanently delete a conversation
 rmdir conversation/$ID
+
+# Cancel an in-progress agent loop
+echo cancel > conversation/$ID/cancel
 
 # Continue a conversation (creates a new conversation with a summary of the old one)
 NEW_ID=$(cat conversation/$ID/continue)
