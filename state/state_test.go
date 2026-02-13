@@ -750,7 +750,7 @@ func TestAdoptWithMetadata(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	localID, err := s.AdoptWithMetadata("server-meta-123", "test-slug", "2024-01-15T10:30:00Z", "2024-01-16T14:20:00Z", "")
+	localID, err := s.AdoptWithMetadata("server-meta-123", "test-slug", "2024-01-15T10:30:00Z", "2024-01-16T14:20:00Z", "", "")
 	if err != nil {
 		t.Fatalf("AdoptWithMetadata failed: %v", err)
 	}
@@ -777,13 +777,13 @@ func TestAdoptWithMetadataUpdatesTimestamps(t *testing.T) {
 	}
 
 	// First adoption without timestamps
-	localID, err := s.AdoptWithMetadata("server-meta-update", "slug", "", "", "")
+	localID, err := s.AdoptWithMetadata("server-meta-update", "slug", "", "", "", "")
 	if err != nil {
 		t.Fatalf("first AdoptWithMetadata failed: %v", err)
 	}
 
 	// Second adoption with timestamps should update them
-	_, err = s.AdoptWithMetadata("server-meta-update", "", "2024-01-15T10:30:00Z", "2024-01-16T14:20:00Z", "")
+	_, err = s.AdoptWithMetadata("server-meta-update", "", "2024-01-15T10:30:00Z", "2024-01-16T14:20:00Z", "", "")
 	if err != nil {
 		t.Fatalf("second AdoptWithMetadata failed: %v", err)
 	}
@@ -804,13 +804,13 @@ func TestAdoptWithMetadataUpdatesNewerTimestamp(t *testing.T) {
 	}
 
 	// First adoption with older timestamp
-	localID, err := s.AdoptWithMetadata("server-meta-newer", "slug", "2024-01-15T10:30:00Z", "2024-01-16T14:20:00Z", "")
+	localID, err := s.AdoptWithMetadata("server-meta-newer", "slug", "2024-01-15T10:30:00Z", "2024-01-16T14:20:00Z", "", "")
 	if err != nil {
 		t.Fatalf("first AdoptWithMetadata failed: %v", err)
 	}
 
 	// Second adoption with newer updated_at should update
-	_, err = s.AdoptWithMetadata("server-meta-newer", "", "", "2024-01-17T09:00:00Z", "")
+	_, err = s.AdoptWithMetadata("server-meta-newer", "", "", "2024-01-17T09:00:00Z", "", "")
 	if err != nil {
 		t.Fatalf("second AdoptWithMetadata failed: %v", err)
 	}
@@ -834,7 +834,7 @@ func TestAdoptWithMetadataPersistence(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	localID, err := s1.AdoptWithMetadata("server-meta-persist", "slug", "2024-01-15T10:30:00Z", "2024-01-16T14:20:00Z", "")
+	localID, err := s1.AdoptWithMetadata("server-meta-persist", "slug", "2024-01-15T10:30:00Z", "2024-01-16T14:20:00Z", "", "")
 	if err != nil {
 		t.Fatalf("AdoptWithMetadata failed: %v", err)
 	}
@@ -962,7 +962,7 @@ func TestAdoptWithMetadataModel(t *testing.T) {
 	}
 
 	// Adopt with a model
-	localID, err := s.AdoptWithMetadata("server-model-123", "slug", "2024-01-15T10:30:00Z", "2024-01-16T14:20:00Z", "claude-sonnet-4-5")
+	localID, err := s.AdoptWithMetadata("server-model-123", "slug", "2024-01-15T10:30:00Z", "2024-01-16T14:20:00Z", "claude-sonnet-4-5", "")
 	if err != nil {
 		t.Fatalf("AdoptWithMetadata failed: %v", err)
 	}
@@ -983,7 +983,7 @@ func TestAdoptWithMetadataModelUpdatesEmpty(t *testing.T) {
 	}
 
 	// First adopt without model
-	localID, err := s.AdoptWithMetadata("server-model-update", "slug", "", "", "")
+	localID, err := s.AdoptWithMetadata("server-model-update", "slug", "", "", "", "")
 	if err != nil {
 		t.Fatalf("first AdoptWithMetadata failed: %v", err)
 	}
@@ -994,7 +994,7 @@ func TestAdoptWithMetadataModelUpdatesEmpty(t *testing.T) {
 	}
 
 	// Re-adopt with model should update it
-	_, err = s.AdoptWithMetadata("server-model-update", "", "", "", "claude-sonnet-4-5")
+	_, err = s.AdoptWithMetadata("server-model-update", "", "", "", "claude-sonnet-4-5", "")
 	if err != nil {
 		t.Fatalf("second AdoptWithMetadata failed: %v", err)
 	}
@@ -1012,13 +1012,13 @@ func TestAdoptWithMetadataModelDoesNotOverwrite(t *testing.T) {
 	}
 
 	// First adopt with a model
-	localID, err := s.AdoptWithMetadata("server-model-keep", "slug", "", "", "claude-sonnet-4-5")
+	localID, err := s.AdoptWithMetadata("server-model-keep", "slug", "", "", "claude-sonnet-4-5", "")
 	if err != nil {
 		t.Fatalf("first AdoptWithMetadata failed: %v", err)
 	}
 
 	// Re-adopt with a different model should NOT overwrite
-	_, err = s.AdoptWithMetadata("server-model-keep", "", "", "", "gpt-4")
+	_, err = s.AdoptWithMetadata("server-model-keep", "", "", "", "gpt-4", "")
 	if err != nil {
 		t.Fatalf("second AdoptWithMetadata failed: %v", err)
 	}
@@ -1037,7 +1037,7 @@ func TestAdoptWithMetadataModelPersistence(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	localID, err := s1.AdoptWithMetadata("server-model-persist", "slug", "", "", "claude-sonnet-4-5")
+	localID, err := s1.AdoptWithMetadata("server-model-persist", "slug", "", "", "claude-sonnet-4-5", "")
 	if err != nil {
 		t.Fatalf("AdoptWithMetadata failed: %v", err)
 	}
@@ -1054,5 +1054,106 @@ func TestAdoptWithMetadataModelPersistence(t *testing.T) {
 	}
 	if cs.Model != "claude-sonnet-4-5" {
 		t.Errorf("expected Model persisted as claude-sonnet-4-5, got %s", cs.Model)
+	}
+}
+
+func TestAdoptWithMetadataCwd(t *testing.T) {
+	s, err := NewStore(tempStatePath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	localID, err := s.AdoptWithMetadata("server-cwd-123", "slug", "2024-01-15T10:30:00Z", "2024-01-16T14:20:00Z", "", "/home/user/project")
+	if err != nil {
+		t.Fatalf("AdoptWithMetadata failed: %v", err)
+	}
+
+	cs := s.Get(localID)
+	if cs == nil {
+		t.Fatal("expected conversation state")
+	}
+	if cs.Cwd != "/home/user/project" {
+		t.Errorf("expected Cwd=/home/user/project, got %s", cs.Cwd)
+	}
+}
+
+func TestAdoptWithMetadataCwdUpdatesEmpty(t *testing.T) {
+	s, err := NewStore(tempStatePath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// First adopt without cwd
+	localID, err := s.AdoptWithMetadata("server-cwd-update", "slug", "", "", "", "")
+	if err != nil {
+		t.Fatalf("first AdoptWithMetadata failed: %v", err)
+	}
+
+	cs := s.Get(localID)
+	if cs.Cwd != "" {
+		t.Errorf("expected empty cwd initially, got %s", cs.Cwd)
+	}
+
+	// Re-adopt with cwd should update it
+	_, err = s.AdoptWithMetadata("server-cwd-update", "", "", "", "", "/home/user/project")
+	if err != nil {
+		t.Fatalf("second AdoptWithMetadata failed: %v", err)
+	}
+
+	cs = s.Get(localID)
+	if cs.Cwd != "/home/user/project" {
+		t.Errorf("expected Cwd=/home/user/project, got %s", cs.Cwd)
+	}
+}
+
+func TestAdoptWithMetadataCwdDoesNotOverwrite(t *testing.T) {
+	s, err := NewStore(tempStatePath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// First adopt with a cwd
+	localID, err := s.AdoptWithMetadata("server-cwd-keep", "slug", "", "", "", "/home/user/project")
+	if err != nil {
+		t.Fatalf("first AdoptWithMetadata failed: %v", err)
+	}
+
+	// Re-adopt with a different cwd should NOT overwrite
+	_, err = s.AdoptWithMetadata("server-cwd-keep", "", "", "", "", "/tmp/other")
+	if err != nil {
+		t.Fatalf("second AdoptWithMetadata failed: %v", err)
+	}
+
+	cs := s.Get(localID)
+	if cs.Cwd != "/home/user/project" {
+		t.Errorf("expected Cwd=/home/user/project (original), got %s", cs.Cwd)
+	}
+}
+
+func TestAdoptWithMetadataCwdPersistence(t *testing.T) {
+	path := tempStatePath(t)
+
+	s1, err := NewStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	localID, err := s1.AdoptWithMetadata("server-cwd-persist", "slug", "", "", "", "/home/user/project")
+	if err != nil {
+		t.Fatalf("AdoptWithMetadata failed: %v", err)
+	}
+
+	// Load into fresh store
+	s2, err := NewStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cs := s2.Get(localID)
+	if cs == nil {
+		t.Fatal("expected conversation state after reload")
+	}
+	if cs.Cwd != "/home/user/project" {
+		t.Errorf("expected Cwd persisted as /home/user/project, got %s", cs.Cwd)
 	}
 }

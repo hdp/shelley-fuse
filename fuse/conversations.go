@@ -111,7 +111,7 @@ func (c *ConversationListNode) lookupInConversationList(ctx context.Context, nam
 		if conv.ConversationID == name {
 			// Adopt this server conversation locally with API metadata
 			slug := derefStr(conv.Slug)
-			localID, err := c.state.AdoptWithMetadata(name, slug, conv.CreatedAt, conv.UpdatedAt, derefStr(conv.Model))
+			localID, err := c.state.AdoptWithMetadata(name, slug, conv.CreatedAt, conv.UpdatedAt, derefStr(conv.Model), derefStr(conv.Cwd))
 			if err != nil {
 				return nil, syscall.EIO
 			}
@@ -124,7 +124,7 @@ func (c *ConversationListNode) lookupInConversationList(ctx context.Context, nam
 		}
 		// Also check by slug for not-yet-adopted conversations
 		if conv.Slug != nil && *conv.Slug == name {
-			localID, err := c.state.AdoptWithMetadata(conv.ConversationID, *conv.Slug, conv.CreatedAt, conv.UpdatedAt, derefStr(conv.Model))
+			localID, err := c.state.AdoptWithMetadata(conv.ConversationID, *conv.Slug, conv.CreatedAt, conv.UpdatedAt, derefStr(conv.Model), derefStr(conv.Cwd))
 			if err != nil {
 				return nil, syscall.EIO
 			}
@@ -180,7 +180,7 @@ func (c *ConversationListNode) Readdir(ctx context.Context) (fs.DirStream, sysca
 			// AdoptWithMetadata handles the case where a conversation is not yet tracked locally
 			// and also updates API timestamps. Errors are non-fatal; worst case the conversation
 			// won't appear in this listing but will be adopted on next Lookup
-			_, _ = c.state.AdoptWithMetadata(conv.ConversationID, derefStr(conv.Slug), conv.CreatedAt, conv.UpdatedAt, derefStr(conv.Model))
+			_, _ = c.state.AdoptWithMetadata(conv.ConversationID, derefStr(conv.Slug), conv.CreatedAt, conv.UpdatedAt, derefStr(conv.Model), derefStr(conv.Cwd))
 		}
 	}
 
@@ -195,7 +195,7 @@ func (c *ConversationListNode) Readdir(ctx context.Context) (fs.DirStream, sysca
 		for _, conv := range archivedConvs {
 			validServerIDs[conv.ConversationID] = true
 			archivedServerIDs[conv.ConversationID] = true
-			_, _ = c.state.AdoptWithMetadata(conv.ConversationID, derefStr(conv.Slug), conv.CreatedAt, conv.UpdatedAt, derefStr(conv.Model))
+			_, _ = c.state.AdoptWithMetadata(conv.ConversationID, derefStr(conv.Slug), conv.CreatedAt, conv.UpdatedAt, derefStr(conv.Model), derefStr(conv.Cwd))
 		}
 	}
 

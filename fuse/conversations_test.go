@@ -1687,13 +1687,13 @@ func TestTimestamps_APIMetadataFallbackToLocalTime(t *testing.T) {
 func TestTimestamps_ConversationUpdatedAtUpdatesOnReadopt(t *testing.T) {
 	// First adoption with older timestamps
 	store := testStore(t)
-	_, err := store.AdoptWithMetadata("conv-update-test", "slug", "2024-01-01T00:00:00Z", "2024-01-05T00:00:00Z", "")
+	_, err := store.AdoptWithMetadata("conv-update-test", "slug", "2024-01-01T00:00:00Z", "2024-01-05T00:00:00Z", "", "")
 	if err != nil {
 		t.Fatalf("First adoption failed: %v", err)
 	}
 
 	// Re-adopt with newer updated_at
-	_, err = store.AdoptWithMetadata("conv-update-test", "", "", "2024-01-10T00:00:00Z", "")
+	_, err = store.AdoptWithMetadata("conv-update-test", "", "", "2024-01-10T00:00:00Z", "", "")
 	if err != nil {
 		t.Fatalf("Second adoption failed: %v", err)
 	}

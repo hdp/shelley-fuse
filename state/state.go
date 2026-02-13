@@ -243,13 +243,13 @@ func (s *Store) Adopt(shelleyConversationID string) (string, error) {
 // including the slug. Returns the new local ID. If the Shelley ID is already tracked locally,
 // returns the existing local ID and updates the slug if it was previously empty.
 func (s *Store) AdoptWithSlug(shelleyConversationID, slug string) (string, error) {
-	return s.AdoptWithMetadata(shelleyConversationID, slug, "", "", "")
+	return s.AdoptWithMetadata(shelleyConversationID, slug, "", "", "", "")
 }
 
 // AdoptWithMetadata creates a local conversation entry for an existing Shelley server conversation,
 // including metadata from the API. Returns the new local ID. If the Shelley ID is already tracked
 // locally, returns the existing local ID and updates metadata if previously empty.
-func (s *Store) AdoptWithMetadata(shelleyConversationID, slug, apiCreatedAt, apiUpdatedAt, model string) (string, error) {
+func (s *Store) AdoptWithMetadata(shelleyConversationID, slug, apiCreatedAt, apiUpdatedAt, model, cwd string) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -275,6 +275,10 @@ func (s *Store) AdoptWithMetadata(shelleyConversationID, slug, apiCreatedAt, api
 				cs.Model = model
 				updated = true
 			}
+			if cwd != "" && cs.Cwd == "" {
+				cs.Cwd = cwd
+				updated = true
+			}
 			if updated {
 				_ = s.saveLocked() // Best effort save
 			}
@@ -293,6 +297,7 @@ func (s *Store) AdoptWithMetadata(shelleyConversationID, slug, apiCreatedAt, api
 		ShelleyConversationID: shelleyConversationID,
 		Slug:                  slug,
 		Model:                 model,
+		Cwd:                   cwd,
 		Created:               true, // Already exists on server
 		CreatedAt:             time.Now(),
 		APICreatedAt:          apiCreatedAt,

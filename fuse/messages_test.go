@@ -648,7 +648,7 @@ func TestTimestamps_MessagesSubdirUsesConversationMetadata(t *testing.T) {
 	_ = store.MarkCreated(localID, convID, "test-slug")
 
 	// Set API timestamps
-	_, _ = store.AdoptWithMetadata(convID, "test-slug", "2024-03-01T10:00:00Z", "2024-03-05T15:00:00Z", "")
+	_, _ = store.AdoptWithMetadata(convID, "test-slug", "2024-03-01T10:00:00Z", "2024-03-05T15:00:00Z", "", "")
 
 	shelleyFS := NewFS(client, store, time.Hour)
 
