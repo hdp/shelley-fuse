@@ -230,6 +230,7 @@ func mountTestFSFull(t *testing.T, serverURL string, cloneTimeout time.Duration)
 
 	// Parse the DIAG= line from stderr.
 	diagURL := ""
+	diagURLReady := make(chan struct{})
 	stderrDone := make(chan struct{})
 	go func() {
 		defer close(stderrDone)
@@ -238,6 +239,7 @@ func mountTestFSFull(t *testing.T, serverURL string, cloneTimeout time.Duration)
 			line := scanner.Text()
 			if strings.HasPrefix(line, "DIAG=") {
 				diagURL = strings.TrimPrefix(line, "DIAG=")
+				close(diagURLReady) // Signal that diagURL is set
 			}
 			// Log all child stderr lines for debugging.
 			t.Logf("[shelley-fuse] %s", line)
@@ -275,12 +277,25 @@ func mountTestFSFull(t *testing.T, serverURL string, cloneTimeout time.Duration)
 		t.Fatalf("Timed out waiting for shelley-fuse to become ready")
 	}
 
+	// Wait for diagURL to be parsed from stderr (DIAG= line comes before READY,
+	// but there's a race between the goroutines processing them).
+	select {
+	case <-diagURLReady:
+		// diagURL is now set
+	case <-time.After(5 * time.Second):
+		t.Log("Warning: DIAG= line not received within 5s, proceeding without diag URL")
+	}
+
 	// Start a watchdog that fetches diagnostics if the test is about to
-	// hit the go-test timeout.
+	// hit the go-test timeout. Fire 5 seconds before deadline, or halfway
+	// through if deadline is less than 10 seconds away.
 	watchdogDone := make(chan struct{})
 	if dl, ok := t.Deadline(); ok {
-		margin := 30 * time.Second
 		untilDeadline := time.Until(dl)
+		margin := 5 * time.Second
+		if untilDeadline < 10*time.Second {
+			margin = untilDeadline / 2
+		}
 		if untilDeadline > margin {
 			go func() {
 				timer := time.NewTimer(untilDeadline - margin)
