@@ -147,7 +147,7 @@ fi
 # ---------------------------------------------------------------------------
 # 6. Archive conversation
 # ---------------------------------------------------------------------------
-if [[ -e "/shelley" ]]; then
+if ls /shelley/conversation/*/ctl >/dev/null 2>&1; then
     fgrep -l "$worktree_dir" /shelley/conversation/*/ctl | \
         head -1 | xargs dirname | while read conv; do
             touch "$conv/archived"
