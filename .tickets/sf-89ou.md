@@ -1,6 +1,6 @@
 ---
 id: sf-89ou
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-02-14T14:09:08Z
@@ -67,3 +67,15 @@ This is a **valid JSON object** that should be unpacked by `jsonfs.NewNodeFromJS
 - Verify `jsonfs.NewNodeFromJSON()` behavior with the actual data format
 - Determine if StringifyFields is actually needed, or if the issue is elsewhere
 
+### Follow-up (2025-02-14)
+
+The root cause: `jsonfs.objectNode` embeds `fs.Inode`, but when we wrap it with `m.NewInode(ctx, node, ...)`, the inner Inode is invalid causing method dispatch failures.
+
+Fix required: Make jsonfs nodes NOT embed `fs.Inode`. They should be plain data structures. Inode embedding only at the FUSE layer in `NewInode` calls.
+
+This is a straightforward refactor but touches multiple files in jsonfs.
+
+
+**2026-02-14T21:14:45Z**
+
+Root cause identified and fixed: jsonfs objectNode/arrayNode implemented NodeOpendirHandler, which causes go-fuse to skip its internal NodeReaddirer-based dispatch in OpenDir. The OpendirHandle methods returned nil FileHandle, so go-fuse's ReadDir path checked f.file.(FileReaddirenter), got nil, and returned an empty directory listing. Fix: OpendirHandle now calls Readdir() and returns the DirStream (which implements FileReaddirenter via dirArray) as the FileHandle. Added regression tests that exercise os.ReadDir on llm_data, llm_data/Content, and usage_data directories.

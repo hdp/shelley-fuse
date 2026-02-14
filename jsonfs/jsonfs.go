@@ -208,11 +208,21 @@ func (n *objectNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) 
 	return fs.NewListDirStream(entries), 0
 }
 
+// OpendirHandle returns a file handle that supports FileReaddirenter so
+// go-fuse can read directory entries. When OpendirHandle is implemented,
+// go-fuse skips the NodeReaddirer-based dispatch path in OpenDir, so we
+// must provide a handle that implements Readdirent ourselves. The DirStream
+// returned by NewListDirStream implements FileReaddirenter.
 func (n *objectNode) OpendirHandle(ctx context.Context, flags uint32) (fs.FileHandle, uint32, syscall.Errno) {
-	if n.config.cacheTimeout() > 0 {
-		return nil, fuse.FOPEN_CACHE_DIR, 0
+	stream, errno := n.Readdir(ctx)
+	if errno != 0 {
+		return nil, 0, errno
 	}
-	return nil, 0, 0
+	var fuseFlags uint32
+	if n.config.cacheTimeout() > 0 {
+		fuseFlags = fuse.FOPEN_CACHE_DIR
+	}
+	return stream, fuseFlags, 0
 }
 
 func (n *objectNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
@@ -259,11 +269,17 @@ func (n *arrayNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
 	return fs.NewListDirStream(entries), 0
 }
 
+// OpendirHandle returns a file handle for directory reading. See objectNode.OpendirHandle.
 func (n *arrayNode) OpendirHandle(ctx context.Context, flags uint32) (fs.FileHandle, uint32, syscall.Errno) {
-	if n.config.cacheTimeout() > 0 {
-		return nil, fuse.FOPEN_CACHE_DIR, 0
+	stream, errno := n.Readdir(ctx)
+	if errno != 0 {
+		return nil, 0, errno
 	}
-	return nil, 0, 0
+	var fuseFlags uint32
+	if n.config.cacheTimeout() > 0 {
+		fuseFlags = fuse.FOPEN_CACHE_DIR
+	}
+	return stream, fuseFlags, 0
 }
 
 func (n *arrayNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.AttrOut) syscall.Errno {

@@ -399,6 +399,19 @@ func TestMessageDirNodeFields(t *testing.T) {
 			t.Errorf("llm_data should be a directory")
 		}
 
+		// List llm_data directory entries via ReadDir (exercises Readdir, not just Lookup)
+		llmEntries, err := os.ReadDir(llmDataPath)
+		if err != nil {
+			t.Fatalf("Failed to ReadDir llm_data: %v", err)
+		}
+		llmNames := make(map[string]bool)
+		for _, e := range llmEntries {
+			llmNames[e.Name()] = true
+		}
+		if !llmNames["Content"] {
+			t.Errorf("llm_data ReadDir missing expected entry %q, got %v", "Content", llmNames)
+		}
+
 		// Navigate into llm_data/Content/0/Text
 		textPath := filepath.Join(llmDataPath, "Content", "0", "Text")
 		data, err := ioutil.ReadFile(textPath)
@@ -406,6 +419,17 @@ func TestMessageDirNodeFields(t *testing.T) {
 			t.Errorf("Failed to read llm_data/Content/0/Text: %v", err)
 		} else if strings.TrimSpace(string(data)) != "Hello from LLM" {
 			t.Errorf("Expected 'Hello from LLM', got %q", string(data))
+		}
+
+		// List llm_data/Content directory (exercises nested jsonfs array ReadDir)
+		contentEntries, err := os.ReadDir(filepath.Join(llmDataPath, "Content"))
+		if err != nil {
+			t.Fatalf("Failed to ReadDir llm_data/Content: %v", err)
+		}
+		if len(contentEntries) != 1 {
+			t.Errorf("llm_data/Content should have 1 entry, got %d", len(contentEntries))
+		} else if contentEntries[0].Name() != "0" {
+			t.Errorf("llm_data/Content[0] should be '0', got %q", contentEntries[0].Name())
 		}
 
 		// Verify usage_data is a directory
@@ -416,6 +440,19 @@ func TestMessageDirNodeFields(t *testing.T) {
 		}
 		if !info.IsDir() {
 			t.Errorf("usage_data should be a directory")
+		}
+
+		// List usage_data directory entries via ReadDir
+		usageEntries, err := os.ReadDir(usageDataPath)
+		if err != nil {
+			t.Fatalf("Failed to ReadDir usage_data: %v", err)
+		}
+		usageNames := make(map[string]bool)
+		for _, e := range usageEntries {
+			usageNames[e.Name()] = true
+		}
+		if !usageNames["input_tokens"] {
+			t.Errorf("usage_data ReadDir missing 'input_tokens', got %v", usageNames)
 		}
 
 		// Read usage_data/input_tokens
