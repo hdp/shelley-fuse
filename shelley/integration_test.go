@@ -2,6 +2,7 @@ package shelley
 
 import (
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -23,12 +24,21 @@ func TestIntegrationWithRealServer(t *testing.T) {
 	}
 	defer os.RemoveAll(tmpDir)
 
+	// Find a free port dynamically to avoid port conflicts when running
+	// tests with -test.count (ports may still be in TIME_WAIT state).
+	l, err := net.Listen("tcp", "localhost:0")
+	if err != nil {
+		t.Fatalf("Failed to find free port: %v", err)
+	}
+	port := l.Addr().(*net.TCPAddr).Port
+	l.Close()
+
 	// Start a Shelley server with predictable-only mode and clean environment
 	cmd := exec.Command("/usr/local/bin/shelley",
 		"-db", tmpDir+"/test.db",
 		"-predictable-only",
 		"serve",
-		"-port", "10999",
+		"-port", fmt.Sprintf("%d", port),
 		"-require-header", "X-Exedev-Userid")
 	// Clear environment variables that might interfere with testing
 	cmd.Env = append(os.Environ(), "FIREWORKS_API_KEY=", "ANTHROPIC_API_KEY=", "OPENAI_API_KEY=")
@@ -44,12 +54,13 @@ func TestIntegrationWithRealServer(t *testing.T) {
 	}()
 
 	// Wait for server to start
-	if err := waitForServer("http://localhost:10999", 10*time.Second); err != nil {
+	serverURL := fmt.Sprintf("http://localhost:%d", port)
+	if err := waitForServer(serverURL, 10*time.Second); err != nil {
 		t.Fatalf("Server failed to start: %v", err)
 	}
 
 	// Create client
-	client := NewClient("http://localhost:10999")
+	client := NewClient(serverURL)
 
 	// Test starting a conversation
 	result, err := client.StartConversation("Hello, predictable model!", "predictable", tmpDir)
