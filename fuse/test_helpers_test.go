@@ -1,14 +1,20 @@
 package fuse
 
 import (
+	"context"
+	"fmt"
 	"io/ioutil"
 	"net/http"
+	"net/http/httptest"
 	"os"
+	"os/exec"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
 
 	"github.com/hanwen/go-fuse/v2/fs"
+	"shelley-fuse/fuse/diag"
 	"shelley-fuse/mockserver"
 	"shelley-fuse/shelley"
 	"shelley-fuse/state"
@@ -92,4 +98,85 @@ func mockModelsServerWithDefault(t *testing.T, models []shelley.Model, defaultMo
 		opts = append(opts, mockserver.WithDefaultModel(defaultModel))
 	}
 	return mockserver.New(opts...)
+}
+
+// =============================================================================
+// Shell Test Helpers
+// =============================================================================
+
+// filterEnv returns a copy of env with the named variables removed.
+func filterEnv(env []string, names ...string) []string {
+	result := make([]string, 0, len(env))
+	for _, e := range env {
+		exclude := false
+		for _, name := range names {
+			if strings.HasPrefix(e, name+"=") {
+				exclude = true
+				break
+			}
+		}
+		if !exclude {
+			result = append(result, e)
+		}
+	}
+	return result
+}
+
+// runShellDiag executes a shell command like runShell, but accepts a
+// diagURL string. If the command times out (context deadline exceeded)
+// and diagURL is non-empty, the diag endpoint's output is fetched via
+// HTTP and included in the returned error message to help diagnose
+// stuck FUSE operations.
+func runShellDiag(t *testing.T, dir, command string, diagURL string) (string, string, error) {
+	t.Helper()
+	return runShellDiagTimeout(t, dir, command, diagURL, 1*time.Second)
+}
+
+// runShellDiagTimeout is the implementation of runShellDiag with a
+// configurable timeout, used for testing the timeout+dump path.
+func runShellDiagTimeout(t *testing.T, dir, command string, diagURL string, timeout time.Duration) (string, string, error) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	// Don't set cmd.Dir to the FUSE mount point.
+	// Under the hood, os.StartProcess tries to stat the directory before running the command, which means we can deadlock before getting to cmd.Run().
+	cmd := exec.CommandContext(ctx, "bash", "-c", fmt.Sprintf("if ! cd \"%s\"; then echo \"cd %s: $?\" 1>&2; exit 1; fi; %s", dir, dir, command))
+	// Clear BASH_ENV so that custom bash init scripts (e.g. a cd() wrapper)
+	// don't interfere with our shell commands.
+	cmd.Env = filterEnv(os.Environ(), "BASH_ENV")
+	var stdout, stderr strings.Builder
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	if err != nil && diagURL != "" && ctx.Err() == context.DeadlineExceeded {
+		dump, fetchErr := fetchDiag(diagURL)
+		if fetchErr != nil {
+			dump = fmt.Sprintf("(failed to fetch diag: %v)", fetchErr)
+		}
+		return stdout.String(), stderr.String(), fmt.Errorf("%w\n\ndiag dump:\n%s", err, dump)
+	}
+	return stdout.String(), stderr.String(), err
+}
+
+// runShellDiagOK executes a shell command and fails the test if it errors.
+// On timeout, the failure message includes the diag endpoint's in-flight
+// operation dump. Returns stdout.
+func runShellDiagOK(t *testing.T, dir, command string, diagURL string) string {
+	t.Helper()
+	stdout, stderr, err := runShellDiag(t, dir, command, diagURL)
+	if err != nil {
+		t.Fatalf("Command failed: %s\nstdout: %s\nstderr: %s\nerror: %v", command, stdout, stderr, err)
+	}
+	return stdout
+}
+
+// startDiagServer starts an httptest server serving a diag.Tracker and
+// returns the diag URL (e.g. "http://127.0.0.1:PORT/diag").
+func startDiagServer(t *testing.T, tracker *diag.Tracker) string {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.Handle("/diag", tracker.Handler())
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return fmt.Sprintf("%s/diag", srv.URL)
 }

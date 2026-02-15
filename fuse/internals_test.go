@@ -1,24 +1,1166 @@
 package fuse
 
+// Internal FUSE tests
+//
+// These tests verify behavior that cannot be tested via shell commands:
+// - Inode number stability
+// - Timestamp precision (nanoseconds)
+// - Direct node API behavior
+// - Internal hash functions
+
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io/ioutil"
 	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
 
 	"github.com/hanwen/go-fuse/v2/fs"
+	"github.com/hanwen/go-fuse/v2/fuse"
 	"shelley-fuse/mockserver"
 	"shelley-fuse/shelley"
 	"shelley-fuse/state"
 )
 
+// =============================================================================
+// Inode Stability Tests
+// =============================================================================
+
+// =============================================================================
+// Timestamp Precision Tests
+// =============================================================================
+
+func TestTimestamps_MessageDirUsesCreatedAt(t *testing.T) {
+	convID := "conv-msg-time"
+	messages := []shelley.Message{
+		{
+			MessageID:      "msg-1",
+			ConversationID: convID,
+			SequenceID:     1,
+			Type:           "user",
+			UserData:       strPtr("Hello"),
+			CreatedAt:      "2024-02-20T09:15:30Z",
+		},
+	}
+
+	server := mockserver.New(mockserver.WithConversation(convID, messages))
+	defer server.Close()
+
+	client := shelley.NewClient(server.URL)
+	store := testStore(t)
+
+	// Create and mark conversation as created
+	localID, _ := store.Clone()
+	_ = store.MarkCreated(localID, convID, "test-slug")
+
+	shelleyFS := NewFS(client, store, time.Hour)
+
+	tmpDir, err := ioutil.TempDir("", "shelley-fuse-msg-time-test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	opts := &fs.Options{}
+	entryTimeout := time.Duration(0)
+	attrTimeout := time.Duration(0)
+	negativeTimeout := time.Duration(0)
+	opts.EntryTimeout = &entryTimeout
+	opts.AttrTimeout = &attrTimeout
+	opts.NegativeTimeout = &negativeTimeout
+
+	fssrv, err := fs.Mount(tmpDir, shelleyFS, opts)
+	if err != nil {
+		t.Fatalf("Mount failed: %v", err)
+	}
+	defer fssrv.Unmount()
+
+	// Stat the message directory
+	msgDirPath := filepath.Join(tmpDir, "conversation", localID, "messages", "0-user")
+	var stat syscall.Stat_t
+	if err := syscall.Stat(msgDirPath, &stat); err != nil {
+		t.Fatalf("syscall.Stat failed: %v", err)
+	}
+
+	expectedTime, _ := time.Parse(time.RFC3339, "2024-02-20T09:15:30Z")
+	actualMtime := time.Unix(stat.Mtim.Sec, stat.Mtim.Nsec)
+	actualCtime := time.Unix(stat.Ctim.Sec, stat.Ctim.Nsec)
+
+	// Both ctime and mtime should be from message's created_at
+	if !actualMtime.Equal(expectedTime) {
+		t.Errorf("Message dir mtime = %v, want %v", actualMtime, expectedTime)
+	}
+	if !actualCtime.Equal(expectedTime) {
+		t.Errorf("Message dir ctime = %v, want %v", actualCtime, expectedTime)
+	}
+}
+
+func TestTimestamps_MessagesSubdirUsesConversationMetadata(t *testing.T) {
+	convID := "conv-msg-subdir"
+	messages := []shelley.Message{}
+
+	server := mockserver.New(mockserver.WithConversation(convID, messages))
+	defer server.Close()
+
+	client := shelley.NewClient(server.URL)
+	store := testStore(t)
+
+	// Create conversation with API metadata
+	localID, _ := store.Clone()
+	_ = store.MarkCreated(localID, convID, "test-slug")
+
+	// Set API timestamps
+	_, _ = store.AdoptWithMetadata(convID, "test-slug", "2024-03-01T10:00:00Z", "2024-03-05T15:00:00Z", "", "")
+
+	shelleyFS := NewFS(client, store, time.Hour)
+
+	tmpDir, err := ioutil.TempDir("", "shelley-fuse-msg-subdir-test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	opts := &fs.Options{}
+	entryTimeout := time.Duration(0)
+	attrTimeout := time.Duration(0)
+	negativeTimeout := time.Duration(0)
+	opts.EntryTimeout = &entryTimeout
+	opts.AttrTimeout = &attrTimeout
+	opts.NegativeTimeout = &negativeTimeout
+
+	fssrv, err := fs.Mount(tmpDir, shelleyFS, opts)
+	if err != nil {
+		t.Fatalf("Mount failed: %v", err)
+	}
+	defer fssrv.Unmount()
+
+	// Stat the messages/ directory
+	msgsDirPath := filepath.Join(tmpDir, "conversation", localID, "messages")
+	var stat syscall.Stat_t
+	if err := syscall.Stat(msgsDirPath, &stat); err != nil {
+		t.Fatalf("syscall.Stat failed: %v", err)
+	}
+
+	expectedCtime, _ := time.Parse(time.RFC3339, "2024-03-01T10:00:00Z")
+	expectedMtime, _ := time.Parse(time.RFC3339, "2024-03-05T15:00:00Z")
+
+	actualCtime := time.Unix(stat.Ctim.Sec, stat.Ctim.Nsec)
+	actualMtime := time.Unix(stat.Mtim.Sec, stat.Mtim.Nsec)
+
+	if !actualCtime.Equal(expectedCtime) {
+		t.Errorf("messages/ ctime = %v, want %v", actualCtime, expectedCtime)
+	}
+	if !actualMtime.Equal(expectedMtime) {
+		t.Errorf("messages/ mtime = %v, want %v", actualMtime, expectedMtime)
+	}
+}
+
+func TestTimestamps_MessageFilesUseMessageTime(t *testing.T) {
+	// Create messages with different timestamps
+	convID := "test-conv-msg-timestamps"
+	msg1Time := time.Date(2026, 1, 15, 10, 0, 0, 0, time.UTC)
+	msg2Time := time.Date(2026, 1, 15, 10, 5, 0, 0, time.UTC)  // 5 minutes later
+	msg3Time := time.Date(2026, 1, 15, 10, 10, 0, 0, time.UTC) // 10 minutes later
+
+	msgs := []shelley.Message{
+		{MessageID: "m1", ConversationID: convID, SequenceID: 1, Type: "user", UserData: strPtr("Hello"), CreatedAt: msg1Time.Format(time.RFC3339)},
+		{MessageID: "m2", ConversationID: convID, SequenceID: 2, Type: "shelley", LLMData: strPtr("Hi there!"), CreatedAt: msg2Time.Format(time.RFC3339)},
+		{MessageID: "m3", ConversationID: convID, SequenceID: 3, Type: "user", UserData: strPtr("Thanks"), CreatedAt: msg3Time.Format(time.RFC3339)},
+	}
+
+	server := mockserver.New(mockserver.WithConversation(convID, msgs))
+	defer server.Close()
+
+	client := shelley.NewClient(server.URL)
+	store := testStore(t)
+
+	localID, _ := store.Clone()
+	store.MarkCreated(localID, convID, "")
+
+	shelleyFS := NewFS(client, store, 0)
+
+	tmpDir, err := ioutil.TempDir("", "shelley-fuse-msg-timestamp-test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	opts := &fs.Options{}
+	entryTimeout := time.Duration(0)
+	attrTimeout := time.Duration(0)
+	negativeTimeout := time.Duration(0)
+	opts.EntryTimeout = &entryTimeout
+	opts.AttrTimeout = &attrTimeout
+	opts.NegativeTimeout = &negativeTimeout
+
+	fssrv, err := fs.Mount(tmpDir, shelleyFS, opts)
+	if err != nil {
+		t.Fatalf("Mount failed: %v", err)
+	}
+	defer fssrv.Unmount()
+
+	// Test message directories and their content.md files
+	testCases := []struct {
+		name         string
+		path         string // relative to messages/
+		expectedTime time.Time
+	}{
+		{"Message1_Dir", "0-user", msg1Time},
+		{"Message1_ContentMD", "0-user/content.md", msg1Time},
+		{"Message2_Dir", "1-agent", msg2Time},
+		{"Message2_ContentMD", "1-agent/content.md", msg2Time},
+		{"Message3_Dir", "2-user", msg3Time},
+		{"Message3_ContentMD", "2-user/content.md", msg3Time},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(tmpDir, "conversation", localID, "messages", tc.path)
+			info, err := os.Stat(path)
+			if err != nil {
+				t.Fatalf("Failed to stat %s: %v", tc.path, err)
+			}
+			mtime := info.ModTime()
+			diff := mtime.Sub(tc.expectedTime)
+			if diff < -time.Second || diff > time.Second {
+				t.Errorf("Path %s mtime %v differs from expected %v by %v", tc.path, mtime, tc.expectedTime, diff)
+			}
+		})
+	}
+
+	// Also verify that all.json/all.md still use conversation time (not message time)
+	t.Run("AllJsonUsesConvTime", func(t *testing.T) {
+		cs := store.Get(localID)
+		if cs == nil {
+			t.Fatal("Conversation not found")
+		}
+		convTime := cs.CreatedAt
+
+		info, err := os.Stat(filepath.Join(tmpDir, "conversation", localID, "messages", "all.json"))
+		if err != nil {
+			t.Fatalf("Failed to stat all.json: %v", err)
+		}
+		mtime := info.ModTime()
+		diff := mtime.Sub(convTime)
+		if diff < -time.Second || diff > time.Second {
+			t.Errorf("all.json mtime %v differs from convTime %v by %v", mtime, convTime, diff)
+		}
+		// Verify it's NOT using message time
+		if mtime.Equal(msg1Time) || mtime.Equal(msg2Time) || mtime.Equal(msg3Time) {
+			t.Errorf("all.json should use conversation time, not message time: mtime=%v", mtime)
+		}
+	})
+}
+
+func TestTimestamps_StaticNodesUseStartTime(t *testing.T) {
+	// Test that static nodes (models, new, root) use FS start time
+	server := mockModelsServer(t, []shelley.Model{{ID: "test-model", Ready: true}})
+	defer server.Close()
+
+	client := shelley.NewClient(server.URL)
+	store := testStore(t)
+	shelleyFS := NewFS(client, store, time.Hour)
+
+	// Get the start time from the FS
+	startTime := shelleyFS.StartTime()
+
+	// Create mount
+	tmpDir, err := ioutil.TempDir("", "shelley-fuse-timestamp-test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	opts := &fs.Options{}
+	entryTimeout := time.Duration(0)
+	attrTimeout := time.Duration(0)
+	negativeTimeout := time.Duration(0)
+	opts.EntryTimeout = &entryTimeout
+	opts.AttrTimeout = &attrTimeout
+	opts.NegativeTimeout = &negativeTimeout
+
+	fssrv, err := fs.Mount(tmpDir, shelleyFS, opts)
+	if err != nil {
+		t.Fatalf("Mount failed: %v", err)
+	}
+	defer fssrv.Unmount()
+
+	// Test root directory timestamp
+	t.Run("RootDirectory", func(t *testing.T) {
+		info, err := os.Stat(tmpDir)
+		if err != nil {
+			t.Fatalf("Failed to stat root: %v", err)
+		}
+		mtime := info.ModTime()
+		// Should be within 1 second of startTime
+		diff := mtime.Sub(startTime)
+		if diff < -time.Second || diff > time.Second {
+			t.Errorf("Root mtime %v differs from startTime %v by %v", mtime, startTime, diff)
+		}
+		// Should not be zero (1970)
+		if mtime.Unix() == 0 {
+			t.Error("Root mtime is zero (1970)")
+		}
+	})
+
+	// Test models directory timestamp
+	t.Run("ModelsDirectory", func(t *testing.T) {
+		info, err := os.Stat(filepath.Join(tmpDir, "model"))
+		if err != nil {
+			t.Fatalf("Failed to stat models: %v", err)
+		}
+		mtime := info.ModTime()
+		diff := mtime.Sub(startTime)
+		if diff < -time.Second || diff > time.Second {
+			t.Errorf("Models mtime %v differs from startTime %v by %v", mtime, startTime, diff)
+		}
+		if mtime.Unix() == 0 {
+			t.Error("Models mtime is zero (1970)")
+		}
+	})
+
+	// Test new symlink timestamp
+	t.Run("NewSymlink", func(t *testing.T) {
+		info, err := os.Lstat(filepath.Join(tmpDir, "new"))
+		if err != nil {
+			t.Fatalf("Failed to lstat new: %v", err)
+		}
+		if info.Mode()&os.ModeSymlink == 0 {
+			t.Fatal("/new should be a symlink")
+		}
+		mtime := info.ModTime()
+		diff := mtime.Sub(startTime)
+		if diff < -time.Second || diff > time.Second {
+			t.Errorf("New symlink mtime %v differs from startTime %v by %v", mtime, startTime, diff)
+		}
+		if mtime.Unix() == 0 {
+			t.Error("New symlink mtime is zero (1970)")
+		}
+	})
+
+	// Test model subdirectory timestamp
+	t.Run("ModelSubdirectory", func(t *testing.T) {
+		info, err := os.Stat(filepath.Join(tmpDir, "model", "test-model"))
+		if err != nil {
+			t.Fatalf("Failed to stat model: %v", err)
+		}
+		mtime := info.ModTime()
+		diff := mtime.Sub(startTime)
+		if diff < -time.Second || diff > time.Second {
+			t.Errorf("Model mtime %v differs from startTime %v by %v", mtime, startTime, diff)
+		}
+		if mtime.Unix() == 0 {
+			t.Error("Model mtime is zero (1970)")
+		}
+	})
+
+	// Test model file timestamp
+	t.Run("ModelFile", func(t *testing.T) {
+		info, err := os.Stat(filepath.Join(tmpDir, "model", "test-model", "id"))
+		if err != nil {
+			t.Fatalf("Failed to stat model/id: %v", err)
+		}
+		mtime := info.ModTime()
+		diff := mtime.Sub(startTime)
+		if diff < -time.Second || diff > time.Second {
+			t.Errorf("Model/id mtime %v differs from startTime %v by %v", mtime, startTime, diff)
+		}
+		if mtime.Unix() == 0 {
+			t.Error("Model/id mtime is zero (1970)")
+		}
+	})
+
+	// Test model clone file timestamp
+	t.Run("ModelCloneFile", func(t *testing.T) {
+		info, err := os.Stat(filepath.Join(tmpDir, "model", "test-model", "new", "clone"))
+		if err != nil {
+			t.Fatalf("Failed to stat model/test-model/new/clone: %v", err)
+		}
+		mtime := info.ModTime()
+		diff := mtime.Sub(startTime)
+		if diff < -time.Second || diff > time.Second {
+			t.Errorf("ModelClone mtime %v differs from startTime %v by %v", mtime, startTime, diff)
+		}
+		if mtime.Unix() == 0 {
+			t.Error("ModelClone mtime is zero (1970)")
+		}
+	})
+
+	// Test conversation list directory timestamp
+	t.Run("ConversationListDirectory", func(t *testing.T) {
+		info, err := os.Stat(filepath.Join(tmpDir, "conversation"))
+		if err != nil {
+			t.Fatalf("Failed to stat conversation: %v", err)
+		}
+		mtime := info.ModTime()
+		diff := mtime.Sub(startTime)
+		if diff < -time.Second || diff > time.Second {
+			t.Errorf("Conversation mtime %v differs from startTime %v by %v", mtime, startTime, diff)
+		}
+		if mtime.Unix() == 0 {
+			t.Error("Conversation mtime is zero (1970)")
+		}
+	})
+}
+
+func TestTimestamps_DoNotConstantlyUpdate(t *testing.T) {
+	// Test that timestamps don't constantly update to "now"
+	server := mockModelsServer(t, []shelley.Model{{ID: "test-model", Ready: true}})
+	defer server.Close()
+
+	client := shelley.NewClient(server.URL)
+	store := testStore(t)
+	shelleyFS := NewFS(client, store, time.Hour)
+
+	// Create mount
+	tmpDir, err := ioutil.TempDir("", "shelley-fuse-stable-timestamp-test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	opts := &fs.Options{}
+	entryTimeout := time.Duration(0)
+	attrTimeout := time.Duration(0)
+	negativeTimeout := time.Duration(0)
+	opts.EntryTimeout = &entryTimeout
+	opts.AttrTimeout = &attrTimeout
+	opts.NegativeTimeout = &negativeTimeout
+
+	fssrv, err := fs.Mount(tmpDir, shelleyFS, opts)
+	if err != nil {
+		t.Fatalf("Mount failed: %v", err)
+	}
+	defer fssrv.Unmount()
+
+	// Stat the models directory twice with a delay
+	info1, err := os.Stat(filepath.Join(tmpDir, "model"))
+	if err != nil {
+		t.Fatalf("Failed to stat models (1): %v", err)
+	}
+	mtime1 := info1.ModTime()
+
+	// Wait a bit
+	time.Sleep(50 * time.Millisecond)
+
+	info2, err := os.Stat(filepath.Join(tmpDir, "model"))
+	if err != nil {
+		t.Fatalf("Failed to stat models (2): %v", err)
+	}
+	mtime2 := info2.ModTime()
+
+	// Timestamps should be identical (not updating to "now")
+	if !mtime1.Equal(mtime2) {
+		t.Errorf("Models timestamp changed between stats: %v -> %v", mtime1, mtime2)
+	}
+}
+
+func TestTimestamps_NeverZero(t *testing.T) {
+	// Test that no timestamps are ever zero (1970)
+	server := mockModelsServer(t, []shelley.Model{{ID: "test-model", Ready: true}})
+	defer server.Close()
+
+	client := shelley.NewClient(server.URL)
+	store := testStore(t)
+	shelleyFS := NewFS(client, store, time.Hour)
+
+	// Clone a conversation
+	convID, err := store.Clone()
+	if err != nil {
+		t.Fatalf("Failed to clone: %v", err)
+	}
+
+	// Create mount
+	tmpDir, err := ioutil.TempDir("", "shelley-fuse-nonzero-timestamp-test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	opts := &fs.Options{}
+	entryTimeout := time.Duration(0)
+	attrTimeout := time.Duration(0)
+	negativeTimeout := time.Duration(0)
+	opts.EntryTimeout = &entryTimeout
+	opts.AttrTimeout = &attrTimeout
+	opts.NegativeTimeout = &negativeTimeout
+
+	fssrv, err := fs.Mount(tmpDir, shelleyFS, opts)
+	if err != nil {
+		t.Fatalf("Mount failed: %v", err)
+	}
+	defer fssrv.Unmount()
+
+	// Check various paths - none should have zero timestamp
+	// Note: "created" is not checked because it uses presence/absence semantics
+	// and only exists when conversation is created on backend
+	// Paths checked via os.Stat (follows symlinks)
+	statPaths := []string{
+		tmpDir,                         // root
+		filepath.Join(tmpDir, "model"), // models dir
+		filepath.Join(tmpDir, "model", "test-model"),                 // model dir
+		filepath.Join(tmpDir, "model", "test-model", "id"),           // model file
+		filepath.Join(tmpDir, "model", "test-model", "new", "clone"), // model clone file
+		filepath.Join(tmpDir, "conversation"),                        // conversation list
+		filepath.Join(tmpDir, "conversation", convID),                // conversation dir
+		filepath.Join(tmpDir, "conversation", convID, "ctl"),
+		filepath.Join(tmpDir, "conversation", convID, "send"),
+		filepath.Join(tmpDir, "conversation", convID, "fuse_id"),
+		// "created" not checked - uses presence/absence semantics
+		filepath.Join(tmpDir, "conversation", convID, "messages"),
+		filepath.Join(tmpDir, "conversation", convID, "messages", "last"),
+		filepath.Join(tmpDir, "conversation", convID, "messages", "since"),
+	}
+
+	for _, path := range statPaths {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Errorf("Failed to stat %s: %v", path, err)
+			continue
+		}
+		mtime := info.ModTime()
+		if mtime.Unix() == 0 {
+			t.Errorf("Path %s has zero mtime (1970)", path)
+		}
+		// Also check it's a reasonable recent time (within last hour)
+		if time.Since(mtime) > time.Hour {
+			t.Errorf("Path %s has mtime %v which is more than 1 hour ago", path, mtime)
+		}
+	}
+
+	// /new is a symlink — check via Lstat
+	info, err := os.Lstat(filepath.Join(tmpDir, "new"))
+	if err != nil {
+		t.Errorf("Failed to lstat /new: %v", err)
+	} else {
+		mtime := info.ModTime()
+		if mtime.Unix() == 0 {
+			t.Errorf("/new symlink has zero mtime (1970)")
+		}
+		if time.Since(mtime) > time.Hour {
+			t.Errorf("/new symlink has mtime %v which is more than 1 hour ago", mtime)
+		}
+	}
+}
+
+// =============================================================================
+// Direct Node API Tests
+// =============================================================================
+
+func TestReadmeNode_Read(t *testing.T) {
+	node := &ReadmeNode{}
+	dest := make([]byte, 8192)
+	result, errno := node.Read(context.Background(), nil, dest, 0)
+	if errno != 0 {
+		t.Fatalf("Read failed with errno %d", errno)
+	}
+	data, _ := result.Bytes(nil)
+	if string(data) != readmeContent {
+		t.Errorf("README content mismatch: got %d bytes, expected %d bytes", len(data), len(readmeContent))
+	}
+}
+
+func TestReadmeNode_ReadOffset(t *testing.T) {
+	node := &ReadmeNode{}
+
+	// Read from offset 10
+	dest := make([]byte, 20)
+	result, errno := node.Read(context.Background(), nil, dest, 10)
+	if errno != 0 {
+		t.Fatalf("Read failed with errno %d", errno)
+	}
+	data, _ := result.Bytes(nil)
+	expected := readmeContent[10:30]
+	if string(data) != expected {
+		t.Errorf("expected %q, got %q", expected, string(data))
+	}
+
+	// Read from offset beyond content
+	result, errno = node.Read(context.Background(), nil, dest, int64(len(readmeContent)+100))
+	if errno != 0 {
+		t.Fatalf("Read failed with errno %d", errno)
+	}
+	data, _ = result.Bytes(nil)
+	if len(data) != 0 {
+		t.Errorf("expected empty result for offset beyond content, got %q", string(data))
+	}
+}
+
+func TestReadmeNode_Getattr(t *testing.T) {
+	node := &ReadmeNode{}
+	var out fuse.AttrOut
+	errno := node.Getattr(context.Background(), nil, &out)
+	if errno != 0 {
+		t.Fatalf("Getattr failed with errno %d", errno)
+	}
+
+	// Check mode is read-only (0444)
+	expectedMode := uint32(fuse.S_IFREG | 0444)
+	if out.Mode != expectedMode {
+		t.Errorf("expected mode %o, got %o", expectedMode, out.Mode)
+	}
+
+	// Check size matches readmeContent
+	if out.Size != uint64(len(readmeContent)) {
+		t.Errorf("expected size %d, got %d", len(readmeContent), out.Size)
+	}
+}
+
+func TestModelsDirNode_Readdir(t *testing.T) {
+	models := []shelley.Model{
+		{ID: "model-a", Ready: true},
+		{ID: "model-b", Ready: false},
+		{ID: "model-c", Ready: true},
+	}
+	server := mockModelsServer(t, models)
+	defer server.Close()
+
+	client := shelley.NewClient(server.URL)
+	node := &ModelsDirNode{client: client}
+
+	stream, errno := node.Readdir(context.Background())
+	if errno != 0 {
+		t.Fatalf("Readdir failed with errno %d", errno)
+	}
+
+	var names []string
+	for stream.HasNext() {
+		entry, _ := stream.Next()
+		names = append(names, entry.Name)
+		if entry.Mode != fuse.S_IFDIR {
+			t.Errorf("expected directory mode for %q", entry.Name)
+		}
+	}
+
+	sort.Strings(names)
+	expected := []string{"model-a", "model-b", "model-c"}
+	sort.Strings(expected)
+
+	if len(names) != len(expected) {
+		t.Fatalf("expected %d entries, got %d: %v", len(expected), len(names), names)
+	}
+	for i, name := range names {
+		if name != expected[i] {
+			t.Errorf("entry %d: expected %q, got %q", i, expected[i], name)
+		}
+	}
+}
+
+func TestModelNode_Readdir(t *testing.T) {
+	model := shelley.Model{ID: "test-model", Ready: true}
+	node := &ModelNode{model: model}
+
+	stream, errno := node.Readdir(context.Background())
+	if errno != 0 {
+		t.Fatalf("Readdir failed with errno %d", errno)
+	}
+
+	var entries []fuse.DirEntry
+	for stream.HasNext() {
+		entry, _ := stream.Next()
+		entries = append(entries, entry)
+	}
+
+	if len(entries) != 3 {
+		t.Fatalf("expected 3 entries (id, new, ready), got %d", len(entries))
+	}
+
+	expectedModes := map[string]uint32{"id": fuse.S_IFREG, "new": fuse.S_IFDIR, "ready": fuse.S_IFREG}
+	found := map[string]bool{}
+	for _, e := range entries {
+		expMode, ok := expectedModes[e.Name]
+		if !ok {
+			t.Errorf("unexpected entry %q", e.Name)
+			continue
+		}
+		found[e.Name] = true
+		if e.Mode != expMode {
+			t.Errorf("entry %q: expected mode %d, got %d", e.Name, expMode, e.Mode)
+		}
+	}
+	for name := range expectedModes {
+		if !found[name] {
+			t.Errorf("expected entry %q not found", name)
+		}
+	}
+}
+
+func TestModelFieldNode_Read(t *testing.T) {
+	tests := []struct {
+		name     string
+		value    string
+		expected string
+	}{
+		{"id field", "my-model", "my-model\n"},
+		{"ready true", "true", "true\n"},
+		{"ready false", "false", "false\n"},
+		{"empty value", "", "\n"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			node := &ModelFieldNode{value: tc.value}
+			dest := make([]byte, 1024)
+			result, errno := node.Read(context.Background(), nil, dest, 0)
+			if errno != 0 {
+				t.Fatalf("Read failed with errno %d", errno)
+			}
+			data, _ := result.Bytes(nil)
+			if string(data) != tc.expected {
+				t.Errorf("expected %q, got %q", tc.expected, string(data))
+			}
+		})
+	}
+}
+
+func TestModelFieldNode_ReadOffset(t *testing.T) {
+	node := &ModelFieldNode{value: "hello"}
+
+	// Read from offset 2
+	dest := make([]byte, 1024)
+	result, errno := node.Read(context.Background(), nil, dest, 2)
+	if errno != 0 {
+		t.Fatalf("Read failed with errno %d", errno)
+	}
+	data, _ := result.Bytes(nil)
+	if string(data) != "llo\n" {
+		t.Errorf("expected %q, got %q", "llo\n", string(data))
+	}
+
+	// Read from offset beyond content
+	result, errno = node.Read(context.Background(), nil, dest, 100)
+	if errno != 0 {
+		t.Fatalf("Read failed with errno %d", errno)
+	}
+	data, _ = result.Bytes(nil)
+	if len(data) != 0 {
+		t.Errorf("expected empty result for offset beyond content, got %q", string(data))
+	}
+}
+
+func TestModelNewDirNode_Readdir(t *testing.T) {
+	model := shelley.Model{ID: "test-model", Ready: true}
+	node := &ModelNewDirNode{model: model}
+
+	stream, errno := node.Readdir(context.Background())
+	if errno != 0 {
+		t.Fatalf("Readdir failed with errno %d", errno)
+	}
+
+	var entries []fuse.DirEntry
+	for stream.HasNext() {
+		entry, _ := stream.Next()
+		entries = append(entries, entry)
+	}
+
+	if len(entries) != 2 {
+		t.Fatalf("expected 2 entries (clone, start), got %d", len(entries))
+	}
+	expected := map[string]bool{"clone": false, "start": false}
+	for _, e := range entries {
+		if _, ok := expected[e.Name]; !ok {
+			t.Errorf("unexpected entry %q", e.Name)
+		} else {
+			expected[e.Name] = true
+		}
+		if e.Mode != fuse.S_IFREG {
+			t.Errorf("expected file mode for %q", e.Name)
+		}
+	}
+	for name, found := range expected {
+		if !found {
+			t.Errorf("missing expected entry %q", name)
+		}
+	}
+}
+
+func TestModelsDirNode_EmptyModels(t *testing.T) {
+	// Server returns empty model list
+	server := mockModelsServer(t, []shelley.Model{})
+	defer server.Close()
+
+	client := shelley.NewClient(server.URL)
+	node := &ModelsDirNode{client: client}
+
+	stream, errno := node.Readdir(context.Background())
+	if errno != 0 {
+		t.Fatalf("Readdir failed with errno %d", errno)
+	}
+
+	count := 0
+	for stream.HasNext() {
+		stream.Next()
+		count++
+	}
+
+	if count != 0 {
+		t.Errorf("expected 0 entries for empty model list, got %d", count)
+	}
+}
+
+func TestModelsDirNode_DefaultSymlink_Readdir(t *testing.T) {
+	// When a default model is set, it should appear as a symlink in the directory listing
+	models := []shelley.Model{
+		{ID: "model-a", Ready: true},
+		{ID: "model-b", Ready: false},
+	}
+	server := mockModelsServerWithDefault(t, models, "model-a")
+	defer server.Close()
+
+	client := shelley.NewClient(server.URL)
+	node := &ModelsDirNode{client: client}
+
+	stream, errno := node.Readdir(context.Background())
+	if errno != 0 {
+		t.Fatalf("Readdir failed with errno %d", errno)
+	}
+
+	var dirs, symlinks []string
+	for stream.HasNext() {
+		entry, _ := stream.Next()
+		if entry.Mode&syscall.S_IFLNK != 0 {
+			symlinks = append(symlinks, entry.Name)
+		} else if entry.Mode == fuse.S_IFDIR {
+			dirs = append(dirs, entry.Name)
+		}
+	}
+
+	// Should have 2 directories (model-a, model-b) and 1 symlink (default)
+	if len(dirs) != 2 {
+		t.Errorf("expected 2 directories, got %d: %v", len(dirs), dirs)
+	}
+	if len(symlinks) != 1 {
+		t.Fatalf("expected 1 symlink, got %d: %v", len(symlinks), symlinks)
+	}
+	if symlinks[0] != "default" {
+		t.Errorf("expected symlink named 'default', got %q", symlinks[0])
+	}
+}
+
+func TestModelsDirNode_DefaultSymlink_NoDefault_Readdir(t *testing.T) {
+	// When no default model is set, the symlink should NOT appear in the listing
+	models := []shelley.Model{
+		{ID: "model-a", Ready: true},
+		{ID: "model-b", Ready: false},
+	}
+	server := mockModelsServerWithDefault(t, models, "") // No default
+	defer server.Close()
+
+	client := shelley.NewClient(server.URL)
+	node := &ModelsDirNode{client: client}
+
+	stream, errno := node.Readdir(context.Background())
+	if errno != 0 {
+		t.Fatalf("Readdir failed with errno %d", errno)
+	}
+
+	var names []string
+	hasSymlink := false
+	for stream.HasNext() {
+		entry, _ := stream.Next()
+		names = append(names, entry.Name)
+		if entry.Mode&syscall.S_IFLNK != 0 {
+			hasSymlink = true
+		}
+	}
+
+	// Should have only directories, no symlink
+	if hasSymlink {
+		t.Error("unexpected symlink in directory listing when no default model is set")
+	}
+	if len(names) != 2 {
+		t.Errorf("expected 2 entries (models only), got %d: %v", len(names), names)
+	}
+}
+
+func TestModelStartNode_Read(t *testing.T) {
+	node := &ModelStartNode{model: shelley.Model{ID: "test-model"}, startTime: time.Now()}
+
+	result, errno := node.Read(context.Background(), nil, make([]byte, 4096), 0)
+	if errno != 0 {
+		t.Fatalf("Read failed with errno %d", errno)
+	}
+	data, _ := result.Bytes(make([]byte, 4096))
+	script := string(data)
+
+	if !strings.HasPrefix(script, "#!/bin/sh") {
+		t.Error("model start script should begin with #!/bin/sh shebang")
+	}
+	// The model version uses the sibling clone file
+	if !strings.Contains(script, "$DIR/clone") {
+		t.Error("model start script should reference $DIR/clone")
+	}
+	if !strings.Contains(script, "/ctl") {
+		t.Error("model start script should write to ctl")
+	}
+	if !strings.Contains(script, "/send") {
+		t.Error("model start script should write to send")
+	}
+}
+
+func TestModelStartNode_Getattr(t *testing.T) {
+	node := &ModelStartNode{model: shelley.Model{ID: "test-model"}, startTime: time.Now()}
+	var out fuse.AttrOut
+	errno := node.Getattr(context.Background(), nil, &out)
+	if errno != 0 {
+		t.Fatalf("Getattr failed with errno %d", errno)
+	}
+	if out.Mode&0111 == 0 {
+		t.Error("model start script should be executable")
+	}
+	if out.Size == 0 {
+		t.Error("model start script should have non-zero size")
+	}
+}
+
+func TestMessagesDirNodeReaddirWithToolCalls(t *testing.T) {
+	// Create mock server that returns conversation with tool calls
+	convID := "test-conv-with-tools"
+	msgs := []shelley.Message{
+		{MessageID: "m1", ConversationID: convID, SequenceID: 1, Type: "user", UserData: strPtr("Hello")},
+		{MessageID: "m2", ConversationID: convID, SequenceID: 2, Type: "shelley", LLMData: strPtr(`{"Content": [{"Type": 5, "ID": "tu_123", "ToolName": "bash"}]}`)},
+		{MessageID: "m3", ConversationID: convID, SequenceID: 3, Type: "user", UserData: strPtr(`{"Content": [{"Type": 6, "ToolUseID": "tu_123"}]}`)},
+		{MessageID: "m4", ConversationID: convID, SequenceID: 4, Type: "shelley", LLMData: strPtr("Done!")},
+	}
+
+	server := mockserver.New(mockserver.WithConversation(convID, msgs))
+	defer server.Close()
+
+	client := shelley.NewClient(server.URL)
+	store := testStore(t)
+
+	// Create and mark conversation as created
+	localID, _ := store.Clone()
+	store.MarkCreated(localID, convID, "")
+
+	node := &MessagesDirNode{
+		localID:   localID,
+		client:    client,
+		state:     store,
+		startTime: time.Now(),
+	}
+
+	stream, errno := node.Readdir(context.Background())
+	if errno != 0 {
+		t.Fatalf("Readdir failed with errno %d", errno)
+	}
+
+	// Collect all entries
+	var names []string
+	for stream.HasNext() {
+		entry, _ := stream.Next()
+		names = append(names, entry.Name)
+	}
+
+	// Expected entries:
+	// - Static: all.json, all.md, count, last, since
+	// - Message directories: 0-user, 1-bash-tool, 2-bash-result, 3-agent (0-indexed)
+	expected := []string{
+		"all.json", "all.md", "count", "last", "since",
+		"0-user",
+		"1-bash-tool",
+		"2-bash-result",
+		"3-agent",
+	}
+
+	namesSet := make(map[string]bool)
+	for _, name := range names {
+		namesSet[name] = true
+	}
+
+	for _, exp := range expected {
+		if !namesSet[exp] {
+			t.Errorf("Expected file %q not found in Readdir results: %v", exp, names)
+		}
+	}
+
+	// Verify total count
+	if len(names) != len(expected) {
+		t.Errorf("Expected %d entries, got %d: %v", len(expected), len(names), names)
+	}
+}
+
+// TestMessageFieldStableInodes verifies that message field nodes use stable,
+// deterministic inode numbers derived from (conversationID, sequenceID, fieldName).
+// This allows the kernel to recognize the same logical file across lookups.
+func TestMessageFieldStableInodes(t *testing.T) {
+	convID := "test-conv-stable-ino"
+	msgs := []shelley.Message{
+		{
+			MessageID:      "msg-uuid-001",
+			ConversationID: convID,
+			SequenceID:     1,
+			Type:           "user",
+			UserData:       strPtr("Hello"),
+			CreatedAt:      "2026-01-15T10:00:00Z",
+		},
+		{
+			MessageID:      "msg-uuid-002",
+			ConversationID: convID,
+			SequenceID:     2,
+			Type:           "shelley",
+			LLMData:        strPtr(`{"Content":[{"Type":2,"Text":"Hi"}]}`),
+			CreatedAt:      "2026-01-15T10:01:00Z",
+		},
+	}
+
+	server := mockserver.New(mockserver.WithConversation(convID, msgs))
+	defer server.Close()
+
+	client := shelley.NewClient(server.URL)
+	store := testStore(t)
+	localID, _ := store.Clone()
+	store.MarkCreated(localID, convID, "")
+
+	shelleyFS := NewFS(client, store, time.Hour)
+	tmpDir, err := ioutil.TempDir("", "shelley-fuse-stable-ino-test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	opts := &fs.Options{}
+	entryTimeout := time.Duration(0)
+	attrTimeout := time.Duration(0)
+	negativeTimeout := time.Duration(0)
+	opts.EntryTimeout = &entryTimeout
+	opts.AttrTimeout = &attrTimeout
+	opts.NegativeTimeout = &negativeTimeout
+
+	fssrv, err := fs.Mount(tmpDir, shelleyFS, opts)
+	if err != nil {
+		t.Fatalf("Mount failed: %v", err)
+	}
+	defer fssrv.Unmount()
+
+	msgDir := filepath.Join(tmpDir, "conversation", localID, "messages")
+
+	// Stat each field file twice and verify the inode is stable across lookups.
+	userDir := filepath.Join(msgDir, "0-user")
+	agentDir := filepath.Join(msgDir, "1-agent")
+
+	fields := []string{"message_id", "conversation_id", "sequence_id", "type", "created_at", "content.md"}
+
+	// Collect inodes from first stat pass
+	userInodes := make(map[string]uint64)
+	agentInodes := make(map[string]uint64)
+
+	for _, field := range fields {
+		info, err := os.Stat(filepath.Join(userDir, field))
+		if err != nil {
+			t.Fatalf("Stat %s/0-user/%s: %v", localID, field, err)
+		}
+		userInodes[field] = statIno(info)
+
+		info, err = os.Stat(filepath.Join(agentDir, field))
+		if err != nil {
+			t.Fatalf("Stat %s/1-agent/%s: %v", localID, field, err)
+		}
+		agentInodes[field] = statIno(info)
+	}
+
+	// Also check llm_data directory inode for agent
+	info, err := os.Stat(filepath.Join(agentDir, "llm_data"))
+	if err != nil {
+		t.Fatalf("Stat llm_data: %v", err)
+	}
+	agentLLMIno := statIno(info)
+
+	// Verify all inode numbers are non-zero (stable, not auto-assigned 0)
+	for field, ino := range userInodes {
+		if ino == 0 {
+			t.Errorf("user/%s inode should be non-zero", field)
+		}
+	}
+	for field, ino := range agentInodes {
+		if ino == 0 {
+			t.Errorf("agent/%s inode should be non-zero", field)
+		}
+	}
+	if agentLLMIno == 0 {
+		t.Errorf("agent/llm_data inode should be non-zero")
+	}
+
+	// Verify same field in different messages gets different inodes
+	for _, field := range fields {
+		if userInodes[field] == agentInodes[field] {
+			t.Errorf("%s: user and agent inodes should differ, both are %d", field, userInodes[field])
+		}
+	}
+
+	// Verify different fields within the same message get different inodes
+	seenUser := make(map[uint64]string)
+	for field, ino := range userInodes {
+		if prev, ok := seenUser[ino]; ok {
+			t.Errorf("inode collision in user message: %s and %s both have ino %d", prev, field, ino)
+		}
+		seenUser[ino] = field
+	}
+
+	// Verify message directory itself has a stable inode
+	userDirInfo, err := os.Stat(userDir)
+	if err != nil {
+		t.Fatalf("Stat user dir: %v", err)
+	}
+	userDirIno := statIno(userDirInfo)
+	if userDirIno == 0 {
+		t.Errorf("user message dir inode should be non-zero")
+	}
+
+	agentDirInfo, err := os.Stat(agentDir)
+	if err != nil {
+		t.Fatalf("Stat agent dir: %v", err)
+	}
+	agentDirIno := statIno(agentDirInfo)
+	if agentDirIno == 0 {
+		t.Errorf("agent message dir inode should be non-zero")
+	}
+	if userDirIno == agentDirIno {
+		t.Errorf("user and agent message dir inodes should differ")
+	}
+}
+
+// =============================================================================
+// Internal Function Tests
+// =============================================================================
+
+func TestMsgFieldIno(t *testing.T) {
+	// Same inputs produce same output (deterministic)
+	ino1 := msgFieldIno("conv-abc", 1, "message_id")
+	ino2 := msgFieldIno("conv-abc", 1, "message_id")
+	if ino1 != ino2 {
+		t.Errorf("same inputs should produce same inode: %d != %d", ino1, ino2)
+	}
+	if ino1 == 0 {
+		t.Error("inode should be non-zero")
+	}
+
+	// Different field names produce different inodes
+	ino3 := msgFieldIno("conv-abc", 1, "type")
+	if ino1 == ino3 {
+		t.Errorf("different fields should produce different inodes: both %d", ino1)
+	}
+
+	// Different sequence IDs produce different inodes
+	ino4 := msgFieldIno("conv-abc", 2, "message_id")
+	if ino1 == ino4 {
+		t.Errorf("different seqIDs should produce different inodes: both %d", ino1)
+	}
+
+	// Different conversation IDs produce different inodes
+	ino5 := msgFieldIno("conv-xyz", 1, "message_id")
+	if ino1 == ino5 {
+		t.Errorf("different convIDs should produce different inodes: both %d", ino1)
+	}
+}
 func TestConversationListNode_ReaddirLocalOnly(t *testing.T) {
 	// Server returns the conversations we've created locally
 	server := mockConversationsServer(t, []shelley.Conversation{
@@ -2661,5 +3803,475 @@ func TestLastDir_SymlinkResolvesToConversation(t *testing.T) {
 	}
 	if strings.TrimSpace(string(data)) != localID {
 		t.Errorf("fuse_id = %q, want %q", strings.TrimSpace(string(data)), localID)
+	}
+}
+func TestTimestamps_NestedQueryDirsUseConversationTime(t *testing.T) {
+	// Test that nested query directories (since/user/) use conversation time
+	server := mockConversationsServer(t, []shelley.Conversation{})
+	defer server.Close()
+
+	client := shelley.NewClient(server.URL)
+	store := testStore(t)
+	shelleyFS := NewFS(client, store, time.Hour)
+
+	// Wait a bit so we can distinguish times
+	time.Sleep(50 * time.Millisecond)
+
+	// Clone a conversation
+	convID, err := store.Clone()
+	if err != nil {
+		t.Fatalf("Failed to clone: %v", err)
+	}
+
+	cs := store.Get(convID)
+	convTime := cs.CreatedAt
+
+	// Create mount
+	tmpDir, err := ioutil.TempDir("", "shelley-fuse-nested-query-timestamp-test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	opts := &fs.Options{}
+	entryTimeout := time.Duration(0)
+	attrTimeout := time.Duration(0)
+	negativeTimeout := time.Duration(0)
+	opts.EntryTimeout = &entryTimeout
+	opts.AttrTimeout = &attrTimeout
+	opts.NegativeTimeout = &negativeTimeout
+
+	fssrv, err := fs.Mount(tmpDir, shelleyFS, opts)
+	if err != nil {
+		t.Fatalf("Mount failed: %v", err)
+	}
+	defer fssrv.Unmount()
+
+	// Test since/user directory (nested QueryDirNode)
+	t.Run("SinceUserDirectory", func(t *testing.T) {
+		info, err := os.Stat(filepath.Join(tmpDir, "conversation", convID, "messages", "since", "user"))
+		if err != nil {
+			t.Fatalf("Failed to stat since/user: %v", err)
+		}
+		mtime := info.ModTime()
+		diff := mtime.Sub(convTime)
+		if diff < -time.Second || diff > time.Second {
+			t.Errorf("since/user mtime %v differs from convTime %v by %v", mtime, convTime, diff)
+		}
+	})
+
+}
+
+func TestQueryResultDirNode_LastN(t *testing.T) {
+	convID := "test-conv-last-n"
+	msgs := []shelley.Message{
+		{MessageID: "m1", ConversationID: convID, SequenceID: 1, Type: "user", UserData: strPtr("Hello")},
+		{MessageID: "m2", ConversationID: convID, SequenceID: 2, Type: "shelley", LLMData: strPtr("Hi there!")},
+		{MessageID: "m3", ConversationID: convID, SequenceID: 3, Type: "user", UserData: strPtr("How are you?")},
+		{MessageID: "m4", ConversationID: convID, SequenceID: 4, Type: "shelley", LLMData: strPtr("I'm great!")},
+	}
+
+	server := mockserver.New(mockserver.WithConversation(convID, msgs))
+	defer server.Close()
+
+	client := shelley.NewClient(server.URL)
+	store := testStore(t)
+
+	localID, _ := store.Clone()
+	store.MarkCreated(localID, convID, "")
+
+	shelleyFS := NewFS(client, store, time.Hour)
+
+	tmpDir, err := ioutil.TempDir("", "shelley-fuse-last-n-test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	opts := &fs.Options{}
+	entryTimeout := time.Duration(0)
+	attrTimeout := time.Duration(0)
+	negativeTimeout := time.Duration(0)
+	opts.EntryTimeout = &entryTimeout
+	opts.AttrTimeout = &attrTimeout
+	opts.NegativeTimeout = &negativeTimeout
+
+	fssrv, err := fs.Mount(tmpDir, shelleyFS, opts)
+	if err != nil {
+		t.Fatalf("Mount failed: %v", err)
+	}
+	defer fssrv.Unmount()
+
+	// Test last/2 - should contain symlinks to the last 2 messages
+	last2Dir := filepath.Join(tmpDir, "conversation", localID, "messages", "last", "2")
+	info, err := os.Stat(last2Dir)
+	if err != nil {
+		t.Fatalf("Failed to stat last/2: %v", err)
+	}
+	if !info.IsDir() {
+		t.Fatalf("last/2 should be a directory")
+	}
+
+	entries, err := ioutil.ReadDir(last2Dir)
+	if err != nil {
+		t.Fatalf("Failed to read last/2: %v", err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("Expected 2 entries in last/2, got %d", len(entries))
+	}
+
+	// Verify the entries are ordinal symlinks: 0, 1 (0 = oldest, 1 = newest of last 2)
+	// last/2 should have entries "0" and "1"
+	// 0 → ../../2-user (seqID 3, 0-indexed as 2)
+	// 1 → ../../3-agent (seqID 4, 0-indexed as 3)
+	expectedOrdinals := []string{"0", "1"}
+	expectedTargets := []string{"../../2-user", "../../3-agent"}
+	for i, e := range entries {
+		if e.Mode()&os.ModeSymlink == 0 {
+			t.Errorf("Expected symlink, got %s with mode %v", e.Name(), e.Mode())
+		}
+		if e.Name() != expectedOrdinals[i] {
+			t.Errorf("Expected name %q, got %q", expectedOrdinals[i], e.Name())
+		}
+	}
+
+	// Verify symlink targets are correct (../../{message-dir})
+	for i, ordinal := range expectedOrdinals {
+		target, err := os.Readlink(filepath.Join(last2Dir, ordinal))
+		if err != nil {
+			t.Errorf("Failed to readlink %s: %v", ordinal, err)
+			continue
+		}
+		if target != expectedTargets[i] {
+			t.Errorf("Symlink %s target = %q, want %q", ordinal, target, expectedTargets[i])
+		}
+	}
+
+	// Verify we can read through the symlinks
+	data, err := ioutil.ReadFile(filepath.Join(last2Dir, "0", "type"))
+	if err != nil {
+		t.Fatalf("Failed to read type through symlink 0: %v", err)
+	}
+	if strings.TrimSpace(string(data)) != "user" {
+		t.Errorf("Expected type=user for ordinal 0, got %q", string(data))
+	}
+
+	data, err = ioutil.ReadFile(filepath.Join(last2Dir, "1", "type"))
+	if err != nil {
+		t.Fatalf("Failed to read type through symlink 1: %v", err)
+	}
+	if strings.TrimSpace(string(data)) != "shelley" {
+		t.Errorf("Expected type=shelley for ordinal 1, got %q", string(data))
+	}
+
+	// Test last/3 - should contain 3 messages with ordinals 0, 1, 2
+	last3Dir := filepath.Join(tmpDir, "conversation", localID, "messages", "last", "3")
+	entries, err = ioutil.ReadDir(last3Dir)
+	if err != nil {
+		t.Fatalf("Failed to read last/3: %v", err)
+	}
+	if len(entries) != 3 {
+		t.Errorf("Expected 3 entries in last/3, got %d", len(entries))
+	}
+	// Verify ordinals
+	for i, e := range entries {
+		expected := strconv.Itoa(i)
+		if e.Name() != expected {
+			t.Errorf("Expected ordinal %q in last/3, got %q", expected, e.Name())
+		}
+	}
+}
+
+// TestQueryResultDirNode_SincePersonN verifies that since/{person}/{N} returns
+// a directory containing symlinks to messages after the Nth occurrence of that person.
+func TestQueryResultDirNode_SincePersonN(t *testing.T) {
+	convID := "test-conv-since-n"
+	msgs := []shelley.Message{
+		{MessageID: "m1", ConversationID: convID, SequenceID: 1, Type: "user", UserData: strPtr("First")},
+		{MessageID: "m2", ConversationID: convID, SequenceID: 2, Type: "shelley", LLMData: strPtr("Response 1")},
+		{MessageID: "m3", ConversationID: convID, SequenceID: 3, Type: "user", UserData: strPtr("Second")},
+		{MessageID: "m4", ConversationID: convID, SequenceID: 4, Type: "shelley", LLMData: strPtr("Response 2")},
+		{MessageID: "m5", ConversationID: convID, SequenceID: 5, Type: "user", UserData: strPtr("Third")},
+	}
+
+	server := mockserver.New(mockserver.WithConversation(convID, msgs))
+	defer server.Close()
+
+	client := shelley.NewClient(server.URL)
+	store := testStore(t)
+
+	localID, _ := store.Clone()
+	store.MarkCreated(localID, convID, "")
+
+	shelleyFS := NewFS(client, store, time.Hour)
+
+	tmpDir, err := ioutil.TempDir("", "shelley-fuse-since-n-test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	opts := &fs.Options{}
+	entryTimeout := time.Duration(0)
+	attrTimeout := time.Duration(0)
+	negativeTimeout := time.Duration(0)
+	opts.EntryTimeout = &entryTimeout
+	opts.AttrTimeout = &attrTimeout
+	opts.NegativeTimeout = &negativeTimeout
+
+	fssrv, err := fs.Mount(tmpDir, shelleyFS, opts)
+	if err != nil {
+		t.Fatalf("Mount failed: %v", err)
+	}
+	defer fssrv.Unmount()
+
+	// Test since/user/2 - messages after the 2nd-to-last user message (2-user)
+	// Should include: 3-agent, 4-user
+	since2Dir := filepath.Join(tmpDir, "conversation", localID, "messages", "since", "user", "2")
+	info, err := os.Stat(since2Dir)
+	if err != nil {
+		t.Fatalf("Failed to stat since/user/2: %v", err)
+	}
+	if !info.IsDir() {
+		t.Fatalf("since/user/2 should be a directory")
+	}
+
+	entries, err := ioutil.ReadDir(since2Dir)
+	if err != nil {
+		t.Fatalf("Failed to read since/user/2: %v", err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("Expected 2 entries in since/user/2, got %d", len(entries))
+	}
+
+	expectedNames := []string{"3-agent", "4-user"}
+	for i, e := range entries {
+		if e.Mode()&os.ModeSymlink == 0 {
+			t.Errorf("Expected symlink, got %s with mode %v", e.Name(), e.Mode())
+		}
+		if e.Name() != expectedNames[i] {
+			t.Errorf("Expected name %q, got %q", expectedNames[i], e.Name())
+		}
+	}
+
+	// Verify symlink targets are correct (../../../{message-dir})
+	for _, name := range expectedNames {
+		target, err := os.Readlink(filepath.Join(since2Dir, name))
+		if err != nil {
+			t.Errorf("Failed to readlink %s: %v", name, err)
+			continue
+		}
+		expectedTarget := "../../../" + name
+		if target != expectedTarget {
+			t.Errorf("Symlink %s target = %q, want %q", name, target, expectedTarget)
+		}
+	}
+
+	// Test since/user/1 - messages after the last user message (4-user)
+	// Should be empty since it's the last message
+	since1Dir := filepath.Join(tmpDir, "conversation", localID, "messages", "since", "user", "1")
+	entries, err = ioutil.ReadDir(since1Dir)
+	if err != nil {
+		t.Fatalf("Failed to read since/user/1: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("Expected 0 entries in since/user/1, got %d", len(entries))
+	}
+
+	// Verify we can read through symlinks
+	data, err := ioutil.ReadFile(filepath.Join(since2Dir, "3-agent", "type"))
+	if err != nil {
+		t.Fatalf("Failed to read type through symlink: %v", err)
+	}
+	if strings.TrimSpace(string(data)) != "shelley" {
+		t.Errorf("Expected type=shelley, got %q", string(data))
+	}
+}
+
+func TestSinceDirLsDoesNotMakeExcessiveAPICalls(t *testing.T) {
+	convID := "conv-since-perf"
+	numMessages := 100
+
+	// Build a conversation: 1 user message, then (numMessages-1) agent replies
+	msgs := []shelley.Message{
+		{MessageID: "m1", ConversationID: convID, SequenceID: 1, Type: "user", UserData: strPtr(`{"Content":[{"Type":2,"Text":"Hello"}]}`)},
+	}
+	for i := 2; i <= numMessages; i++ {
+		msgs = append(msgs, shelley.Message{
+			MessageID:      fmt.Sprintf("m%d", i),
+			ConversationID: convID,
+			SequenceID:     i,
+			Type:           "shelley",
+			LLMData:        strPtr(fmt.Sprintf(`{"Content":[{"Type":2,"Text":"Reply %d"}]}`, i)),
+		})
+	}
+
+	server := mockserver.New(mockserver.WithConversation(convID, msgs))
+	defer server.Close()
+
+	// Use CachingClient like production
+	baseClient := shelley.NewClient(server.URL)
+	cachingClient := shelley.NewCachingClient(baseClient, 5*time.Second)
+	store := testStore(t)
+
+	localID, _ := store.Clone()
+	store.MarkCreated(localID, convID, "")
+
+	shelleyFS := NewFS(cachingClient, store, time.Hour)
+
+	tmpDir, err := ioutil.TempDir("", "shelley-fuse-since-perf-test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	opts := &fs.Options{}
+	entryTimeout := time.Duration(0)
+	attrTimeout := time.Duration(0)
+	negativeTimeout := time.Duration(0)
+	opts.EntryTimeout = &entryTimeout
+	opts.AttrTimeout = &attrTimeout
+	opts.NegativeTimeout = &negativeTimeout
+
+	fssrv, err := fs.Mount(tmpDir, shelleyFS, opts)
+	if err != nil {
+		t.Fatalf("Mount failed: %v", err)
+	}
+	defer fssrv.Unmount()
+
+	// Reset counter after mount
+	server.ResetFetchCount()
+
+	// ls -l since/user/1/ — should list (numMessages-1) agent messages
+	sincePath := filepath.Join(tmpDir, "conversation", localID, "messages", "since", "user", "1")
+	entries, err := ioutil.ReadDir(sincePath)
+	if err != nil {
+		t.Fatalf("ReadDir on since/user/1/ failed: %v", err)
+	}
+	expected := numMessages - 1
+	if len(entries) != expected {
+		t.Fatalf("Expected %d entries in since/user/1/, got %d", expected, len(entries))
+	}
+
+	// The key assertion: API calls should be bounded, not O(N).
+	// With proper caching, we expect at most a small constant number of fetches
+	// (1 for the conversation data, possibly a couple more for cache misses).
+	// Without the fix, this would be ~100+ fetches.
+	fetches := server.FetchCount()
+	t.Logf("GetConversation calls for ls -l since/user/1/ with %d entries: %d", expected, fetches)
+	if fetches > 5 {
+		t.Errorf("Too many GetConversation calls: %d (expected <= 5 with caching)", fetches)
+	}
+}
+
+// TestSinceDirPerformance verifies that ReadDir on messages/ and
+// since/{person}/{N}/ complete in reasonable absolute time for a 100-message
+// conversation. This replaced a ratio-based test that became flaky after
+// immutable-node caching made messages/ dramatically faster (kernel-cached
+// Lstat results) while since/ still does per-entry FUSE roundtrips. Both
+// paths are now orders of magnitude faster than the original O(N²) bug
+// (~6s for messages/, ~35s for since/ with 150 messages). The absolute
+// thresholds here are generous guards against gross regressions, not
+// precision benchmarks.
+func TestSinceDirPerformance(t *testing.T) {
+	convID := "conv-perf-regression"
+	numMessages := 100
+
+	// Build a conversation: 1 user message followed by (numMessages-1) agent replies.
+	// This ensures since/user/1/ returns (numMessages-1) entries.
+	msgs := []shelley.Message{
+		{MessageID: "m1", ConversationID: convID, SequenceID: 1, Type: "user", UserData: strPtr(`{"Content":[{"Type":2,"Text":"Hello"}]}`)},
+	}
+	for i := 2; i <= numMessages; i++ {
+		msgs = append(msgs, shelley.Message{
+			MessageID:      fmt.Sprintf("m%d", i),
+			ConversationID: convID,
+			SequenceID:     i,
+			Type:           "shelley",
+			LLMData:        strPtr(fmt.Sprintf(`{"Content":[{"Type":2,"Text":"Reply %d"}]}`, i)),
+		})
+	}
+
+	server := mockserver.New(mockserver.WithConversation(convID, msgs))
+	defer server.Close()
+
+	baseClient := shelley.NewClient(server.URL)
+	cachingClient := shelley.NewCachingClient(baseClient, 5*time.Second)
+	store := testStore(t)
+
+	localID, _ := store.Clone()
+	store.MarkCreated(localID, convID, "")
+
+	shelleyFS := NewFS(cachingClient, store, time.Hour)
+
+	tmpDir, err := ioutil.TempDir("", "shelley-fuse-perf-regression")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	opts := &fs.Options{}
+	entryTimeout := time.Duration(0)
+	attrTimeout := time.Duration(0)
+	negativeTimeout := time.Duration(0)
+	opts.EntryTimeout = &entryTimeout
+	opts.AttrTimeout = &attrTimeout
+	opts.NegativeTimeout = &negativeTimeout
+
+	fssrv, err := fs.Mount(tmpDir, shelleyFS, opts)
+	if err != nil {
+		t.Fatalf("Mount failed: %v", err)
+	}
+	defer fssrv.Unmount()
+
+	messagesPath := filepath.Join(tmpDir, "conversation", localID, "messages")
+	sincePath := filepath.Join(tmpDir, "conversation", localID, "messages", "since", "user", "1")
+
+	// Warm up caches
+	ioutil.ReadDir(messagesPath)
+	ioutil.ReadDir(sincePath)
+
+	const iterations = 5
+
+	// Measure messages/ ReadDir
+	var messagesTotal time.Duration
+	for i := 0; i < iterations; i++ {
+		start := time.Now()
+		_, err := ioutil.ReadDir(messagesPath)
+		if err != nil {
+			t.Fatalf("ReadDir messages/ failed: %v", err)
+		}
+		messagesTotal += time.Since(start)
+	}
+
+	// Measure since/user/1/ ReadDir
+	var sinceTotal time.Duration
+	for i := 0; i < iterations; i++ {
+		start := time.Now()
+		entries, err := ioutil.ReadDir(sincePath)
+		if err != nil {
+			t.Fatalf("ReadDir since/user/1/ failed: %v", err)
+		}
+		if len(entries) != numMessages-1 {
+			t.Fatalf("Expected %d entries, got %d", numMessages-1, len(entries))
+		}
+		sinceTotal += time.Since(start)
+	}
+
+	messagesAvg := messagesTotal / time.Duration(iterations)
+	sinceAvg := sinceTotal / time.Duration(iterations)
+
+	t.Logf("messages/ avg: %v, since/user/1/ avg: %v", messagesAvg, sinceAvg)
+
+	// Absolute thresholds: guard against gross regressions. The original bug
+	// had ~6s for messages/ and ~35s for since/ with 150 messages. Current
+	// performance is ~1-2ms and ~7-15ms respectively. A 500ms threshold per
+	// path gives ~30x headroom and will only trip on a real regression.
+	const maxAcceptable = 500 * time.Millisecond
+	if messagesAvg > maxAcceptable {
+		t.Errorf("messages/ avg %v exceeds %v threshold", messagesAvg, maxAcceptable)
+	}
+	if sinceAvg > maxAcceptable {
+		t.Errorf("since/user/1/ avg %v exceeds %v threshold", sinceAvg, maxAcceptable)
 	}
 }

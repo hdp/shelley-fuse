@@ -1,6 +1,6 @@
 ---
 id: sf-lsqv
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-02-14T21:16:10Z
