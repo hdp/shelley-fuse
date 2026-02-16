@@ -42,11 +42,22 @@ func (cs *ConversationState) EffectiveModelID() string {
 	return cs.Model
 }
 
+// BackendState tracks configuration and conversations for a Shelley backend.
+type BackendState struct {
+	// URL is the backend server URL (for future use with multi-backend support).
+	URL string `json:"url,omitempty"`
+	// Conversations maps local IDs to conversation state for this backend.
+	Conversations map[string]*ConversationState `json:"conversations"`
+}
+
+// defaultBackendName is the reserved name for the default backend.
+const defaultBackendName = "default"
+
 // Store manages local conversation state, persisted to a JSON file.
 type Store struct {
-	Path          string
-	Conversations map[string]*ConversationState `json:"conversations"`
-	mu            sync.RWMutex
+	Path     string
+	Backends map[string]*BackendState `json:"backends"`
+	mu       sync.RWMutex
 }
 
 // NewStore creates a new Store. If path is empty, defaults to ~/.shelley-fuse/state.json.
@@ -59,13 +70,48 @@ func NewStore(path string) (*Store, error) {
 		path = filepath.Join(home, ".shelley-fuse", "state.json")
 	}
 	s := &Store{
-		Path:          path,
-		Conversations: make(map[string]*ConversationState),
+		Path:     path,
+		Backends: make(map[string]*BackendState),
 	}
 	if err := s.Load(); err != nil && !os.IsNotExist(err) {
 		return nil, err
 	}
 	return s, nil
+}
+
+// defaultBackend returns the default backend state, creating it if needed.
+func (s *Store) defaultBackend() *BackendState {
+	b, ok := s.Backends[defaultBackendName]
+	if !ok {
+		b = &BackendState{
+			URL:           "",
+			Conversations: make(map[string]*ConversationState),
+		}
+		s.Backends[defaultBackendName] = b
+	}
+	return b
+}
+
+// conversations returns the conversation map for the default backend.
+// This is a helper for migration and backward compatibility.
+func (s *Store) conversations() map[string]*ConversationState {
+	return s.defaultBackend().Conversations
+}
+
+// V1State represents the old state file format (flat conversation map).
+type V1State struct {
+	Conversations map[string]*ConversationState `json:"conversations"`
+}
+
+// migrateFromV1 migrates data from the V1 format to the new backend format.
+func (s *Store) migrateFromV1(v1 *V1State) error {
+	// Create the default backend if it doesn't exist
+	b := s.defaultBackend()
+	// Copy all conversations to the default backend
+	for id, cs := range v1.Conversations {
+		b.Conversations[id] = cs
+	}
+	return nil
 }
 
 // Clone allocates a new conversation with a short random hex ID and persists.
@@ -77,12 +123,12 @@ func (s *Store) Clone() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	s.Conversations[id] = &ConversationState{
+	s.conversations()[id] = &ConversationState{
 		LocalID:   id,
 		CreatedAt: time.Now(),
 	}
 	if err := s.saveLocked(); err != nil {
-		delete(s.Conversations, id)
+		delete(s.conversations(), id)
 		return "", err
 	}
 	return id, nil
@@ -92,7 +138,7 @@ func (s *Store) Clone() (string, error) {
 func (s *Store) Get(id string) *ConversationState {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.Conversations[id]
+	return s.conversations()[id]
 }
 
 // SetModel sets the model display name and internal ID on an unconversed conversation.
@@ -102,7 +148,7 @@ func (s *Store) SetModel(id, displayName, internalID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	cs, ok := s.Conversations[id]
+	cs, ok := s.conversations()[id]
 	if !ok {
 		return fmt.Errorf("conversation %s not found", id)
 	}
@@ -121,7 +167,7 @@ func (s *Store) SetCtl(id, key, value string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	cs, ok := s.Conversations[id]
+	cs, ok := s.conversations()[id]
 	if !ok {
 		return fmt.Errorf("conversation %s not found", id)
 	}
@@ -149,7 +195,7 @@ func (s *Store) MarkCreated(id, shelleyConversationID, slug string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	cs, ok := s.Conversations[id]
+	cs, ok := s.conversations()[id]
 	if !ok {
 		return fmt.Errorf("conversation %s not found", id)
 	}
@@ -164,8 +210,8 @@ func (s *Store) List() []string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	ids := make([]string, 0, len(s.Conversations))
-	for id := range s.Conversations {
+	ids := make([]string, 0, len(s.conversations()))
+	for id := range s.conversations() {
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)
@@ -177,7 +223,7 @@ func (s *Store) GetByShelleyID(shelleyID string) string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	for _, cs := range s.Conversations {
+	for _, cs := range s.conversations() {
 		if cs.ShelleyConversationID == shelleyID {
 			return cs.LocalID
 		}
@@ -193,7 +239,7 @@ func (s *Store) GetBySlug(slug string) string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	for _, cs := range s.Conversations {
+	for _, cs := range s.conversations() {
 		if cs.Slug == slug {
 			return cs.LocalID
 		}
@@ -208,7 +254,7 @@ func (s *Store) Delete(id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	cs, ok := s.Conversations[id]
+	cs, ok := s.conversations()[id]
 	if !ok {
 		return fmt.Errorf("conversation %s not found", id)
 	}
@@ -216,7 +262,7 @@ func (s *Store) Delete(id string) error {
 		return fmt.Errorf("cannot delete created conversation %s", id)
 	}
 
-	delete(s.Conversations, id)
+	delete(s.conversations(), id)
 	return s.saveLocked()
 }
 
@@ -226,11 +272,11 @@ func (s *Store) ForceDelete(id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if _, ok := s.Conversations[id]; !ok {
+	if _, ok := s.conversations()[id]; !ok {
 		return fmt.Errorf("conversation %s not found", id)
 	}
 
-	delete(s.Conversations, id)
+	delete(s.conversations(), id)
 	return s.saveLocked()
 }
 
@@ -240,8 +286,8 @@ func (s *Store) ListMappings() []ConversationState {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	result := make([]ConversationState, 0, len(s.Conversations))
-	for _, cs := range s.Conversations {
+	result := make([]ConversationState, 0, len(s.conversations()))
+	for _, cs := range s.conversations() {
 		result = append(result, *cs)
 	}
 	return result
@@ -268,7 +314,7 @@ func (s *Store) AdoptWithMetadata(shelleyConversationID, slug, apiCreatedAt, api
 	defer s.mu.Unlock()
 
 	// Check if already tracked
-	for _, cs := range s.Conversations {
+	for _, cs := range s.conversations() {
 		if cs.ShelleyConversationID == shelleyConversationID {
 			updated := false
 			// Update slug if it was previously empty and a new slug is provided
@@ -306,7 +352,7 @@ func (s *Store) AdoptWithMetadata(shelleyConversationID, slug, apiCreatedAt, api
 		return "", err
 	}
 
-	s.Conversations[id] = &ConversationState{
+	s.conversations()[id] = &ConversationState{
 		LocalID:               id,
 		ShelleyConversationID: shelleyConversationID,
 		Slug:                  slug,
@@ -319,7 +365,7 @@ func (s *Store) AdoptWithMetadata(shelleyConversationID, slug, apiCreatedAt, api
 	}
 
 	if err := s.saveLocked(); err != nil {
-		delete(s.Conversations, id)
+		delete(s.conversations(), id)
 		return "", err
 	}
 	return id, nil
@@ -331,15 +377,35 @@ func (s *Store) Load() error {
 	if err != nil {
 		return err
 	}
-	var loaded struct {
-		Conversations map[string]*ConversationState `json:"conversations"`
+
+	// Try to load as new format (backends map)
+	var newFormat struct {
+		Backends map[string]*BackendState `json:"backends"`
 	}
-	if err := json.Unmarshal(data, &loaded); err != nil {
+	if err := json.Unmarshal(data, &newFormat); err == nil {
+		if newFormat.Backends != nil {
+			s.Backends = newFormat.Backends
+			return nil
+		}
+	}
+
+	// If new format failed, try old format (flat conversations map) and migrate
+	var v1 V1State
+	if err := json.Unmarshal(data, &v1); err != nil {
 		return fmt.Errorf("failed to parse state file: %w", err)
 	}
-	if loaded.Conversations != nil {
-		s.Conversations = loaded.Conversations
+
+	// Migrate from old format
+	if v1.Conversations != nil {
+		if err := s.migrateFromV1(&v1); err != nil {
+			return fmt.Errorf("failed to migrate from V1 format: %w", err)
+		}
+		// Save in new format
+		if err := s.saveLocked(); err != nil {
+			return fmt.Errorf("failed to save migrated state: %w", err)
+		}
 	}
+
 	return nil
 }
 
@@ -349,8 +415,8 @@ func (s *Store) saveLocked() error {
 		return fmt.Errorf("failed to create state directory: %w", err)
 	}
 	data, err := json.MarshalIndent(struct {
-		Conversations map[string]*ConversationState `json:"conversations"`
-	}{Conversations: s.Conversations}, "", "  ")
+		Backends map[string]*BackendState `json:"backends"`
+	}{Backends: s.Backends}, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal state: %w", err)
 	}
@@ -364,7 +430,7 @@ func (s *Store) generateID() (string, error) {
 			return "", fmt.Errorf("failed to generate random ID: %w", err)
 		}
 		id := hex.EncodeToString(buf)
-		if _, exists := s.Conversations[id]; !exists {
+		if _, exists := s.conversations()[id]; !exists {
 			return id, nil
 		}
 	}

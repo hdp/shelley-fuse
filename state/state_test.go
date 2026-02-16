@@ -1,6 +1,7 @@
 package state
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -215,8 +216,8 @@ func TestNewStoreNonexistentFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(s.Conversations) != 0 {
-		t.Errorf("expected empty conversations, got %d", len(s.Conversations))
+	if len(s.conversations()) != 0 {
+		t.Errorf("expected empty conversations, got %d", len(s.conversations()))
 	}
 }
 
@@ -1260,5 +1261,203 @@ func TestForceDeletePersistence(t *testing.T) {
 	}
 	if s2.Get(id2) == nil {
 		t.Error("non-deleted conversation should persist")
+	}
+}
+
+func TestMigrationFromV1(t *testing.T) {
+	path := tempStatePath(t)
+
+	// Create a V1 state file
+	v1Data := `{
+  "conversations": {
+    "abc12345": {
+      "local_id": "abc12345",
+      "shelley_conversation_id": "server-123",
+      "slug": "test-slug",
+      "model": "predictable",
+      "cwd": "/home/user",
+      "created": true,
+      "created_at": "2024-01-15T10:30:00Z",
+      "api_created_at": "2024-01-15T10:30:00Z",
+      "api_updated_at": "2024-01-16T14:20:00Z"
+    }
+  }
+}`
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(v1Data), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Load the store (should trigger migration)
+	s, err := NewStore(path)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+
+	// Verify the data was migrated
+	ids := s.List()
+	if len(ids) != 1 {
+		t.Fatalf("expected 1 conversation, got %d", len(ids))
+	}
+
+	cs := s.Get(ids[0])
+	if cs == nil {
+		t.Fatal("expected conversation state")
+	}
+	if cs.ShelleyConversationID != "server-123" {
+		t.Errorf("expected ShelleyConversationID=server-123, got %s", cs.ShelleyConversationID)
+	}
+	if cs.Slug != "test-slug" {
+		t.Errorf("expected Slug=test-slug, got %s", cs.Slug)
+	}
+	if cs.Model != "predictable" {
+		t.Errorf("expected Model=predictable, got %s", cs.Model)
+	}
+	if cs.Cwd != "/home/user" {
+		t.Errorf("expected Cwd=/home/user, got %s", cs.Cwd)
+	}
+	if !cs.Created {
+		t.Error("expected Created=true")
+	}
+
+	// Verify the file was rewritten in new format
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var newFormat struct {
+		Backends map[string]*BackendState `json:"backends"`
+	}
+	if err := json.Unmarshal(data, &newFormat); err != nil {
+		t.Fatalf("failed to parse new format: %v", err)
+	}
+	if newFormat.Backends == nil {
+		t.Fatal("expected backends map")
+	}
+	b, ok := newFormat.Backends[defaultBackendName]
+	if !ok {
+		t.Fatalf("expected default backend %q to exist", defaultBackendName)
+	}
+	if b.Conversations == nil {
+		t.Fatal("expected conversations map in default backend")
+	}
+	if len(b.Conversations) != 1 {
+		t.Fatalf("expected 1 conversation in default backend, got %d", len(b.Conversations))
+	}
+}
+
+func TestMigrationFromV1Empty(t *testing.T) {
+	path := tempStatePath(t)
+
+	// Create an empty V1 state file
+	v1Data := `{
+  "conversations": {}
+}`
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(v1Data), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Load the store (should trigger migration)
+	s, err := NewStore(path)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+
+	// Verify the store is empty
+	ids := s.List()
+	if len(ids) != 0 {
+		t.Fatalf("expected 0 conversations, got %d", len(ids))
+	}
+
+	// Verify the file was rewritten in new format
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var newFormat struct {
+		Backends map[string]*BackendState `json:"backends"`
+	}
+	if err := json.Unmarshal(data, &newFormat); err != nil {
+		t.Fatalf("failed to parse new format: %v", err)
+	}
+	if newFormat.Backends == nil {
+		t.Fatal("expected backends map")
+	}
+	b, ok := newFormat.Backends[defaultBackendName]
+	if !ok {
+		t.Fatalf("expected default backend %q to exist", defaultBackendName)
+	}
+	if b.Conversations == nil {
+		t.Fatal("expected conversations map in default backend")
+	}
+	if len(b.Conversations) != 0 {
+		t.Fatalf("expected 0 conversations in default backend, got %d", len(b.Conversations))
+	}
+}
+
+func TestNewFormatRoundTrip(t *testing.T) {
+	path := tempStatePath(t)
+
+	s1, err := NewStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a conversation
+	id, err := s1.Clone()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = s1.SetModel(id, "predictable", "predictable")
+	_ = s1.SetCtl(id, "cwd", "/home/user")
+	_ = s1.MarkCreated(id, "shelley-123", "test-slug")
+
+	// Reload into a fresh store
+	s2, err := NewStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify the data is preserved
+	cs := s2.Get(id)
+	if cs == nil {
+		t.Fatal("expected conversation state after reload")
+	}
+	if cs.Model != "predictable" {
+		t.Errorf("expected Model=predictable, got %s", cs.Model)
+	}
+	if cs.Cwd != "/home/user" {
+		t.Errorf("expected Cwd=/home/user, got %s", cs.Cwd)
+	}
+	if cs.Slug != "test-slug" {
+		t.Errorf("expected Slug=test-slug, got %s", cs.Slug)
+	}
+
+	// Verify the file is in new format
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var newFormat struct {
+		Backends map[string]*BackendState `json:"backends"`
+	}
+	if err := json.Unmarshal(data, &newFormat); err != nil {
+		t.Fatalf("failed to parse new format: %v", err)
+	}
+	if newFormat.Backends == nil {
+		t.Fatal("expected backends map")
+	}
+	if _, ok := newFormat.Backends[defaultBackendName]; !ok {
+		t.Fatalf("expected default backend %q to exist", defaultBackendName)
 	}
 }
