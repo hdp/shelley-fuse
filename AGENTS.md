@@ -26,11 +26,45 @@ just clean
 
 This project uses a CLI ticket system for task management. Run `tk help` when you need to use it.
 
-## Finishing Work
+## Development Workflow
 
-When you're done with a ticket, run `just finish-work` (from any worktree — ticket is auto-detected).
-This closes the ticket, rebases onto main, ff-merges, and removes the worktree and branch.
-It's idempotent — run it repeatedly until it exits 0. If the rebase has conflicts, fix them and re-run.
+This project uses a review-gated workflow. Implementing agents do not merge their own work — a separate review agent checks the work first.
+
+### As an Implementing Agent
+
+You were launched by `just start-work` or `just implement`. Your job:
+
+1. Read your ticket (`.tickets/{ticket}.md`) for requirements
+2. Read `AGENTS.md` (this file) for project conventions
+3. Implement the work, run `just test`, commit
+4. When done, run `just review {ticket}` as your **final action**
+
+Do NOT run `just finish-work` — that's the reviewer's job.
+
+### As a Review Agent
+
+You were launched by `just review`. Your job:
+
+1. Read the ticket for requirements and acceptance criteria
+2. Review `git diff main...HEAD` against the ticket
+3. Run `just test`
+4. Either:
+   - **Approve**: run `just finish-work {ticket}` (closes ticket, rebases, merges, cleans up)
+   - **Reject**: edit the ticket to clarify what's needed, commit the edit, then run `just implement {ticket}`
+
+### Ticket Splitting
+
+If a ticket is too large for one pass, create new tickets for remaining work with `tk create`, adjust the dependency chain with `tk dep`, and commit the new ticket files. The reviewer will check the split.
+
+### Available Commands
+
+- `just start-work {ticket}` — Create worktree and start implementing (first time)
+- `just implement {ticket}` — Resume implementing in existing worktree
+- `just review {ticket}` — Launch review on existing worktree
+- `just finish-work {ticket}` — Approve: close, rebase, merge, clean up (reviewer only)
+- `just next-ticket` — Print the next ticket ready for work
+- `just test` — Run all tests
+- `just build` — Build the binary
 
 ## Architecture
 

@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+#
+# launch-agent <role> <ticket> <worktree-dir>
+#
+# Launches an agent with the appropriate prompt in the given worktree.
+# role: "implement" or "review"
+#
+set -euo pipefail
+
+role="${1:?Usage: launch-agent <role> <ticket> <worktree-dir>}"
+ticket="${2:?Usage: launch-agent <role> <ticket> <worktree-dir>}"
+worktree_dir="${3:?Usage: launch-agent <role> <ticket> <worktree-dir>}"
+
+# Resolve the prompt template relative to the main worktree
+main_wt="$(git worktree list --porcelain | awk '/^worktree /{print $2; exit}')"
+prompt_file="$main_wt/scripts/prompts/${role}.md"
+model_dir="$main_wt/scripts/${role}-model"
+if [ ! -e "${model_dir}" ]; then
+  model_dir=/shelley/model/default
+fi
+
+if [ ! -f "$prompt_file" ]; then
+    echo "ERROR: Unknown role '$role'. Expected 'implement' or 'review'." >&2
+    echo "No prompt template found at: $prompt_file" >&2
+    exit 1
+fi
+if [ ! -x "$model_dir/new/start" ]; then
+    echo "ERROR: Unknown role '$role'. Expected 'implement' or 'review'." >&2
+    echo "No model start script found at: $model_dir" >&2
+    exit 1
+fi
+
+
+# Substitute the ticket ID into the prompt, then launch Shelley with the given
+# prompt
+echo "Starting ${role} agent for $ticket in $worktree_dir:"
+cd "$worktree_dir"
+echo -n "Conversation id: "
+sed "s/TICKET_ID/$ticket/g" "$prompt_file" | "${model_dir}/new/start"

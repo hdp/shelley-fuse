@@ -4,3 +4,4 @@ shelley-fuse
 
 # test binaries
 *.test
+scripts/*-model
