@@ -1701,6 +1701,95 @@ func TestStartScriptNoInput(t *testing.T) {
 	}
 }
 
+// TestStartScriptViaSymlink verifies that the start script correctly
+// resolves its location when invoked via a symlink.
+func TestStartScriptViaSymlink(t *testing.T) {
+	skipIfNoFusermount(t)
+	skipIfNoShelley(t)
+
+	serverURL := startShelleyServer(t)
+	mountPoint := mountTestFS(t, serverURL)
+
+	// Test symlink to the start script itself
+	modelStartPath := filepath.Join(mountPoint, "model", "predictable", "new", "start")
+	tmpDir := t.TempDir()
+	symlinkPath := filepath.Join(tmpDir, "start.sh")
+	if err := os.Symlink(modelStartPath, symlinkPath); err != nil {
+		t.Fatalf("Failed to create symlink: %v", err)
+	}
+
+	// Execute via symlink with a message on stdin
+	testCwd := t.TempDir()
+	cmd := exec.Command(symlinkPath)
+	cmd.Stdin = strings.NewReader("hello via symlink")
+	cmd.Dir = testCwd
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("start script via symlink failed: %v\noutput: %s", err, output)
+	}
+
+	localID := strings.TrimSpace(string(output))
+	if len(localID) != 8 {
+		t.Fatalf("Expected 8-char hex ID, got %q", localID)
+	}
+
+	// Verify the conversation was created and contains the message
+	allMD, err := ioutil.ReadFile(filepath.Join(mountPoint, "conversation", localID, "messages", "all.md"))
+	if err != nil {
+		t.Fatalf("Failed to read all.md: %v", err)
+	}
+	if !strings.Contains(string(allMD), "hello via symlink") {
+		t.Errorf("Expected all.md to contain message, got: %s", string(allMD))
+	}
+
+	// Verify cwd was set correctly from the symlink invocation
+	ctlData, err := ioutil.ReadFile(filepath.Join(mountPoint, "conversation", localID, "ctl"))
+	if err != nil {
+		t.Fatalf("Failed to read ctl: %v", err)
+	}
+	if !strings.Contains(string(ctlData), "cwd="+testCwd) {
+		t.Errorf("Expected ctl to contain cwd=%s, got: %s", testCwd, string(ctlData))
+	}
+
+	// Test symlink to the parent model directory
+	modelDir := filepath.Join(mountPoint, "model", "predictable", "new")
+	symlinkDir := filepath.Join(tmpDir, "model-new")
+	if err := os.Symlink(modelDir, symlinkDir); err != nil {
+		t.Fatalf("Failed to create directory symlink: %v", err)
+	}
+	symlinkStartPath := filepath.Join(symlinkDir, "start")
+
+	cmd = exec.Command(symlinkStartPath)
+	cmd.Stdin = strings.NewReader("hello via dir symlink")
+	cmd.Dir = testCwd
+	output, err = cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("start script via directory symlink failed: %v\noutput: %s", err, output)
+	}
+
+	localID2 := strings.TrimSpace(string(output))
+	if len(localID2) != 8 {
+		t.Fatalf("Expected 8-char hex ID, got %q", localID2)
+	}
+
+	// Verify this conversation also has the right message and cwd
+	allMD2, err := ioutil.ReadFile(filepath.Join(mountPoint, "conversation", localID2, "messages", "all.md"))
+	if err != nil {
+		t.Fatalf("Failed to read all.md: %v", err)
+	}
+	if !strings.Contains(string(allMD2), "hello via dir symlink") {
+		t.Errorf("Expected all.md to contain message, got: %s", string(allMD2))
+	}
+
+	ctlData2, err := ioutil.ReadFile(filepath.Join(mountPoint, "conversation", localID2, "ctl"))
+	if err != nil {
+		t.Fatalf("Failed to read ctl: %v", err)
+	}
+	if !strings.Contains(string(ctlData2), "cwd="+testCwd) {
+		t.Errorf("Expected ctl to contain cwd=%s, got: %s", testCwd, string(ctlData2))
+	}
+}
+
 // TestMessageCountFileSize verifies that messages/count reports accurate
 // file size via fstat after open. This is critical for SSHFS/SFTP access,
 // where the client reads the file size from fstat and only reads that many

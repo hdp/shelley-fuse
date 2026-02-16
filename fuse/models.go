@@ -311,7 +311,15 @@ func (h *CloneFileHandle) Read(ctx context.Context, dest []byte, off int64) (fus
 // and prints the conversation ID.
 const modelStartScriptTemplate = `#!/bin/sh
 set -e
-DIR="$(cd "$(dirname "$0")" && pwd)"
+# Resolve the actual script location, handling symlinks
+if command -v realpath >/dev/null 2>&1; then
+	SCRIPT="$(realpath "$0")"
+elif command -v readlink >/dev/null 2>&1 && readlink -f / >/dev/null 2>&1; then
+	SCRIPT="$(readlink -f "$0")"
+else
+	SCRIPT="$0"
+fi
+DIR="$(cd "$(dirname "$SCRIPT")" && pwd)"
 MOUNT="$(cd "$DIR/../../.." && pwd)"
 MSG="$(cat)"
 [ -z "$MSG" ] && { echo "error: no message provided on stdin" >&2; exit 1; }
