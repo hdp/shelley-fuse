@@ -50,7 +50,8 @@ You were launched by `just review`. Your job:
 3. Run `just test`
 4. Either:
    - **Approve**: run `just finish-work {ticket}` (closes ticket, rebases, merges, cleans up)
-   - **Reject**: edit the ticket to clarify what's needed, commit the edit, then run `just implement {ticket}`
+   - **Fix and re-review**: fix issues directly, commit, then run `just review {ticket}` for fresh eyes
+   - **Escalate**: if fundamentally broken, stop and explain the problem to a human
 
 ### Ticket Splitting
 

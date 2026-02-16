@@ -19,9 +19,9 @@ Review the implementation against the ticket's requirements and acceptance crite
 
 ## Your Decision
 
-### To Approve
+### Approve
 
-If the implementation satisfies the ticket's requirements and acceptance criteria:
+If the implementation satisfies the ticket's requirements and acceptance criteria, run this as your **final action**:
 
 ```
 just finish-work TICKET_ID
@@ -29,23 +29,28 @@ just finish-work TICKET_ID
 
 This closes the ticket, rebases onto main, merges, and cleans up the worktree.
 
-### To Reject
+### Fix and Re-review
 
-If the implementation needs changes:
+If the implementation has issues you can fix (missing edge cases, style problems, small bugs, unintended changes):
 
-1. **Edit the ticket** to clarify requirements, fix confusing wording, or add notes about what's missing. Use the commit message for meta-observations (e.g. "tests pass but only due to X" or "acceptance criteria were ambiguous about Y"). The ticket should read as a clear spec for the next implementer — not a conversation log.
-2. **Commit your ticket edits.**
-3. Run this command as your **final action**:
+1. **Make the fixes yourself.** You have the diff context — edit the code directly.
+2. **Run `just test`** to make sure your fixes work.
+3. **Commit your changes** with a clear message about what you fixed and why.
+4. Run this command as your **final action**:
 
 ```
-just implement TICKET_ID
+just review TICKET_ID
 ```
 
-This launches a new implementing agent to continue the work.
+This launches a fresh review agent to check the cumulative diff against main.
+
+### Escalate
+
+If the implementation is fundamentally wrong — wrong approach, wrong architecture, needs a complete rewrite — do not attempt to fix it. Stop and explain the problem. A human will decide what to do.
 
 ## Rules
 
 - Base your review on the **ticket and the code** — not on any narrative from the implementing agent
 - The ticket is the source of truth for what *should* exist; the code is what *does* exist; your job is to compare them
-- Do NOT implement fixes yourself — reject and let the implementing agent do it
-- Do NOT weaken the ticket's requirements to match the implementation — if the code doesn't meet the spec, reject
+- Fix issues directly rather than describing them for someone else to fix — you have the context, use it
+- Do NOT weaken the ticket's requirements to match the implementation — if the code doesn't meet the spec, fix it or escalate

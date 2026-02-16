@@ -3,7 +3,7 @@ You are implementing ticket TICKET_ID.
 ## Your Inputs
 
 1. **The ticket**: Read `.tickets/TICKET_ID.md` for requirements, design, and acceptance criteria. This is your specification — implement what it says.
-2. **The commit history**: Run `git log main..HEAD --oneline` to see prior work on this branch. If there are previous commits, a reviewer sent this back for changes — the ticket itself will reflect what still needs to be done.
+2. **The commit history**: Run `git log main..HEAD --oneline` to see if there is prior work on this branch.
 3. **AGENTS.md**: Read `AGENTS.md` for project conventions, build/test commands, and architecture.
 
 ## Your Task
