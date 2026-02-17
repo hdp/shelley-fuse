@@ -2174,4 +2174,71 @@ func TestBackendDirectory(t *testing.T) {
 	if !defaultFollowInfo.IsDir() {
 		t.Error("Expected backend/default (followed) to be a directory")
 	}
+
+	// --- Test BackendNode directory contents ---
+
+	// List backend/main directory entries
+	// Note: ioutil.ReadDir filters out entries that can't be stat'd, so we only
+	// see entries that actually exist (url, new). The placeholder entries
+	// (connected, model, conversation) appear in Readdir but return ENOENT on Lookup.
+	mainDirEntries, err := ioutil.ReadDir(filepath.Join(mountPoint, "shelley", "backend", "main"))
+	if err != nil {
+		t.Fatalf("Failed to read backend/main directory: %v", err)
+	}
+	mainDirNames := make(map[string]bool)
+	for _, e := range mainDirEntries {
+		mainDirNames[e.Name()] = true
+	}
+
+	// Should have: url and new (these actually exist)
+	if !mainDirNames["url"] {
+		t.Error("Expected 'url' file in backend/main")
+	}
+	if !mainDirNames["new"] {
+		t.Error("Expected 'new' symlink in backend/main")
+	}
+
+	// Note: connected, model, conversation are in Readdir but return ENOENT on Lookup,
+	// so they don't appear in ReadDir results. They'll be implemented in future tickets.
+
+	// Read url file - should contain the server URL
+	urlContent, err := ioutil.ReadFile(filepath.Join(mountPoint, "shelley", "backend", "main", "url"))
+	if err != nil {
+		t.Fatalf("Failed to read backend/main/url: %v", err)
+	}
+	urlStr := strings.TrimSpace(string(urlContent))
+	if urlStr != serverURL {
+		t.Errorf("Expected url to be %q, got %q", serverURL, urlStr)
+	}
+
+	// Verify 'new' is a symlink pointing to model/default/new
+	newInfo, err := os.Lstat(filepath.Join(mountPoint, "shelley", "backend", "main", "new"))
+	if err != nil {
+		t.Fatalf("Failed to lstat backend/main/new: %v", err)
+	}
+	if newInfo.Mode()&os.ModeSymlink == 0 {
+		t.Error("Expected backend/main/new to be a symlink")
+	}
+	newTarget, err := os.Readlink(filepath.Join(mountPoint, "shelley", "backend", "main", "new"))
+	if err != nil {
+		t.Fatalf("Failed to readlink backend/main/new: %v", err)
+	}
+	if newTarget != "model/default/new" {
+		t.Errorf("Expected 'new' symlink to point to 'model/default/new', got %q", newTarget)
+	}
+
+	// connected, model, conversation should return ENOENT when accessed
+	// (they are listed in Readdir but not implemented yet)
+	_, err = ioutil.ReadFile(filepath.Join(mountPoint, "shelley", "backend", "main", "connected"))
+	if err == nil {
+		t.Error("Expected ENOENT for 'connected' presence file")
+	}
+	_, err = ioutil.ReadDir(filepath.Join(mountPoint, "shelley", "backend", "main", "model"))
+	if err == nil {
+		t.Error("Expected ENOENT for 'model' directory")
+	}
+	_, err = ioutil.ReadDir(filepath.Join(mountPoint, "shelley", "backend", "main", "conversation"))
+	if err == nil {
+		t.Error("Expected ENOENT for 'conversation' directory")
+	}
 }

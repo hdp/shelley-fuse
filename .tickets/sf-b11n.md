@@ -1,6 +1,6 @@
 ---
 id: sf-b11n
-status: open
+status: closed
 deps: [sf-ebqt]
 links: [sf-u12r, sf-w15c]
 created: 2026-02-15T14:45:00Z

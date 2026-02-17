@@ -55,6 +55,9 @@ type BackendState struct {
 // pointing to the actual default backend name.
 const mainBackendName = "main"
 
+// DefaultBackendName is the exported name of the default backend.
+const DefaultBackendName = mainBackendName
+
 // Store manages local conversation state, persisted to a JSON file.
 type Store struct {
 	Path            string
@@ -592,5 +595,21 @@ func (s *Store) SetBackendURL(name, url string) error {
 	}
 
 	b.URL = url
+	return s.saveLocked()
+}
+
+// EnsureBackendURL sets the URL for a backend, creating it if it doesn't exist.
+// This is useful for initializing the default backend URL on startup.
+func (s *Store) EnsureBackendURL(name, url string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, exists := s.Backends[name]; !exists {
+		s.Backends[name] = &BackendState{
+			Conversations: make(map[string]*ConversationState),
+		}
+	}
+
+	s.Backends[name].URL = url
 	return s.saveLocked()
 }

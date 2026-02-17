@@ -115,19 +115,81 @@ type BackendNode struct {
 	diag      *diag.Tracker
 }
 
+var _ = (fs.NodeLookuper)((*BackendNode)(nil))
 var _ = (fs.NodeReaddirer)((*BackendNode)(nil))
 var _ = (fs.NodeGetattrer)((*BackendNode)(nil))
 
+func (b *BackendNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
+	defer diag.Track(b.diag, "BackendNode", "Lookup", name).Done()
+	setEntryTimeout(out, cacheTTLConversation)
+
+	switch name {
+	case "url":
+		backend := b.state.GetBackend(b.name)
+		if backend == nil {
+			return nil, syscall.ENOENT
+		}
+		return b.NewInode(ctx, &BackendURLNode{url: backend.URL, startTime: b.startTime}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
+	case "connected":
+		// Presence file - currently returns ENOENT until wired to ClientManager
+		return nil, syscall.ENOENT
+	case "model":
+		// Directory - currently returns ENOENT until wired to ClientManager
+		return nil, syscall.ENOENT
+	case "conversation":
+		// Directory - currently returns ENOENT until wired to ClientManager
+		return nil, syscall.ENOENT
+	case "new":
+		// Symlink to model/default/new (target doesn't need to exist yet)
+		return b.NewInode(ctx, &SymlinkNode{target: "model/default/new", startTime: b.startTime}, fs.StableAttr{Mode: syscall.S_IFLNK}), 0
+	}
+	return nil, syscall.ENOENT
+}
+
 func (b *BackendNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
 	defer diag.Track(b.diag, "BackendNode", "Readdir", "").Done()
-	// For now, backend directories are empty placeholders.
-	// URL configuration and other backend-specific files will be added later.
-	return fs.NewListDirStream(nil), 0
+
+	entries := []fuse.DirEntry{
+		{Name: "url", Mode: fuse.S_IFREG},
+		{Name: "connected", Mode: fuse.S_IFREG}, // presence file (may not exist)
+		{Name: "model", Mode: fuse.S_IFDIR},
+		{Name: "conversation", Mode: fuse.S_IFDIR},
+		{Name: "new", Mode: syscall.S_IFLNK},
+	}
+	return fs.NewListDirStream(entries), 0
 }
 
 func (b *BackendNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
 	out.Mode = fuse.S_IFDIR | 0755
 	setTimestamps(&out.Attr, b.startTime)
 	out.SetTimeout(cacheTTLConversation)
+	return 0
+}
+
+// --- BackendURLNode: /shelley/backend/{name}/url file ---
+
+type BackendURLNode struct {
+	fs.Inode
+	url       string
+	startTime time.Time
+}
+
+var _ = (fs.NodeOpener)((*BackendURLNode)(nil))
+var _ = (fs.NodeReader)((*BackendURLNode)(nil))
+var _ = (fs.NodeGetattrer)((*BackendURLNode)(nil))
+
+func (u *BackendURLNode) Open(ctx context.Context, flags uint32) (fs.FileHandle, uint32, syscall.Errno) {
+	return nil, fuse.FOPEN_DIRECT_IO, 0
+}
+
+func (u *BackendURLNode) Read(ctx context.Context, f fs.FileHandle, dest []byte, off int64) (fuse.ReadResult, syscall.Errno) {
+	data := []byte(u.url + "\n")
+	return fuse.ReadResultData(readAt(data, dest, off)), 0
+}
+
+func (u *BackendURLNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
+	out.Mode = fuse.S_IFREG | 0444
+	out.Size = uint64(len(u.url) + 1) // +1 for newline
+	setTimestamps(&out.Attr, u.startTime)
 	return 0
 }

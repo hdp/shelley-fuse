@@ -121,6 +121,11 @@ func main() {
 		log.Fatalf("Failed to initialize state: %v", err)
 	}
 
+	// Set the URL for the default backend (creating it if needed)
+	if err := store.EnsureBackendURL(state.DefaultBackendName, url); err != nil {
+		log.Fatalf("Failed to set backend URL: %v", err)
+	}
+
 	// Create FUSE filesystem
 	shelleyFS := shelleyfuse.NewFS(client, store, *cloneTimeout)
 
