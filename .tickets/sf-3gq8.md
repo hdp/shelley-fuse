@@ -1,6 +1,6 @@
 ---
 id: sf-3gq8
-status: open
+status: closed
 deps: [sf-392p]
 links: []
 created: 2026-02-15T14:29:22Z

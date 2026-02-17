@@ -1895,3 +1895,123 @@ func TestListBackends(t *testing.T) {
 		t.Errorf("expected sorted backends [alpha, beta, default], got %v", backends)
 	}
 }
+
+func TestSetBackendURL(t *testing.T) {
+	s, err := NewStore(tempStatePath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.CreateBackend("my-backend", "http://localhost:9999"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.SetBackendURL("my-backend", "http://newhost:8080"); err != nil {
+		t.Fatalf("SetBackendURL failed: %v", err)
+	}
+
+	b := s.GetBackend("my-backend")
+	if b.URL != "http://newhost:8080" {
+		t.Errorf("expected URL=http://newhost:8080, got %s", b.URL)
+	}
+}
+
+func TestSetBackendURLNotFound(t *testing.T) {
+	s, err := NewStore(tempStatePath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.SetBackendURL("nonexistent", "http://localhost:9999"); err == nil {
+		t.Error("expected error when setting URL for nonexistent backend")
+	}
+}
+
+func TestSetBackendURLPersistence(t *testing.T) {
+	path := tempStatePath(t)
+
+	s1, err := NewStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s1.CreateBackend("url-persist", "http://localhost:9999"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s1.SetBackendURL("url-persist", "http://newhost:8080"); err != nil {
+		t.Fatalf("SetBackendURL failed: %v", err)
+	}
+
+	// Load into fresh store
+	s2, err := NewStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	b := s2.GetBackend("url-persist")
+	if b == nil {
+		t.Fatal("expected backend to persist")
+	}
+	if b.URL != "http://newhost:8080" {
+		t.Errorf("expected URL=http://newhost:8080, got %s", b.URL)
+	}
+}
+
+func TestBackendURLPersistenceOnCreate(t *testing.T) {
+	path := tempStatePath(t)
+
+	s1, err := NewStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s1.CreateBackend("url-test", "http://custom-url:1234"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Load into fresh store
+	s2, err := NewStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	b := s2.GetBackend("url-test")
+	if b == nil {
+		t.Fatal("expected backend to exist")
+	}
+	if b.URL != "http://custom-url:1234" {
+		t.Errorf("expected URL=http://custom-url:1234, got %s", b.URL)
+	}
+}
+
+func TestDefaultBackendURLPersistence(t *testing.T) {
+	path := tempStatePath(t)
+
+	s1, err := NewStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a default backend with a URL by setting it explicitly
+	// First trigger lazy creation
+	_ = s1.conversations()
+	// Now set the URL
+	if err := s1.SetBackendURL("default", "http://explicit-default:9999"); err != nil {
+		t.Fatalf("SetBackendURL failed: %v", err)
+	}
+
+	// Load into fresh store
+	s2, err := NewStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	b := s2.GetBackend("default")
+	if b == nil {
+		t.Fatal("expected default backend to exist")
+	}
+	if b.URL != "http://explicit-default:9999" {
+		t.Errorf("expected URL=http://explicit-default:9999, got %s", b.URL)
+	}
+}

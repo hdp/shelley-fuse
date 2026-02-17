@@ -568,3 +568,18 @@ func (s *Store) ListBackends() []string {
 	sort.Strings(names)
 	return names
 }
+
+// SetBackendURL sets the URL for an existing backend.
+// Returns an error if the backend doesn't exist.
+func (s *Store) SetBackendURL(name, url string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	b, exists := s.Backends[name]
+	if !exists {
+		return fmt.Errorf("backend %q not found", name)
+	}
+
+	b.URL = url
+	return s.saveLocked()
+}
