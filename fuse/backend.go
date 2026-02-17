@@ -2,6 +2,8 @@ package fuse
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"syscall"
 	"time"
 
@@ -60,6 +62,7 @@ type BackendListNode struct {
 var _ = (fs.NodeLookuper)((*BackendListNode)(nil))
 var _ = (fs.NodeReaddirer)((*BackendListNode)(nil))
 var _ = (fs.NodeGetattrer)((*BackendListNode)(nil))
+var _ = (fs.NodeMkdirer)((*BackendListNode)(nil))
 
 func (b *BackendListNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
 	defer diag.Track(b.diag, "BackendListNode", "Lookup", name).Done()
@@ -103,6 +106,44 @@ func (b *BackendListNode) Getattr(ctx context.Context, f fs.FileHandle, out *fus
 	setTimestamps(&out.Attr, b.startTime)
 	out.SetTimeout(cacheTTLConversation)
 	return 0
+}
+
+// Mkdir creates a new backend with the given name.
+// Simple names (no dots) get default URL https://{name}.shelley.exe.xyz.
+// Dotted names get empty URL. Reserved name 'default' returns EEXIST.
+func (b *BackendListNode) Mkdir(ctx context.Context, name string, mode uint32, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
+	defer diag.Track(b.diag, "BackendListNode", "Mkdir", name).Done()
+	setEntryTimeout(out, cacheTTLConversation)
+
+	// "default" is a reserved symlink name - return EEXIST to indicate it already exists
+	if name == "default" {
+		return nil, syscall.EEXIST
+	}
+
+	// Determine URL based on whether name contains dots
+	var url string
+	if strings.Contains(name, ".") {
+		// Dotted names get empty URL (for custom/backend-specific configurations)
+		url = ""
+	} else {
+		// Simple names get default URL pattern
+		url = fmt.Sprintf("https://%s.shelley.exe.xyz", name)
+	}
+
+	// Create the backend in state
+	if err := b.state.CreateBackend(name, url); err != nil {
+		// Map known errors to syscall errors
+		if strings.Contains(err.Error(), "reserved") {
+			return nil, syscall.EEXIST
+		}
+		if strings.Contains(err.Error(), "already exists") {
+			return nil, syscall.EEXIST
+		}
+		return nil, syscall.EIO
+	}
+
+	// Return the newly created backend directory node
+	return b.NewInode(ctx, &BackendNode{name: name, state: b.state, startTime: b.startTime, diag: b.diag}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
 }
 
 // --- BackendNode: /shelley/backend/{name}/ directory ---

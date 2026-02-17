@@ -2242,3 +2242,87 @@ func TestBackendDirectory(t *testing.T) {
 		t.Error("Expected ENOENT for 'conversation' directory")
 	}
 }
+
+// TestBackendMkdir tests mkdir /shelley/backend/{name} to create backends.
+func TestBackendMkdir(t *testing.T) {
+	skipIfNoFusermount(t)
+	skipIfNoShelley(t)
+
+	serverURL := startShelleyServer(t)
+	mountPoint := mountTestFS(t, serverURL)
+
+	backendDir := filepath.Join(mountPoint, "shelley", "backend")
+
+	// Test 1: mkdir with simple name should create backend with default URL
+	err := os.Mkdir(filepath.Join(backendDir, "test-backend"), 0755)
+	if err != nil {
+		t.Fatalf("Failed to mkdir test-backend: %v", err)
+	}
+
+	// Verify backend appears in listing
+	entries, err := ioutil.ReadDir(backendDir)
+	if err != nil {
+		t.Fatalf("Failed to read backend directory: %v", err)
+	}
+	found := false
+	for _, e := range entries {
+		if e.Name() == "test-backend" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("Expected 'test-backend' to appear in backend directory")
+	}
+
+	// Verify URL file contains default URL
+	urlContent, err := ioutil.ReadFile(filepath.Join(backendDir, "test-backend", "url"))
+	if err != nil {
+		t.Fatalf("Failed to read test-backend/url: %v", err)
+	}
+	expectedURL := "https://test-backend.shelley.exe.xyz\n"
+	if string(urlContent) != expectedURL {
+		t.Errorf("Expected URL %q, got %q", expectedURL, string(urlContent))
+	}
+
+	// Test 2: mkdir with dotted name should create backend with empty URL
+	err = os.Mkdir(filepath.Join(backendDir, "custom.backend"), 0755)
+	if err != nil {
+		t.Fatalf("Failed to mkdir custom.backend: %v", err)
+	}
+
+	urlContent, err = ioutil.ReadFile(filepath.Join(backendDir, "custom.backend", "url"))
+	if err != nil {
+		t.Fatalf("Failed to read custom.backend/url: %v", err)
+	}
+	if string(urlContent) != "\n" {
+		t.Errorf("Expected empty URL (just newline), got %q", string(urlContent))
+	}
+
+	// Test 3: mkdir with reserved name 'default' should return EEXIST
+	err = os.Mkdir(filepath.Join(backendDir, "default"), 0755)
+	if err == nil {
+		t.Error("Expected error when mkdir 'default' (reserved name)")
+	}
+	if !os.IsExist(err) {
+		t.Errorf("Expected EEXIST for mkdir 'default', got: %v", err)
+	}
+
+	// Test 4: mkdir with existing name should return EEXIST
+	err = os.Mkdir(filepath.Join(backendDir, "test-backend"), 0755)
+	if err == nil {
+		t.Error("Expected error when mkdir existing backend")
+	}
+	if !os.IsExist(err) {
+		t.Errorf("Expected EEXIST for mkdir existing backend, got: %v", err)
+	}
+
+	// Test 5: mkdir with reserved name 'all' should return EEXIST
+	err = os.Mkdir(filepath.Join(backendDir, "all"), 0755)
+	if err == nil {
+		t.Error("Expected error when mkdir 'all' (reserved name)")
+	}
+	if !os.IsExist(err) {
+		t.Errorf("Expected EEXIST for mkdir 'all', got: %v", err)
+	}
+}
