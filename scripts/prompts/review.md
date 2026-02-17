@@ -42,10 +42,10 @@ If the implementation has issues you can fix (missing edge cases, style problems
 4. Run this command as your **final action**:
 
 ```
-just review TICKET_ID
+just review TICKET_ID 
 ```
 
-This launches a fresh review agent to check the cumulative diff against main.
+This launches a fresh review agent to check the cumulative diff against main. Do NOT start your own subagent to review.
 
 ### Escalate
 

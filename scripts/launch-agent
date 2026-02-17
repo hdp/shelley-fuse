@@ -33,7 +33,6 @@ fi
 
 # Substitute the ticket ID into the prompt, then launch Shelley with the given
 # prompt
-echo "Starting ${role} agent for $ticket in $worktree_dir:"
 cd "$worktree_dir"
-echo -n "Conversation id: "
-sed "s/TICKET_ID/$ticket/g" "$prompt_file" | "${model_dir}/new/start"
+ID=$(sed "s/TICKET_ID/$ticket/g" "$prompt_file" | "${model_dir}/new/start")
+echo "Successfully started ${role} agent for $ticket: $ID. Your job here is done."
