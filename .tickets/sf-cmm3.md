@@ -1,6 +1,6 @@
 ---
 id: sf-cmm3
-status: open
+status: closed
 deps: [sf-ebqt]
 links: [sf-c0hw]
 created: 2026-02-15T14:31:56Z

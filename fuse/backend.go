@@ -3,6 +3,8 @@ package fuse
 import (
 	"context"
 	"fmt"
+	"log"
+	"regexp"
 	"strings"
 	"syscall"
 	"time"
@@ -12,6 +14,8 @@ import (
 	"shelley-fuse/fuse/diag"
 	"shelley-fuse/state"
 )
+
+var backendNotFoundError = regexp.MustCompile(`backend "[^"]+" not found`)
 
 // --- ShelleyDirNode: /shelley/ directory ---
 
@@ -60,6 +64,7 @@ type BackendListNode struct {
 }
 
 var _ = (fs.NodeLookuper)((*BackendListNode)(nil))
+var _ = (fs.NodeRmdirer)((*BackendListNode)(nil))
 var _ = (fs.NodeReaddirer)((*BackendListNode)(nil))
 var _ = (fs.NodeGetattrer)((*BackendListNode)(nil))
 var _ = (fs.NodeMkdirer)((*BackendListNode)(nil))
@@ -144,6 +149,33 @@ func (b *BackendListNode) Mkdir(ctx context.Context, name string, mode uint32, o
 
 	// Return the newly created backend directory node
 	return b.NewInode(ctx, &BackendNode{name: name, state: b.state, startTime: b.startTime, diag: b.diag}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
+}
+
+// Rmdir removes a backend with the given name.
+// Returns EBUSY if the backend is the current default.
+// Returns EINVAL for 'default' name (reserved symlink name).
+func (b *BackendListNode) Rmdir(ctx context.Context, name string) syscall.Errno {
+	defer diag.Track(b.diag, "BackendListNode", "Rmdir", name).Done()
+
+	// "default" is a reserved symlink name
+	if name == "default" {
+		return syscall.EINVAL
+	}
+
+	// Delete the backend from state
+	if err := b.state.DeleteBackend(name); err != nil {
+		// Map known errors to syscall errors
+		if strings.Contains(err.Error(), "cannot delete default backend") {
+			return syscall.EBUSY
+		}
+		if backendNotFoundError.MatchString(err.Error()) {
+			return syscall.ENOENT
+		}
+		log.Printf("Rmdir backend %q: %v", name, err)
+		return syscall.EIO
+	}
+
+	return 0
 }
 
 // --- BackendNode: /shelley/backend/{name}/ directory ---
