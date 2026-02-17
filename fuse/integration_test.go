@@ -412,7 +412,7 @@ func TestRootAndModels(t *testing.T) {
 	for _, e := range entries {
 		names[e.Name()] = true
 	}
-	for _, expected := range []string{"model", "new", "conversation"} {
+	for _, expected := range []string{"model", "new", "conversation", "shelley"} {
 		if !names[expected] {
 			t.Errorf("Expected entry %q in root directory", expected)
 		}
@@ -2094,5 +2094,84 @@ func TestLastDirectory(t *testing.T) {
 	}
 	if !foundLast {
 		t.Error("Expected 'last' in conversation/ listing")
+	}
+}
+
+// TestBackendDirectory tests /shelley/backend/ directory functionality.
+func TestBackendDirectory(t *testing.T) {
+	skipIfNoFusermount(t)
+	skipIfNoShelley(t)
+
+	serverURL := startShelleyServer(t)
+	mountPoint := mountTestFS(t, serverURL)
+
+	// shelley directory should exist
+	entries, err := ioutil.ReadDir(filepath.Join(mountPoint, "shelley"))
+	if err != nil {
+		t.Fatalf("Failed to read shelley directory: %v", err)
+	}
+	names := make(map[string]bool)
+	for _, e := range entries {
+		names[e.Name()] = true
+	}
+	if !names["backend"] {
+		t.Error("Expected 'backend' entry in shelley directory")
+	}
+
+	// backend directory should list backends
+	backendEntries, err := ioutil.ReadDir(filepath.Join(mountPoint, "shelley", "backend"))
+	if err != nil {
+		t.Fatalf("Failed to read backend directory: %v", err)
+	}
+	backendNames := make(map[string]bool)
+	for _, e := range backendEntries {
+		backendNames[e.Name()] = true
+	}
+
+	// "default" should always be a symlink pointing to the actual default backend
+	// (which is "main" for the auto-created default)
+	if !backendNames["default"] {
+		t.Error("Expected 'default' symlink in backend directory")
+	}
+
+	// "main" is the auto-created default backend
+	if !backendNames["main"] {
+		t.Error("Expected 'main' backend directory")
+	}
+
+	// Verify "default" is a symlink
+	info, err := os.Lstat(filepath.Join(mountPoint, "shelley", "backend", "default"))
+	if err != nil {
+		t.Fatalf("Failed to lstat backend/default: %v", err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Error("Expected backend/default to be a symlink")
+	}
+
+	// Verify symlink target points to "main"
+	target, err := os.Readlink(filepath.Join(mountPoint, "shelley", "backend", "default"))
+	if err != nil {
+		t.Fatalf("Failed to readlink backend/default: %v", err)
+	}
+	if target != "main" {
+		t.Errorf("Expected 'default' symlink to point to 'main', got %q", target)
+	}
+
+	// Should be able to stat the "main" backend directory (following the symlink)
+	mainInfo, err := os.Stat(filepath.Join(mountPoint, "shelley", "backend", "main"))
+	if err != nil {
+		t.Fatalf("Failed to stat backend/main: %v", err)
+	}
+	if !mainInfo.IsDir() {
+		t.Error("Expected backend/main to be a directory")
+	}
+
+	// Following the symlink should also work
+	defaultFollowInfo, err := os.Stat(filepath.Join(mountPoint, "shelley", "backend", "default"))
+	if err != nil {
+		t.Fatalf("Failed to stat backend/default (following symlink): %v", err)
+	}
+	if !defaultFollowInfo.IsDir() {
+		t.Error("Expected backend/default (followed) to be a directory")
 	}
 }

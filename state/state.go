@@ -50,8 +50,10 @@ type BackendState struct {
 	Conversations map[string]*ConversationState `json:"conversations"`
 }
 
-// defaultBackendName is the reserved name for the default backend.
-const defaultBackendName = "default"
+// mainBackendName is the internal name for the auto-created default backend.
+// The name "default" is reserved in the FUSE filesystem and is always a symlink
+// pointing to the actual default backend name.
+const mainBackendName = "main"
 
 // Store manages local conversation state, persisted to a JSON file.
 type Store struct {
@@ -82,13 +84,13 @@ func NewStore(path string) (*Store, error) {
 
 // defaultBackend returns the default backend state, creating it if needed.
 func (s *Store) defaultBackend() *BackendState {
-	b, ok := s.Backends[defaultBackendName]
+	b, ok := s.Backends[mainBackendName]
 	if !ok {
 		b = &BackendState{
 			URL:           "",
 			Conversations: make(map[string]*ConversationState),
 		}
-		s.Backends[defaultBackendName] = b
+		s.Backends[mainBackendName] = b
 	}
 	return b
 }
@@ -551,15 +553,24 @@ func (s *Store) GetDefaultBackend() string {
 // getDefaultBackend returns the default backend name without locking.
 func (s *Store) getDefaultBackend() string {
 	if s.DefaultBackend == "" {
-		return defaultBackendName
+		return mainBackendName
 	}
 	return s.DefaultBackend
 }
 
 // ListBackends returns all backend names, sorted.
+// Ensures the default backend exists before listing.
 func (s *Store) ListBackends() []string {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Ensure the default backend exists
+	if _, ok := s.Backends[mainBackendName]; !ok {
+		s.Backends[mainBackendName] = &BackendState{
+			URL:           "",
+			Conversations: make(map[string]*ConversationState),
+		}
+	}
 
 	names := make([]string, 0, len(s.Backends))
 	for name := range s.Backends {

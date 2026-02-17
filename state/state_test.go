@@ -1338,9 +1338,9 @@ func TestMigrationFromV1(t *testing.T) {
 	if newFormat.Backends == nil {
 		t.Fatal("expected backends map")
 	}
-	b, ok := newFormat.Backends[defaultBackendName]
+	b, ok := newFormat.Backends[mainBackendName]
 	if !ok {
-		t.Fatalf("expected default backend %q to exist", defaultBackendName)
+		t.Fatalf("expected default backend %q to exist", mainBackendName)
 	}
 	if b.Conversations == nil {
 		t.Fatal("expected conversations map in default backend")
@@ -1392,9 +1392,9 @@ func TestMigrationFromV1Empty(t *testing.T) {
 	if newFormat.Backends == nil {
 		t.Fatal("expected backends map")
 	}
-	b, ok := newFormat.Backends[defaultBackendName]
+	b, ok := newFormat.Backends[mainBackendName]
 	if !ok {
-		t.Fatalf("expected default backend %q to exist", defaultBackendName)
+		t.Fatalf("expected default backend %q to exist", mainBackendName)
 	}
 	if b.Conversations == nil {
 		t.Fatal("expected conversations map in default backend")
@@ -1457,8 +1457,8 @@ func TestNewFormatRoundTrip(t *testing.T) {
 	if newFormat.Backends == nil {
 		t.Fatal("expected backends map")
 	}
-	if _, ok := newFormat.Backends[defaultBackendName]; !ok {
-		t.Fatalf("expected default backend %q to exist", defaultBackendName)
+	if _, ok := newFormat.Backends[mainBackendName]; !ok {
+		t.Fatalf("expected default backend %q to exist", mainBackendName)
 	}
 }
 
@@ -1562,15 +1562,14 @@ func TestGetBackendDefault(t *testing.T) {
 	}
 
 	// The default backend is created lazily when accessed via conversations()
-	// Calling GetBackend("default") on a fresh store returns nil
-	// This is intentional - the backend is created on demand
+	// The auto-created backend is named "main", not "default" (reserved name)
 
 	// Trigger lazy creation by accessing conversations
 	_ = s.conversations()
 
-	b := s.GetBackend("default")
+	b := s.GetBackend("main")
 	if b == nil {
-		t.Error("expected default backend to exist after lazy creation")
+		t.Error("expected 'main' backend to exist after lazy creation")
 	}
 }
 
@@ -1610,8 +1609,11 @@ func TestDeleteBackendRefusesDefault(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Try to delete default backend
-	if err := s.DeleteBackend("default"); err == nil {
+	// Trigger lazy creation of the default backend (named "main")
+	_ = s.conversations()
+
+	// Try to delete the default backend (named "main")
+	if err := s.DeleteBackend("main"); err == nil {
 		t.Error("expected error when deleting default backend")
 	}
 
@@ -1796,9 +1798,9 @@ func TestSetDefaultBackend(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Default should initially be "default"
-	if s.GetDefaultBackend() != "default" {
-		t.Errorf("expected initial default='default', got %s", s.GetDefaultBackend())
+	// Default should initially be "main" (the auto-created backend name)
+	if s.GetDefaultBackend() != "main" {
+		t.Errorf("expected initial default='main', got %s", s.GetDefaultBackend())
 	}
 
 	// Create a new backend and make it default
@@ -1859,22 +1861,13 @@ func TestListBackends(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Initially empty (default is created lazily)
+	// ListBackends ensures the default backend exists, so we should see "main"
 	backends := s.ListBackends()
-	if len(backends) != 0 {
-		t.Errorf("expected 0 backends initially, got %d", len(backends))
-	}
-
-	// Trigger lazy default creation by accessing conversations
-	_ = s.conversations()
-
-	// Now should have "default"
-	backends = s.ListBackends()
 	if len(backends) != 1 {
-		t.Errorf("expected 1 backend after lazy creation, got %d", len(backends))
+		t.Errorf("expected 1 backend (the default), got %d", len(backends))
 	}
-	if backends[0] != "default" {
-		t.Errorf("expected 'default', got %s", backends[0])
+	if backends[0] != "main" {
+		t.Errorf("expected 'main', got %s", backends[0])
 	}
 
 	// Create some backends
@@ -1891,8 +1884,8 @@ func TestListBackends(t *testing.T) {
 	}
 
 	// Should be sorted
-	if backends[0] != "alpha" || backends[1] != "beta" || backends[2] != "default" {
-		t.Errorf("expected sorted backends [alpha, beta, default], got %v", backends)
+	if backends[0] != "alpha" || backends[1] != "beta" || backends[2] != "main" {
+		t.Errorf("expected sorted backends [alpha, beta, main], got %v", backends)
 	}
 }
 
@@ -1996,8 +1989,8 @@ func TestDefaultBackendURLPersistence(t *testing.T) {
 	// Create a default backend with a URL by setting it explicitly
 	// First trigger lazy creation
 	_ = s1.conversations()
-	// Now set the URL
-	if err := s1.SetBackendURL("default", "http://explicit-default:9999"); err != nil {
+	// Now set the URL on the "main" backend
+	if err := s1.SetBackendURL("main", "http://explicit-main:9999"); err != nil {
 		t.Fatalf("SetBackendURL failed: %v", err)
 	}
 
@@ -2007,11 +2000,11 @@ func TestDefaultBackendURLPersistence(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	b := s2.GetBackend("default")
+	b := s2.GetBackend("main")
 	if b == nil {
-		t.Fatal("expected default backend to exist")
+		t.Fatal("expected 'main' backend to exist")
 	}
-	if b.URL != "http://explicit-default:9999" {
-		t.Errorf("expected URL=http://explicit-default:9999, got %s", b.URL)
+	if b.URL != "http://explicit-main:9999" {
+		t.Errorf("expected URL=http://explicit-main:9999, got %s", b.URL)
 	}
 }

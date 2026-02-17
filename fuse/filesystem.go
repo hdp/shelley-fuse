@@ -148,6 +148,9 @@ func (f *FS) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.I
 	case "conversation":
 		setEntryTimeout(out, cacheTTLConversation)
 		return f.NewInode(ctx, &ConversationListNode{client: f.client, state: f.state, cloneTimeout: f.cloneTimeout, startTime: f.startTime, parsedCache: f.parsedCache, diag: f.Diag}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
+	case "shelley":
+		setEntryTimeout(out, cacheTTLConversation)
+		return f.NewInode(ctx, &ShelleyDirNode{state: f.state, startTime: f.startTime, diag: f.Diag}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
 	case "README.md":
 		setEntryTimeout(out, cacheTTLStatic)
 		return f.NewInode(ctx, &ReadmeNode{startTime: f.startTime}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
@@ -161,6 +164,7 @@ func (f *FS) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
 		{Name: "model", Mode: fuse.S_IFDIR},
 		{Name: "new", Mode: syscall.S_IFLNK},
 		{Name: "conversation", Mode: fuse.S_IFDIR},
+		{Name: "shelley", Mode: fuse.S_IFDIR},
 	}), 0
 }
 
