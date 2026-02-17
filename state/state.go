@@ -55,9 +55,10 @@ const defaultBackendName = "default"
 
 // Store manages local conversation state, persisted to a JSON file.
 type Store struct {
-	Path     string
-	Backends map[string]*BackendState `json:"backends"`
-	mu       sync.RWMutex
+	Path            string
+	Backends        map[string]*BackendState `json:"backends"`
+	DefaultBackend  string                  `json:"default_backend,omitempty"`
+	mu              sync.RWMutex
 }
 
 // NewStore creates a new Store. If path is empty, defaults to ~/.shelley-fuse/state.json.
@@ -380,11 +381,15 @@ func (s *Store) Load() error {
 
 	// Try to load as new format (backends map)
 	var newFormat struct {
-		Backends map[string]*BackendState `json:"backends"`
+		Backends       map[string]*BackendState `json:"backends"`
+		DefaultBackend string                  `json:"default_backend,omitempty"`
 	}
 	if err := json.Unmarshal(data, &newFormat); err == nil {
 		if newFormat.Backends != nil {
 			s.Backends = newFormat.Backends
+			s.DefaultBackend = newFormat.DefaultBackend
+			// Ensure default backend exists
+			s.defaultBackend()
 			return nil
 		}
 	}
@@ -415,8 +420,9 @@ func (s *Store) saveLocked() error {
 		return fmt.Errorf("failed to create state directory: %w", err)
 	}
 	data, err := json.MarshalIndent(struct {
-		Backends map[string]*BackendState `json:"backends"`
-	}{Backends: s.Backends}, "", "  ")
+		Backends       map[string]*BackendState `json:"backends"`
+		DefaultBackend string                  `json:"default_backend,omitempty"`
+	}{Backends: s.Backends, DefaultBackend: s.DefaultBackend}, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal state: %w", err)
 	}
@@ -435,4 +441,130 @@ func (s *Store) generateID() (string, error) {
 		}
 	}
 	return "", fmt.Errorf("failed to generate unique ID after 100 attempts")
+}
+
+// Reserved backend names that cannot be created by users.
+var reservedBackendNames = map[string]bool{
+	"default": true,
+	"all":     true,
+}
+
+// CreateBackend creates a new backend with the given name and URL.
+// Returns an error if the name is reserved or already exists.
+func (s *Store) CreateBackend(name, url string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if reservedBackendNames[name] {
+		return fmt.Errorf("backend name %q is reserved", name)
+	}
+
+	if _, exists := s.Backends[name]; exists {
+		return fmt.Errorf("backend %q already exists", name)
+	}
+
+	s.Backends[name] = &BackendState{
+		URL:           url,
+		Conversations: make(map[string]*ConversationState),
+	}
+	return s.saveLocked()
+}
+
+// GetBackend returns the backend state for the given name, or nil if not found.
+func (s *Store) GetBackend(name string) *BackendState {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.Backends[name]
+}
+
+// DeleteBackend removes a backend from state.
+// Returns an error if the backend doesn't exist or is the default backend.
+func (s *Store) DeleteBackend(name string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if name == s.getDefaultBackend() {
+		return fmt.Errorf("cannot delete default backend %q", name)
+	}
+
+	if _, exists := s.Backends[name]; !exists {
+		return fmt.Errorf("backend %q not found", name)
+	}
+
+	delete(s.Backends, name)
+	return s.saveLocked()
+}
+
+// RenameBackend renames a backend.
+// Returns an error if the old name doesn't exist, new name is reserved, or new name already exists.
+// If the renamed backend is the default, updates the default backend reference.
+func (s *Store) RenameBackend(oldName, newName string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, exists := s.Backends[oldName]; !exists {
+		return fmt.Errorf("backend %q not found", oldName)
+	}
+
+	if reservedBackendNames[newName] {
+		return fmt.Errorf("backend name %q is reserved", newName)
+	}
+
+	if _, exists := s.Backends[newName]; exists {
+		return fmt.Errorf("backend %q already exists", newName)
+	}
+
+	// Move the backend to the new name
+	s.Backends[newName] = s.Backends[oldName]
+	delete(s.Backends, oldName)
+
+	// Update default backend if needed
+	if s.DefaultBackend == oldName {
+		s.DefaultBackend = newName
+	}
+
+	return s.saveLocked()
+}
+
+// SetDefaultBackend sets the default backend.
+// Returns an error if the backend doesn't exist.
+func (s *Store) SetDefaultBackend(name string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, exists := s.Backends[name]; !exists {
+		return fmt.Errorf("backend %q not found", name)
+	}
+
+	s.DefaultBackend = name
+	return s.saveLocked()
+}
+
+// GetDefaultBackend returns the name of the default backend.
+// If no default is set, returns "default".
+func (s *Store) GetDefaultBackend() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.getDefaultBackend()
+}
+
+// getDefaultBackend returns the default backend name without locking.
+func (s *Store) getDefaultBackend() string {
+	if s.DefaultBackend == "" {
+		return defaultBackendName
+	}
+	return s.DefaultBackend
+}
+
+// ListBackends returns all backend names, sorted.
+func (s *Store) ListBackends() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	names := make([]string, 0, len(s.Backends))
+	for name := range s.Backends {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }

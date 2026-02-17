@@ -1461,3 +1461,437 @@ func TestNewFormatRoundTrip(t *testing.T) {
 		t.Fatalf("expected default backend %q to exist", defaultBackendName)
 	}
 }
+
+// Backend CRUD Tests
+
+func TestCreateBackend(t *testing.T) {
+	s, err := NewStore(tempStatePath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.CreateBackend("my-backend", "http://localhost:9999"); err != nil {
+		t.Fatalf("CreateBackend failed: %v", err)
+	}
+
+	b := s.GetBackend("my-backend")
+	if b == nil {
+		t.Fatal("expected backend to exist")
+	}
+	if b.URL != "http://localhost:9999" {
+		t.Errorf("expected URL=http://localhost:9999, got %s", b.URL)
+	}
+	if b.Conversations == nil {
+		t.Error("expected Conversations map to be initialized")
+	}
+}
+
+func TestCreateBackendAlreadyExists(t *testing.T) {
+	s, err := NewStore(tempStatePath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.CreateBackend("my-backend", "http://localhost:9999"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.CreateBackend("my-backend", "http://other:8080"); err == nil {
+		t.Error("expected error when creating backend that already exists")
+	}
+}
+
+func TestCreateBackendReservedName(t *testing.T) {
+	s, err := NewStore(tempStatePath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.CreateBackend("default", "http://localhost:9999"); err == nil {
+		t.Error("expected error when creating backend with reserved name 'default'")
+	}
+
+	if err := s.CreateBackend("all", "http://localhost:9999"); err == nil {
+		t.Error("expected error when creating backend with reserved name 'all'")
+	}
+}
+
+func TestCreateBackendPersistence(t *testing.T) {
+	path := tempStatePath(t)
+
+	s1, err := NewStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s1.CreateBackend("persisted-backend", "http://localhost:8888"); err != nil {
+		t.Fatalf("CreateBackend failed: %v", err)
+	}
+
+	// Load into fresh store
+	s2, err := NewStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	b := s2.GetBackend("persisted-backend")
+	if b == nil {
+		t.Fatal("expected backend to persist")
+	}
+	if b.URL != "http://localhost:8888" {
+		t.Errorf("expected URL=http://localhost:8888, got %s", b.URL)
+	}
+}
+
+func TestGetBackendNotFound(t *testing.T) {
+	s, err := NewStore(tempStatePath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	b := s.GetBackend("nonexistent")
+	if b != nil {
+		t.Error("expected nil for nonexistent backend")
+	}
+}
+
+func TestGetBackendDefault(t *testing.T) {
+	s, err := NewStore(tempStatePath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The default backend is created lazily when accessed via conversations()
+	// Calling GetBackend("default") on a fresh store returns nil
+	// This is intentional - the backend is created on demand
+
+	// Trigger lazy creation by accessing conversations
+	_ = s.conversations()
+
+	b := s.GetBackend("default")
+	if b == nil {
+		t.Error("expected default backend to exist after lazy creation")
+	}
+}
+
+func TestDeleteBackend(t *testing.T) {
+	s, err := NewStore(tempStatePath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.CreateBackend("to-delete", "http://localhost:9999"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.DeleteBackend("to-delete"); err != nil {
+		t.Fatalf("DeleteBackend failed: %v", err)
+	}
+
+	if s.GetBackend("to-delete") != nil {
+		t.Error("expected backend to be deleted")
+	}
+}
+
+func TestDeleteBackendNotFound(t *testing.T) {
+	s, err := NewStore(tempStatePath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.DeleteBackend("nonexistent"); err == nil {
+		t.Error("expected error when deleting nonexistent backend")
+	}
+}
+
+func TestDeleteBackendRefusesDefault(t *testing.T) {
+	s, err := NewStore(tempStatePath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Try to delete default backend
+	if err := s.DeleteBackend("default"); err == nil {
+		t.Error("expected error when deleting default backend")
+	}
+
+	// Set a different default and try again
+	if err := s.CreateBackend("other", "http://localhost:9999"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetDefaultBackend("other"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.DeleteBackend("other"); err == nil {
+		t.Error("expected error when deleting current default backend")
+	}
+}
+
+func TestDeleteBackendPersistence(t *testing.T) {
+	path := tempStatePath(t)
+
+	s1, err := NewStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s1.CreateBackend("persist-delete", "http://localhost:9999"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s1.CreateBackend("keep-me", "http://localhost:8888"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s1.DeleteBackend("persist-delete"); err != nil {
+		t.Fatalf("DeleteBackend failed: %v", err)
+	}
+
+	// Load into fresh store
+	s2, err := NewStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if s2.GetBackend("persist-delete") != nil {
+		t.Error("deleted backend should not persist")
+	}
+	if s2.GetBackend("keep-me") == nil {
+		t.Error("non-deleted backend should persist")
+	}
+}
+
+func TestRenameBackend(t *testing.T) {
+	s, err := NewStore(tempStatePath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.CreateBackend("old-name", "http://localhost:9999"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.RenameBackend("old-name", "new-name"); err != nil {
+		t.Fatalf("RenameBackend failed: %v", err)
+	}
+
+	if s.GetBackend("old-name") != nil {
+		t.Error("old name should not exist")
+	}
+	b := s.GetBackend("new-name")
+	if b == nil {
+		t.Fatal("new name should exist")
+	}
+	if b.URL != "http://localhost:9999" {
+		t.Errorf("URL should be preserved, got %s", b.URL)
+	}
+}
+
+func TestRenameBackendNotFound(t *testing.T) {
+	s, err := NewStore(tempStatePath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.RenameBackend("nonexistent", "new-name"); err == nil {
+		t.Error("expected error when renaming nonexistent backend")
+	}
+}
+
+func TestRenameBackendReservedName(t *testing.T) {
+	s, err := NewStore(tempStatePath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.CreateBackend("my-backend", "http://localhost:9999"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.RenameBackend("my-backend", "default"); err == nil {
+		t.Error("expected error when renaming to reserved name 'default'")
+	}
+
+	if err := s.RenameBackend("my-backend", "all"); err == nil {
+		t.Error("expected error when renaming to reserved name 'all'")
+	}
+}
+
+func TestRenameBackendAlreadyExists(t *testing.T) {
+	s, err := NewStore(tempStatePath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.CreateBackend("backend1", "http://localhost:9999"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateBackend("backend2", "http://localhost:8888"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.RenameBackend("backend1", "backend2"); err == nil {
+		t.Error("expected error when renaming to existing name")
+	}
+}
+
+func TestRenameBackendUpdatesDefault(t *testing.T) {
+	s, err := NewStore(tempStatePath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a backend and make it default
+	if err := s.CreateBackend("my-default", "http://localhost:9999"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetDefaultBackend("my-default"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Rename it
+	if err := s.RenameBackend("my-default", "renamed-default"); err != nil {
+		t.Fatalf("RenameBackend failed: %v", err)
+	}
+
+	// Default should be updated
+	if s.GetDefaultBackend() != "renamed-default" {
+		t.Errorf("expected default=renamed-default, got %s", s.GetDefaultBackend())
+	}
+}
+
+func TestRenameBackendPersistence(t *testing.T) {
+	path := tempStatePath(t)
+
+	s1, err := NewStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s1.CreateBackend("persist-rename", "http://localhost:9999"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s1.RenameBackend("persist-rename", "after-rename"); err != nil {
+		t.Fatalf("RenameBackend failed: %v", err)
+	}
+
+	// Load into fresh store
+	s2, err := NewStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if s2.GetBackend("persist-rename") != nil {
+		t.Error("old name should not exist")
+	}
+	if s2.GetBackend("after-rename") == nil {
+		t.Error("new name should exist")
+	}
+}
+
+func TestSetDefaultBackend(t *testing.T) {
+	s, err := NewStore(tempStatePath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Default should initially be "default"
+	if s.GetDefaultBackend() != "default" {
+		t.Errorf("expected initial default='default', got %s", s.GetDefaultBackend())
+	}
+
+	// Create a new backend and make it default
+	if err := s.CreateBackend("new-default", "http://localhost:9999"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.SetDefaultBackend("new-default"); err != nil {
+		t.Fatalf("SetDefaultBackend failed: %v", err)
+	}
+
+	if s.GetDefaultBackend() != "new-default" {
+		t.Errorf("expected default='new-default', got %s", s.GetDefaultBackend())
+	}
+}
+
+func TestSetDefaultBackendNotFound(t *testing.T) {
+	s, err := NewStore(tempStatePath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.SetDefaultBackend("nonexistent"); err == nil {
+		t.Error("expected error when setting nonexistent backend as default")
+	}
+}
+
+func TestSetDefaultBackendPersistence(t *testing.T) {
+	path := tempStatePath(t)
+
+	s1, err := NewStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s1.CreateBackend("persist-default", "http://localhost:9999"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s1.SetDefaultBackend("persist-default"); err != nil {
+		t.Fatalf("SetDefaultBackend failed: %v", err)
+	}
+
+	// Load into fresh store
+	s2, err := NewStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if s2.GetDefaultBackend() != "persist-default" {
+		t.Errorf("expected default='persist-default', got %s", s2.GetDefaultBackend())
+	}
+}
+
+func TestListBackends(t *testing.T) {
+	s, err := NewStore(tempStatePath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Initially empty (default is created lazily)
+	backends := s.ListBackends()
+	if len(backends) != 0 {
+		t.Errorf("expected 0 backends initially, got %d", len(backends))
+	}
+
+	// Trigger lazy default creation by accessing conversations
+	_ = s.conversations()
+
+	// Now should have "default"
+	backends = s.ListBackends()
+	if len(backends) != 1 {
+		t.Errorf("expected 1 backend after lazy creation, got %d", len(backends))
+	}
+	if backends[0] != "default" {
+		t.Errorf("expected 'default', got %s", backends[0])
+	}
+
+	// Create some backends
+	if err := s.CreateBackend("alpha", "http://localhost:9999"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateBackend("beta", "http://localhost:8888"); err != nil {
+		t.Fatal(err)
+	}
+
+	backends = s.ListBackends()
+	if len(backends) != 3 {
+		t.Errorf("expected 3 backends, got %d", len(backends))
+	}
+
+	// Should be sorted
+	if backends[0] != "alpha" || backends[1] != "beta" || backends[2] != "default" {
+		t.Errorf("expected sorted backends [alpha, beta, default], got %v", backends)
+	}
+}
