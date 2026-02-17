@@ -97,6 +97,15 @@ dev-reload:
 finish-work *ticket:
     "$(git worktree list --porcelain | awk '/^worktree /{print $2; exit}')/scripts/finish-work" {{ticket}}
 
+# Archive Shelley conversations for worktrees that have been cleaned up
+archive-finished:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    find /shelley/conversation -maxdepth 2 -name ctl | while read ctl; do
+        fgrep -qf <(git worktree list --porcelain | awk '/^worktree /{print "cwd="$2}') $ctl && continue
+        touch $(dirname $ctl)/archived
+    done
+
 # Clean up all worktrees and branches for tickets that are already closed
 clean-finished:
     #!/usr/bin/env bash
