@@ -2,7 +2,8 @@
 #
 # finish-work [ticket-id]
 #
-# Idempotent cleanup: close ticket, rebase onto main, ff-merge, remove worktree
+# Idempotent cleanup: close ticket, rebase onto main, squash into single commit,
+# ff-merge, remove worktree
 # and branch. Safe to run repeatedly — skips already-completed steps.
 #
 # Can be run from the main worktree or from a ticket's worktree. When run from
@@ -98,7 +99,7 @@ if [ -n "$status" ] && [ "$status" != "closed" ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# 3. Rebase & merge (only if branch exists with commits ahead of main)
+# 3. Rebase, squash & merge (only if branch exists with commits ahead of main)
 # ---------------------------------------------------------------------------
 if branch_exists; then
     ahead=$(git rev-list --count "main..$ticket" 2>/dev/null || echo 0)
@@ -109,6 +110,39 @@ if branch_exists; then
         else
             # No worktree — rebase the branch directly
             git rebase main "$ticket"
+        fi
+
+        # Build squash commit message: ticket title as subject, reviewer
+        # summary as body (falls back to concatenated commit messages)
+        ticket_title=$(sed -n '/^# /{s/^# //p;q}' ".tickets/${ticket}.md" 2>/dev/null) || true
+        commit_msg_file=""
+        if worktree_exists && [ -f "$worktree_dir/.commit-message" ]; then
+            commit_msg_file="$worktree_dir/.commit-message"
+        elif [ -f ".commit-message" ]; then
+            commit_msg_file=".commit-message"
+        fi
+
+        if [ -n "$commit_msg_file" ]; then
+            # Reviewer wrote a summary — use ticket title as subject + summary as body
+            squash_msg="${ticket}: ${ticket_title:-Completed ticket work}
+
+$(cat "$commit_msg_file")"
+        else
+            # No reviewer summary — fall back to commit log
+            commit_body=$(git log main..$ticket --reverse --format="- %s" 2>/dev/null) || true
+            squash_msg="${ticket}: ${ticket_title:-Completed ticket work}${commit_body:+
+
+${commit_body}}"
+        fi
+
+        step "Squashing $ticket into a single commit"
+        if worktree_exists; then
+            git -C "$worktree_dir" reset --soft main
+            git -C "$worktree_dir" commit -m "$squash_msg"
+        else
+            # Already on the ticket branch after rebase
+            git reset --soft main
+            git commit -m "$squash_msg"
             git checkout main
         fi
 

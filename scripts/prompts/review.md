@@ -21,13 +21,16 @@ Review the implementation against the ticket's requirements and acceptance crite
 
 ### Approve
 
-If the implementation satisfies the ticket's requirements and acceptance criteria, run this as your **final action**:
+If the implementation satisfies the ticket's requirements and acceptance criteria:
+
+1. **Write a commit summary** to `.commit-message` describing what this change does and why. This becomes the body of the single squash commit on main. Write it for a human reading `git log` — focus on what changed and why, not the review process. Do not mention the ticket system, agents, or review rounds.
+2. Run this as your **final action**:
 
 ```
 just finish-work TICKET_ID
 ```
 
-This closes the ticket, rebases onto main, merges, and cleans up the worktree.
+This closes the ticket, squashes all branch commits into one (using your summary), rebases onto main, merges, and cleans up the worktree.
 
 ### Fix and Re-review
 
