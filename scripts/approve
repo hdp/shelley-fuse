@@ -1,10 +1,14 @@
 #!/usr/bin/env bash
 #
-# finish-work [ticket-id]
+# approve [ticket-id]
 #
 # Idempotent cleanup: close ticket, rebase onto main, squash into single commit,
-# ff-merge, remove worktree
-# and branch. Safe to run repeatedly — skips already-completed steps.
+# ff-merge, remove worktree and branch. Safe to run repeatedly — skips
+# already-completed steps.
+#
+# Guards against self-approval: refuses to proceed if HEAD has moved since
+# `just review` was launched or if there are uncommitted changes in the
+# worktree. This ensures a fresh review agent has seen the final state.
 #
 # Can be run from the main worktree or from a ticket's worktree. When run from
 # a worktree, the ticket is inferred from the directory/branch name and the
@@ -35,7 +39,7 @@ if [ "$current_wt" != "$main_wt" ]; then
     echo "Running from worktree — delegating to main worktree ($main_wt)"
     cd "$main_wt"
     # Always run main's copy of the script (worktree may have stale version)
-    exec "$main_wt/scripts/finish-work" "$ticket"
+    exec "$main_wt/scripts/approve" "$ticket"
 fi
 
 # ---------------------------------------------------------------------------
@@ -45,7 +49,7 @@ if [ -n "${1:-}" ]; then
     ticket="$1"
 else
     echo "ERROR: ticket ID required when running from main worktree" >&2
-    echo "Usage: finish-work <ticket-id>" >&2
+    echo "Usage: approve <ticket-id>" >&2
     exit 1
 fi
 
@@ -65,6 +69,32 @@ branch_exists() { git rev-parse --verify "refs/heads/$ticket" &>/dev/null; }
 worktree_exists() { [ -n "$worktree_dir" ] && git worktree list | grep -q "$worktree_dir"; }
 
 step() { printf '\n--- %s ---\n' "$*"; }
+
+# ---------------------------------------------------------------------------
+# Guard: reject self-approval
+# ---------------------------------------------------------------------------
+if worktree_exists; then
+    review_head_file="$worktree_dir/.review-head"
+    if [ -f "$review_head_file" ]; then
+        review_head=$(cat "$review_head_file")
+        current_head=$(git -C "$worktree_dir" rev-parse HEAD 2>/dev/null) || true
+
+        if [ "$review_head" != "$current_head" ]; then
+            echo "ERROR: HEAD has moved since the review started." >&2
+            echo "The reviewer made changes that haven't been independently reviewed." >&2
+            echo "Run 'just review $ticket' to get fresh eyes on the changes." >&2
+            exit 1
+        fi
+    fi
+
+    dirty=$(git -C "$worktree_dir" status --porcelain 2>/dev/null) || true
+    if [ -n "$dirty" ]; then
+        echo "ERROR: Worktree has uncommitted changes." >&2
+        echo "The reviewer made changes that haven't been committed or reviewed." >&2
+        echo "Run 'just review $ticket' to get fresh eyes on the changes." >&2
+        exit 1
+    fi
+fi
 
 # ---------------------------------------------------------------------------
 # 1. Abort any in-progress rebase in the worktree
@@ -149,7 +179,7 @@ ${commit_body}}"
         step "Fast-forward merging $ticket into main"
         stashed=false
         if ! git diff --quiet 2>/dev/null || ! git diff --cached --quiet 2>/dev/null; then
-            git stash push -m "finish-work: temp stash for $ticket merge"
+            git stash push -m "approve: temp stash for $ticket merge"
             stashed=true
         fi
         git merge --ff-only "$ticket"
@@ -192,4 +222,4 @@ fi
 # Done
 # ---------------------------------------------------------------------------
 echo ""
-echo "✓ $ticket finished."
+echo "✓ $ticket approved and merged."

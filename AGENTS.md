@@ -39,7 +39,7 @@ You were launched by `just start-work` or `just implement`. Your job:
 3. Implement the work, run `just test`, commit
 4. When done, run `just review {ticket}` as your **final action**
 
-Do NOT run `just finish-work` — that's the reviewer's job.
+Do NOT run `just approve` — that's the reviewer's job.
 
 ### As a Review Agent
 
@@ -49,7 +49,7 @@ You were launched by `just review`. Your job:
 2. Review `git diff main...HEAD` against the ticket
 3. Run `just test`
 4. Either:
-   - **Approve**: run `just finish-work {ticket}` (closes ticket, rebases, merges, cleans up)
+   - **Approve**: run `just approve {ticket}` (closes ticket, squashes, rebases, merges, cleans up)
    - **Fix and re-review**: fix issues directly, commit, then run `just review {ticket}` for fresh eyes
    - **Escalate**: if fundamentally broken, stop and explain the problem to a human
 
@@ -62,7 +62,7 @@ If a ticket is too large for one pass, create new tickets for remaining work wit
 - `just start-work {ticket}` — Create worktree and start implementing (first time)
 - `just implement {ticket}` — Resume implementing in existing worktree
 - `just review {ticket}` — Launch review on existing worktree
-- `just finish-work {ticket}` — Approve: close, rebase, merge, clean up (reviewer only)
+- `just approve {ticket}` — Approve: close, squash, rebase, merge, clean up (reviewer only)
 - `just next-ticket` — Print the next ticket ready for work
 - `just test` — Run all tests
 - `just build` — Build the binary

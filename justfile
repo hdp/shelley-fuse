@@ -68,6 +68,8 @@ review ticket:
         echo "ERROR: No worktree for {{ticket}}. Nothing to review." >&2
         exit 1
     fi
+    # Record HEAD so `just approve` can detect if the reviewer made changes
+    git -C "$worktree_dir" rev-parse HEAD > "$worktree_dir/.review-head"
     "$main_wt/scripts/launch-agent" review "{{ticket}}" "$worktree_dir"
 
 # Build the FUSE binary
@@ -91,11 +93,12 @@ run-dev mount="~/mnt/shelley" url="http://localhost:9999":
 dev-reload:
     bash scripts/dev-reload 
 
-# Finish work: close ticket, rebase onto main, ff-merge, remove worktree+branch.
+# Approve: close ticket, rebase onto main, squash, ff-merge, remove worktree+branch.
+# Refuses if HEAD has moved or worktree is dirty since `just review` (prevents self-approval).
 # Idempotent — safe to run repeatedly until exit 0.
 # From a worktree: ticket is inferred if omitted. Always runs main's copy of the script.
-finish-work *ticket:
-    "$(git worktree list --porcelain | awk '/^worktree /{print $2; exit}')/scripts/finish-work" {{ticket}}
+approve *ticket:
+    "$(git worktree list --porcelain | awk '/^worktree /{print $2; exit}')/scripts/approve" {{ticket}}
 
 # Archive Shelley conversations for worktrees that have been cleaned up
 archive-finished:
@@ -115,7 +118,7 @@ clean-finished:
         status=$(tk show "$branch" 2>/dev/null | awk '/^status:/{print $2}') || true
         if [ "$status" = "closed" ]; then
             echo "=== Cleaning up $branch ==="
-            just finish-work "$branch"
+            just approve "$branch"
         else
             echo "Skipping $branch (status: ${status:-unknown})"
         fi

@@ -33,6 +33,6 @@ This launches a review agent to check your work.
 
 ## Rules
 
-- Do NOT run `just finish-work` — only a reviewer may merge
+- Do NOT run `just approve` — only a reviewer may approve and merge
 - Do NOT add "notes to the reviewer" in commits or the ticket — the code and ticket speak for themselves
 - Do NOT modify the ticket's requirements, design, or acceptance criteria — if you think they're wrong, implement what you can and let the reviewer sort it out

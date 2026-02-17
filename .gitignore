@@ -5,3 +5,7 @@ shelley-fuse
 # test binaries
 *.test
 scripts/*-model
+
+# review workflow state
+.review-head
+.commit-message

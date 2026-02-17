@@ -27,7 +27,7 @@ If the implementation satisfies the ticket's requirements and acceptance criteri
 2. Run this as your **final action**:
 
 ```
-just finish-work TICKET_ID
+just approve TICKET_ID
 ```
 
 This closes the ticket, squashes all branch commits into one (using your summary), rebases onto main, merges, and cleans up the worktree.
