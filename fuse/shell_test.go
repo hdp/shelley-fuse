@@ -125,9 +125,10 @@ func TestShellNewSymlink(t *testing.T) {
 	runShellDiagOK(t, tm.MountPoint, "test -L new", tm.DiagURL)
 
 	// Verify symlink target
+	// With backend support, /new points to backend/default/model/default/new
 	target := strings.TrimSpace(runShellDiagOK(t, tm.MountPoint, "readlink new", tm.DiagURL))
-	if target != "model/default/new" {
-		t.Errorf("Expected symlink target 'model/default/new', got %q", target)
+	if target != "backend/default/model/default/new" {
+		t.Errorf("Expected symlink target 'backend/default/model/default/new', got %q", target)
 	}
 }
 

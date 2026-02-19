@@ -95,6 +95,7 @@ func (s *SymlinkNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.At
 type FS struct {
 	fs.Inode
 	client       shelley.ShelleyClient
+	clientMgr    *shelley.ClientManager // manager for multiple backend clients (optional)
 	state        *state.Store
 	cloneTimeout time.Duration
 	startTime    time.Time
@@ -107,6 +108,20 @@ type FS struct {
 func NewFS(client shelley.ShelleyClient, store *state.Store, cloneTimeout time.Duration) *FS {
 	return &FS{
 		client:       client,
+		state:        store,
+		cloneTimeout: cloneTimeout,
+		startTime:    time.Now(),
+		parsedCache:  NewParsedMessageCache(),
+		Diag:         diag.NewTracker(),
+	}
+}
+
+// NewFSWithBackends creates a new Shelley FUSE filesystem with backend support.
+// Takes a ClientManager for multi-backend operations and cloneTimeout.
+func NewFSWithBackends(clientMgr *shelley.ClientManager, store *state.Store, cloneTimeout time.Duration) *FS {
+	return &FS{
+		client:       nil, // no default client - use ClientManager
+		clientMgr:    clientMgr,
 		state:        store,
 		cloneTimeout: cloneTimeout,
 		startTime:    time.Now(),
@@ -139,18 +154,43 @@ var _ = (fs.NodeGetattrer)((*FS)(nil))
 
 func (f *FS) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
 	switch name {
+	case "backend":
+		// Only available when clientMgr is configured (via NewFSWithBackends)
+		if f.clientMgr == nil {
+			return nil, syscall.ENOENT
+		}
+		setEntryTimeout(out, cacheTTLConversation)
+		return f.NewInode(ctx, &BackendListNode{state: f.state, clientMgr: f.clientMgr,  cloneTimeout: f.cloneTimeout, startTime: f.startTime, diag: f.Diag}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
 	case "model":
+		if f.clientMgr != nil {
+			// With backend support: symlink to backend/default/model
+			setEntryTimeout(out, cacheTTLStatic)
+			return f.NewInode(ctx, &SymlinkNode{target: "backend/default/model", startTime: f.startTime}, fs.StableAttr{Mode: syscall.S_IFLNK}), 0
+		}
+		// Without backend support: directory (legacy mode)
 		setEntryTimeout(out, cacheTTLModels)
 		return f.NewInode(ctx, &ModelsDirNode{client: f.client, state: f.state, startTime: f.startTime, diag: f.Diag}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
 	case "new":
+		if f.clientMgr != nil {
+			// With backend support: symlink to backend/default/model/default/new
+			setEntryTimeout(out, cacheTTLStatic)
+			return f.NewInode(ctx, &SymlinkNode{target: "backend/default/model/default/new", startTime: f.startTime}, fs.StableAttr{Mode: syscall.S_IFLNK}), 0
+		}
+		// Without backend support: symlink to model/default/new (legacy mode)
 		setEntryTimeout(out, cacheTTLStatic)
 		return f.NewInode(ctx, &SymlinkNode{target: "model/default/new", startTime: f.startTime}, fs.StableAttr{Mode: syscall.S_IFLNK}), 0
 	case "conversation":
+		if f.clientMgr != nil {
+			// With backend support: symlink to backend/default/conversation
+			setEntryTimeout(out, cacheTTLStatic)
+			return f.NewInode(ctx, &SymlinkNode{target: "backend/default/conversation", startTime: f.startTime}, fs.StableAttr{Mode: syscall.S_IFLNK}), 0
+		}
+		// Without backend support: directory (legacy mode)
 		setEntryTimeout(out, cacheTTLConversation)
 		return f.NewInode(ctx, &ConversationListNode{client: f.client, state: f.state, cloneTimeout: f.cloneTimeout, startTime: f.startTime, parsedCache: f.parsedCache, diag: f.Diag}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
 	case "shelley":
 		setEntryTimeout(out, cacheTTLConversation)
-		return f.NewInode(ctx, &ShelleyDirNode{state: f.state, startTime: f.startTime, diag: f.Diag}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
+		return f.NewInode(ctx, &ShelleyDirNode{state: f.state, clientMgr: f.clientMgr,  cloneTimeout: f.cloneTimeout, startTime: f.startTime, diag: f.Diag}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
 	case "README.md":
 		setEntryTimeout(out, cacheTTLStatic)
 		return f.NewInode(ctx, &ReadmeNode{startTime: f.startTime}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
@@ -159,13 +199,23 @@ func (f *FS) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.I
 }
 
 func (f *FS) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
-	return fs.NewListDirStream([]fuse.DirEntry{
+	entries := []fuse.DirEntry{
 		{Name: "README.md", Mode: fuse.S_IFREG},
-		{Name: "model", Mode: fuse.S_IFDIR},
-		{Name: "new", Mode: syscall.S_IFLNK},
-		{Name: "conversation", Mode: fuse.S_IFDIR},
-		{Name: "shelley", Mode: fuse.S_IFDIR},
-	}), 0
+	}
+	if f.clientMgr != nil {
+		// With backend support: show backend dir and symlinks
+		entries = append(entries, fuse.DirEntry{Name: "backend", Mode: fuse.S_IFDIR})
+		entries = append(entries, fuse.DirEntry{Name: "model", Mode: syscall.S_IFLNK})
+		entries = append(entries, fuse.DirEntry{Name: "new", Mode: syscall.S_IFLNK})
+		entries = append(entries, fuse.DirEntry{Name: "conversation", Mode: syscall.S_IFLNK})
+	} else {
+		// Without backend support: legacy mode with directories
+		entries = append(entries, fuse.DirEntry{Name: "model", Mode: fuse.S_IFDIR})
+		entries = append(entries, fuse.DirEntry{Name: "new", Mode: syscall.S_IFLNK})
+		entries = append(entries, fuse.DirEntry{Name: "conversation", Mode: fuse.S_IFDIR})
+	}
+	entries = append(entries, fuse.DirEntry{Name: "shelley", Mode: fuse.S_IFDIR})
+	return fs.NewListDirStream(entries), 0
 }
 
 func (f *FS) Getattr(ctx context.Context, fh fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
