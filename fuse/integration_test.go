@@ -2326,3 +2326,170 @@ func TestBackendMkdir(t *testing.T) {
 		t.Errorf("Expected EEXIST for mkdir 'all', got: %v", err)
 	}
 }
+
+
+func TestBackendRename(t *testing.T) {
+	skipIfNoFusermount(t)
+	skipIfNoShelley(t)
+
+	serverURL := startShelleyServer(t)
+	mountPoint := mountTestFS(t, serverURL)
+
+	backendDir := filepath.Join(mountPoint, "shelley", "backend")
+
+	// Create a backend to rename
+	err := os.Mkdir(filepath.Join(backendDir, "old-name"), 0755)
+	if err != nil {
+		t.Fatalf("Failed to create backend: %v", err)
+	}
+
+	newPath := filepath.Join(backendDir, "new-name")
+
+	// Test 1: rename to new name
+	err = os.Rename(filepath.Join(backendDir, "old-name"), newPath)
+	if err != nil {
+		t.Errorf("Rename failed: %v", err)
+	}
+
+	// Verify the new path exists
+	if _, err := os.Stat(newPath); err != nil {
+		t.Errorf("Expected new-name to exist: %v", err)
+	}
+
+	// Test 2: rename to existing name fails
+	anotherBackend := filepath.Join(backendDir, "another")
+	err = os.Mkdir(anotherBackend, 0755)
+	if err != nil {
+		t.Fatalf("Failed to create another backend: %v", err)
+	}
+	err = os.Rename(newPath, anotherBackend)
+	if err == nil {
+		t.Error("Expected error when renaming to existing name")
+	}
+	if !os.IsExist(err) {
+		t.Errorf("Expected EEXIST for rename to existing name, got: %v", err)
+	}
+}
+
+func TestBackendRenameReservedDefault(t *testing.T) {
+	skipIfNoFusermount(t)
+	skipIfNoShelley(t)
+
+	serverURL := startShelleyServer(t)
+	mountPoint := mountTestFS(t, serverURL)
+
+	backendDir := filepath.Join(mountPoint, "shelley", "backend")
+
+	// Create a backend
+	err := os.Mkdir(filepath.Join(backendDir, "my-backend"), 0755)
+	if err != nil {
+		t.Fatalf("Failed to create backend: %v", err)
+	}
+
+	// Test: rename to "default" should fail
+	// Note: "default" is a symlink, so the kernel may reject with ENOTDIR before
+	// reaching FUSE. Either way, the rename should fail.
+	defaultPath := filepath.Join(backendDir, "default")
+	err = os.Rename(filepath.Join(backendDir, "my-backend"), defaultPath)
+	if err == nil {
+		t.Error("Expected error when renaming to 'default'")
+	}
+	// Accept either EINVAL (our check) or ENOTDIR (kernel check for symlink)
+	if !isEINVAL(err) && !isENOTDIR(err) {
+		t.Errorf("Expected EINVAL or ENOTDIR when renaming to 'default', got: %v", err)
+	}
+}
+
+func isEINVAL(err error) bool {
+	if linkErr, ok := err.(*os.LinkError); ok {
+		return linkErr.Err == syscall.EINVAL
+	}
+	return false
+}
+
+func isENOTDIR(err error) bool {
+	if linkErr, ok := err.(*os.LinkError); ok {
+		return linkErr.Err == syscall.ENOTDIR
+	}
+	return false
+}
+
+func TestBackendRenameCrossDirectory(t *testing.T) {
+	skipIfNoFusermount(t)
+	skipIfNoShelley(t)
+
+	serverURL := startShelleyServer(t)
+	mountPoint := mountTestFS(t, serverURL)
+
+	backendDir := filepath.Join(mountPoint, "shelley", "backend")
+	shelleyDir := filepath.Join(mountPoint, "shelley")
+
+	// Create a backend
+	err := os.Mkdir(filepath.Join(backendDir, "my-backend"), 0755)
+	if err != nil {
+		t.Fatalf("Failed to create backend: %v", err)
+	}
+
+	// Test: cross-directory rename should return EXDEV
+	err = os.Rename(filepath.Join(backendDir, "my-backend"), filepath.Join(shelleyDir, "my-backend"))
+	if err == nil {
+		t.Error("Expected error when renaming across directories")
+	}
+	// EXDEV is returned as "invalid cross-device link"
+	if linkErr, ok := err.(*os.LinkError); ok {
+		if linkErr.Err != syscall.EXDEV {
+			t.Errorf("Expected EXDEV for cross-directory rename, got: %v", linkErr.Err)
+		}
+	} else {
+		t.Errorf("Expected LinkError, got: %v", err)
+	}
+}
+
+func TestBackendRenameDefaultBackend(t *testing.T) {
+	skipIfNoFusermount(t)
+	skipIfNoShelley(t)
+
+	serverURL := startShelleyServer(t)
+	tm := mountTestFSFull(t, serverURL, time.Hour)
+	mountPoint := tm.MountPoint
+	statePath := tm.StatePath
+
+	backendDir := filepath.Join(mountPoint, "shelley", "backend")
+
+	// Create a backend
+	err := os.Mkdir(filepath.Join(backendDir, "old-default"), 0755)
+	if err != nil {
+		t.Fatalf("Failed to create backend: %v", err)
+	}
+
+	// Set as default via state store
+	store := reloadStore(t, statePath)
+	err = store.SetDefaultBackend("old-default")
+	if err != nil {
+		t.Fatalf("Failed to set default backend: %v", err)
+	}
+
+	// Verify default symlink points to old-default
+	linkTarget, err := os.Readlink(filepath.Join(backendDir, "default"))
+	if err != nil {
+		t.Fatalf("Failed to read default symlink: %v", err)
+	}
+	if linkTarget != "old-default" {
+		t.Errorf("Expected default -> old-default, got: %s", linkTarget)
+	}
+
+	// Rename the default backend
+	err = os.Rename(filepath.Join(backendDir, "old-default"), filepath.Join(backendDir, "new-default"))
+	if err != nil {
+		t.Errorf("Rename failed: %v", err)
+	}
+
+	// Verify default symlink now points to new-default
+	linkTarget, err = os.Readlink(filepath.Join(backendDir, "default"))
+	if err != nil {
+		t.Fatalf("Failed to read default symlink after rename: %v", err)
+	}
+	if linkTarget != "new-default" {
+		t.Errorf("Expected default -> new-default after rename, got: %s", linkTarget)
+	}
+}

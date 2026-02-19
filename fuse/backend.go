@@ -3,8 +3,6 @@ package fuse
 import (
 	"context"
 	"fmt"
-	"log"
-	"regexp"
 	"strings"
 	"syscall"
 	"time"
@@ -14,8 +12,6 @@ import (
 	"shelley-fuse/fuse/diag"
 	"shelley-fuse/state"
 )
-
-var backendNotFoundError = regexp.MustCompile(`backend "[^"]+" not found`)
 
 // --- ShelleyDirNode: /shelley/ directory ---
 
@@ -64,10 +60,11 @@ type BackendListNode struct {
 }
 
 var _ = (fs.NodeLookuper)((*BackendListNode)(nil))
-var _ = (fs.NodeRmdirer)((*BackendListNode)(nil))
 var _ = (fs.NodeReaddirer)((*BackendListNode)(nil))
 var _ = (fs.NodeGetattrer)((*BackendListNode)(nil))
 var _ = (fs.NodeMkdirer)((*BackendListNode)(nil))
+var _ = (fs.NodeRenamer)((*BackendListNode)(nil))
+var _ = (fs.NodeRmdirer)((*BackendListNode)(nil))
 
 func (b *BackendListNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
 	defer diag.Track(b.diag, "BackendListNode", "Lookup", name).Done()
@@ -76,8 +73,14 @@ func (b *BackendListNode) Lookup(ctx context.Context, name string, out *fuse.Ent
 	// "default" is always a symlink to the current default backend
 	// The name "default" is reserved and never used as an actual backend name
 	if name == "default" {
-		defaultBackend := b.state.GetDefaultBackend()
-		return b.NewInode(ctx, &SymlinkNode{target: defaultBackend, startTime: b.startTime}, fs.StableAttr{Mode: syscall.S_IFLNK}), 0
+		return b.NewInode(ctx, &DynamicSymlinkNode{
+			getTarget: func() string {
+				// Reload state to get latest default backend
+				_ = b.state.Load() // ignore errors, just use cached value on failure
+				return b.state.GetDefaultBackend()
+			},
+			startTime: b.startTime,
+		}, fs.StableAttr{Mode: syscall.S_IFLNK}), 0
 	}
 
 	// Check if backend exists
@@ -151,30 +154,25 @@ func (b *BackendListNode) Mkdir(ctx context.Context, name string, mode uint32, o
 	return b.NewInode(ctx, &BackendNode{name: name, state: b.state, startTime: b.startTime, diag: b.diag}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
 }
 
-// Rmdir removes a backend with the given name.
-// Returns EBUSY if the backend is the current default.
-// Returns EINVAL for 'default' name (reserved symlink name).
-func (b *BackendListNode) Rmdir(ctx context.Context, name string) syscall.Errno {
-	defer diag.Track(b.diag, "BackendListNode", "Rmdir", name).Done()
+// --- DynamicSymlinkNode: symlink with target computed at readlink time ---
 
-	// "default" is a reserved symlink name
-	if name == "default" {
-		return syscall.EINVAL
-	}
+type DynamicSymlinkNode struct {
+	fs.Inode
+	getTarget func() string
+	startTime time.Time
+}
 
-	// Delete the backend from state
-	if err := b.state.DeleteBackend(name); err != nil {
-		// Map known errors to syscall errors
-		if strings.Contains(err.Error(), "cannot delete default backend") {
-			return syscall.EBUSY
-		}
-		if backendNotFoundError.MatchString(err.Error()) {
-			return syscall.ENOENT
-		}
-		log.Printf("Rmdir backend %q: %v", name, err)
-		return syscall.EIO
-	}
+var _ = (fs.NodeReadlinker)((*DynamicSymlinkNode)(nil))
+var _ = (fs.NodeGetattrer)((*DynamicSymlinkNode)(nil))
 
+func (s *DynamicSymlinkNode) Readlink(ctx context.Context) ([]byte, syscall.Errno) {
+	return []byte(s.getTarget()), 0
+}
+
+func (s *DynamicSymlinkNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
+	out.Mode = syscall.S_IFLNK | 0777
+	out.Size = uint64(len(s.getTarget()))
+	setTimestamps(&out.Attr, s.startTime)
 	return 0
 }
 
@@ -188,6 +186,50 @@ type BackendNode struct {
 	diag      *diag.Tracker
 }
 
+
+
+// Rename renames a backend directory. Only supports renaming within the same directory.
+// Returns EXDEV for cross-directory rename.
+// Returns EINVAL for renaming to or from the reserved name "default".
+func (b *BackendListNode) Rename(ctx context.Context, name string, newParent fs.InodeEmbedder, newName string, flags uint32) syscall.Errno {
+	defer diag.Track(b.diag, "BackendListNode", "Rename", fmt.Sprintf("%s -> %s", name, newName)).Done()
+
+	// Cross-directory rename not supported
+	targetParent, ok := newParent.(*BackendListNode)
+	if !ok || targetParent != b {
+		return syscall.EXDEV
+	}
+
+	// Cannot rename to or from reserved name "default"
+	if name == "default" || newName == "default" {
+		return syscall.EINVAL
+	}
+
+	// Find the existing backend for the old name
+	backend := b.state.GetBackend(name)
+	if backend == nil {
+		return syscall.ENOENT
+	}
+
+	// Check if new name already exists
+	if b.state.GetBackend(newName) != nil {
+		return syscall.EEXIST
+	}
+
+	// Perform the rename in state
+	if err := b.state.RenameBackend(name, newName); err != nil {
+		// Map known errors to syscall errno
+		if strings.Contains(err.Error(), "not found") {
+			return syscall.ENOENT
+		}
+		if strings.Contains(err.Error(), "reserved") {
+			return syscall.EINVAL
+		}
+		return syscall.EIO
+	}
+
+	return 0
+}
 var _ = (fs.NodeLookuper)((*BackendNode)(nil))
 var _ = (fs.NodeReaddirer)((*BackendNode)(nil))
 var _ = (fs.NodeGetattrer)((*BackendNode)(nil))
