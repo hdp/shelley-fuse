@@ -3,6 +3,8 @@ package fuse
 import (
 	"context"
 	"fmt"
+	"log"
+	"regexp"
 	"strings"
 	"syscall"
 	"time"
@@ -10,16 +12,21 @@ import (
 	"github.com/hanwen/go-fuse/v2/fs"
 	"github.com/hanwen/go-fuse/v2/fuse"
 	"shelley-fuse/fuse/diag"
+	"shelley-fuse/shelley"
 	"shelley-fuse/state"
 )
+
+var backendNotFoundError = regexp.MustCompile(`backend "[^"]+" not found`)
 
 // --- ShelleyDirNode: /shelley/ directory ---
 
 type ShelleyDirNode struct {
 	fs.Inode
-	state     *state.Store
-	startTime time.Time
-	diag      *diag.Tracker
+	state        *state.Store
+	clientMgr    *shelley.ClientManager
+	cloneTimeout time.Duration
+	startTime    time.Time
+	diag         *diag.Tracker
 }
 
 var _ = (fs.NodeLookuper)((*ShelleyDirNode)(nil))
@@ -54,9 +61,11 @@ func (s *ShelleyDirNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse
 
 type BackendListNode struct {
 	fs.Inode
-	state     *state.Store
-	startTime time.Time
-	diag      *diag.Tracker
+	state        *state.Store
+	clientMgr    *shelley.ClientManager
+	cloneTimeout time.Duration
+	startTime    time.Time
+	diag         *diag.Tracker
 }
 
 var _ = (fs.NodeLookuper)((*BackendListNode)(nil))
@@ -65,6 +74,33 @@ var _ = (fs.NodeGetattrer)((*BackendListNode)(nil))
 var _ = (fs.NodeMkdirer)((*BackendListNode)(nil))
 var _ = (fs.NodeRenamer)((*BackendListNode)(nil))
 var _ = (fs.NodeRmdirer)((*BackendListNode)(nil))
+
+// Rmdir removes a backend with the given name.
+// Returns EBUSY if the backend is the current default.
+// Returns EINVAL for 'default' name (reserved symlink name).
+func (b *BackendListNode) Rmdir(ctx context.Context, name string) syscall.Errno {
+	defer diag.Track(b.diag, "BackendListNode", "Rmdir", name).Done()
+
+	// "default" is a reserved symlink name
+	if name == "default" {
+		return syscall.EINVAL
+	}
+
+	// Delete the backend from state
+	if err := b.state.DeleteBackend(name); err != nil {
+		// Map known errors to syscall errors
+		if strings.Contains(err.Error(), "cannot delete default backend") {
+			return syscall.EBUSY
+		}
+		if backendNotFoundError.MatchString(err.Error()) {
+			return syscall.ENOENT
+		}
+		log.Printf("Rmdir backend %q: %v", name, err)
+		return syscall.EIO
+	}
+
+	return 0
+}
 
 func (b *BackendListNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
 	defer diag.Track(b.diag, "BackendListNode", "Lookup", name).Done()
