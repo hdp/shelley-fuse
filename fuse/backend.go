@@ -38,7 +38,7 @@ func (s *ShelleyDirNode) Lookup(ctx context.Context, name string, out *fuse.Entr
 	setEntryTimeout(out, cacheTTLConversation)
 
 	if name == "backend" {
-		return s.NewInode(ctx, &BackendListNode{state: s.state, startTime: s.startTime, diag: s.diag}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
+		return s.NewInode(ctx, &BackendListNode{state: s.state, clientMgr: s.clientMgr, cloneTimeout: s.cloneTimeout, startTime: s.startTime, diag: s.diag}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
 	}
 	return nil, syscall.ENOENT
 }

@@ -1,6 +1,6 @@
 ---
 id: sf-f14r
-status: open
+status: closed
 deps: [sf-ebqt, sf-m13c]
 links: [sf-b16m]
 created: 2026-02-15T14:45:00Z
