@@ -1,6 +1,6 @@
 ---
 id: sf-s10l
-status: open
+status: closed
 deps: [sf-ebqt, ss-sure]
 links: [sf-c0hw, sf-cmm3, sf-r9mv]
 created: 2026-02-15T14:45:00Z
