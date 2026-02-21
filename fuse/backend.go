@@ -71,6 +71,8 @@ type BackendListNode struct {
 var _ = (fs.NodeLookuper)((*BackendListNode)(nil))
 var _ = (fs.NodeReaddirer)((*BackendListNode)(nil))
 var _ = (fs.NodeGetattrer)((*BackendListNode)(nil))
+var _ = (fs.NodeSymlinker)((*BackendListNode)(nil))
+var _ = (fs.NodeUnlinker)((*BackendListNode)(nil))
 var _ = (fs.NodeMkdirer)((*BackendListNode)(nil))
 var _ = (fs.NodeRenamer)((*BackendListNode)(nil))
 var _ = (fs.NodeRmdirer)((*BackendListNode)(nil))
@@ -104,15 +106,21 @@ func (b *BackendListNode) Rmdir(ctx context.Context, name string) syscall.Errno 
 
 func (b *BackendListNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
 	defer diag.Track(b.diag, "BackendListNode", "Lookup", name).Done()
-	setEntryTimeout(out, cacheTTLConversation)
+	// Use zero entry timeout for dynamic directory to allow create/remove operations
+	out.SetEntryTimeout(0)
 
-	// "default" is always a symlink to the current default backend
+	// "default" is a symlink to the current default backend
 	// The name "default" is reserved and never used as an actual backend name
+	// It only exists when explicitly set (not when default == "main")
 	if name == "default" {
+		defaultBackend := b.state.GetDefaultBackend()
+		if defaultBackend == state.DefaultBackendName {
+			// "default" symlink doesn't exist when it's the implicit default "main"
+			return nil, syscall.ENOENT
+		}
 		return b.NewInode(ctx, &DynamicSymlinkNode{
 			getTarget: func() string {
-				// Reload state to get latest default backend
-				_ = b.state.Load() // ignore errors, just use cached value on failure
+				_ = b.state.Load()
 				return b.state.GetDefaultBackend()
 			},
 			startTime: b.startTime,
@@ -133,9 +141,11 @@ func (b *BackendListNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Er
 	backends := b.state.ListBackends()
 	entries := make([]fuse.DirEntry, 0, len(backends)+1)
 
-	// "default" is always a symlink to the current default backend
-	// The name "default" is reserved and never used as an actual backend name
-	entries = append(entries, fuse.DirEntry{Name: "default", Mode: syscall.S_IFLNK})
+	// "default" is a symlink to the current default backend
+	// Only include it if it's been explicitly set (not the default "main")
+	if b.state.GetDefaultBackend() != state.DefaultBackendName {
+		entries = append(entries, fuse.DirEntry{Name: "default", Mode: syscall.S_IFLNK})
+	}
 
 	// Add backend directories
 	for _, name := range backends {
@@ -188,6 +198,69 @@ func (b *BackendListNode) Mkdir(ctx context.Context, name string, mode uint32, o
 
 	// Return the newly created backend directory node
 	return b.NewInode(ctx, &BackendNode{name: name, state: b.state, startTime: b.startTime, diag: b.diag}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
+}
+
+// Symlink creates a symlink within the backend directory.
+// Only allows creating a symlink named "default" (EPERM for other names).
+// Target must be an existing backend (ENOENT otherwise).
+// Returns EEXIST if "default" already set to non-"main" (must remove first).
+// Calls SetDefaultBackend on the state store when successful.
+func (b *BackendListNode) Symlink(ctx context.Context, target, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
+	defer diag.Track(b.diag, "BackendListNode", "Symlink", name).Done()
+	setEntryTimeout(out, cacheTTLConversation)
+
+	// Only allow creating a symlink named "default"
+	if name != "default" {
+		return nil, syscall.EPERM
+	}
+
+	// Verify that the target backend exists
+	if b.state.GetBackend(target) == nil {
+		return nil, syscall.ENOENT
+	}
+
+	// If default is already set to something other than "main", return EEXIST
+	currentDefault := b.state.GetDefaultBackend()
+	if currentDefault != state.DefaultBackendName {
+		return nil, syscall.EEXIST
+	}
+
+	// Set the default backend in state
+	if err := b.state.SetDefaultBackend(target); err != nil {
+		return nil, syscall.EIO
+	}
+
+	// Return a dynamic symlink node that reads live state
+	return b.NewInode(ctx, &DynamicSymlinkNode{
+		getTarget: func() string {
+			_ = b.state.Load()
+			return b.state.GetDefaultBackend()
+		},
+		startTime: b.startTime,
+	}, fs.StableAttr{Mode: syscall.S_IFLNK}), 0
+}
+
+// Unlink handles removing files/symlinks from the backend directory.
+// Only allows removing the "default" symlink.
+func (b *BackendListNode) Unlink(ctx context.Context, name string) syscall.Errno {
+	defer diag.Track(b.diag, "BackendListNode", "Unlink", name).Done()
+
+	// Only allow removing "default"
+	if name != "default" {
+		return syscall.EPERM
+	}
+
+	// Reset to the default backend name ("main")
+	if err := b.state.SetDefaultBackend(state.DefaultBackendName); err != nil {
+		return syscall.EIO
+	}
+
+	// Invalidate kernel cache for "default" so subsequent operations work
+	// Must be done in a goroutine to avoid deadlock - NotifyEntry communicates
+	// with the kernel, which is blocked waiting for this Unlink to return.
+	go b.NotifyEntry("default")
+
+	return 0
 }
 
 // --- DynamicSymlinkNode: symlink with target computed at readlink time ---
