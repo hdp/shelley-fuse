@@ -25,6 +25,7 @@ type ShelleyDirNode struct {
 	state        *state.Store
 	clientMgr    *shelley.ClientManager
 	cloneTimeout time.Duration
+	parsedCache  *ParsedMessageCache
 	startTime    time.Time
 	diag         *diag.Tracker
 }
@@ -38,7 +39,7 @@ func (s *ShelleyDirNode) Lookup(ctx context.Context, name string, out *fuse.Entr
 	setEntryTimeout(out, cacheTTLConversation)
 
 	if name == "backend" {
-		return s.NewInode(ctx, &BackendListNode{state: s.state, clientMgr: s.clientMgr, cloneTimeout: s.cloneTimeout, startTime: s.startTime, diag: s.diag}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
+		return s.NewInode(ctx, &BackendListNode{state: s.state, clientMgr: s.clientMgr, cloneTimeout: s.cloneTimeout, parsedCache: s.parsedCache, startTime: s.startTime, diag: s.diag}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
 	}
 	return nil, syscall.ENOENT
 }
@@ -64,6 +65,7 @@ type BackendListNode struct {
 	state        *state.Store
 	clientMgr    *shelley.ClientManager
 	cloneTimeout time.Duration
+	parsedCache  *ParsedMessageCache
 	startTime    time.Time
 	diag         *diag.Tracker
 }
@@ -129,7 +131,7 @@ func (b *BackendListNode) Lookup(ctx context.Context, name string, out *fuse.Ent
 
 	// Check if backend exists
 	if b.state.GetBackend(name) != nil {
-		return b.NewInode(ctx, &BackendNode{name: name, state: b.state, startTime: b.startTime, diag: b.diag}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
+		return b.NewInode(ctx, &BackendNode{name: name, state: b.state, clientMgr: b.clientMgr, cloneTimeout: b.cloneTimeout, parsedCache: b.parsedCache, startTime: b.startTime, diag: b.diag}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
 	}
 
 	return nil, syscall.ENOENT
@@ -197,7 +199,7 @@ func (b *BackendListNode) Mkdir(ctx context.Context, name string, mode uint32, o
 	}
 
 	// Return the newly created backend directory node
-	return b.NewInode(ctx, &BackendNode{name: name, state: b.state, startTime: b.startTime, diag: b.diag}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
+	return b.NewInode(ctx, &BackendNode{name: name, state: b.state, clientMgr: b.clientMgr, cloneTimeout: b.cloneTimeout, parsedCache: b.parsedCache, startTime: b.startTime, diag: b.diag}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
 }
 
 // Symlink creates a symlink within the backend directory.
@@ -289,10 +291,13 @@ func (s *DynamicSymlinkNode) Getattr(ctx context.Context, f fs.FileHandle, out *
 
 type BackendNode struct {
 	fs.Inode
-	name      string
-	state     *state.Store
-	startTime time.Time
-	diag      *diag.Tracker
+	name        string
+	state       *state.Store
+	clientMgr   *shelley.ClientManager
+	cloneTimeout time.Duration
+	parsedCache  *ParsedMessageCache
+	startTime   time.Time
+	diag        *diag.Tracker
 }
 
 
@@ -355,14 +360,30 @@ func (b *BackendNode) Lookup(ctx context.Context, name string, out *fuse.EntryOu
 		}
 		return b.NewInode(ctx, &BackendURLNode{url: backend.URL, startTime: b.startTime}, fs.StableAttr{Mode: fuse.S_IFREG}), 0
 	case "connected":
-		// Presence file - currently returns ENOENT until wired to ClientManager
+		// Presence file - needs BackendConnectedNode implementation (sf-u12r)
 		return nil, syscall.ENOENT
 	case "model":
-		// Directory - currently returns ENOENT until wired to ClientManager
-		return nil, syscall.ENOENT
+		// Get or create client for this backend
+		backend := b.state.GetBackend(b.name)
+		if backend == nil || backend.URL == "" {
+			return nil, syscall.ENOENT
+		}
+		client, err := b.clientMgr.EnsureURL(b.name, backend.URL)
+		if err != nil {
+			return nil, syscall.EIO
+		}
+		return b.NewInode(ctx, &ModelsDirNode{client: client, state: b.state, startTime: b.startTime, diag: b.diag}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
 	case "conversation":
-		// Directory - currently returns ENOENT until wired to ClientManager
-		return nil, syscall.ENOENT
+		// Get or create client for this backend
+		backend := b.state.GetBackend(b.name)
+		if backend == nil || backend.URL == "" {
+			return nil, syscall.ENOENT
+		}
+		client, err := b.clientMgr.EnsureURL(b.name, backend.URL)
+		if err != nil {
+			return nil, syscall.EIO
+		}
+		return b.NewInode(ctx, &ConversationListNode{client: client, state: b.state, cloneTimeout: b.cloneTimeout, startTime: b.startTime, parsedCache: b.parsedCache, diag: b.diag}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
 	case "new":
 		// Symlink to model/default/new (target doesn't need to exist yet)
 		return b.NewInode(ctx, &SymlinkNode{target: "model/default/new", startTime: b.startTime}, fs.StableAttr{Mode: syscall.S_IFLNK}), 0

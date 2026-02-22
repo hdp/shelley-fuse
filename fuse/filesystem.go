@@ -160,7 +160,7 @@ func (f *FS) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.I
 			return nil, syscall.ENOENT
 		}
 		setEntryTimeout(out, cacheTTLConversation)
-		return f.NewInode(ctx, &BackendListNode{state: f.state, clientMgr: f.clientMgr,  cloneTimeout: f.cloneTimeout, startTime: f.startTime, diag: f.Diag}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
+		return f.NewInode(ctx, &BackendListNode{state: f.state, clientMgr: f.clientMgr, cloneTimeout: f.cloneTimeout, parsedCache: f.parsedCache, startTime: f.startTime, diag: f.Diag}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
 	case "model":
 		if f.clientMgr != nil {
 			// With backend support: symlink to backend/default/model
@@ -190,7 +190,7 @@ func (f *FS) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.I
 		return f.NewInode(ctx, &ConversationListNode{client: f.client, state: f.state, cloneTimeout: f.cloneTimeout, startTime: f.startTime, parsedCache: f.parsedCache, diag: f.Diag}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
 	case "shelley":
 		setEntryTimeout(out, cacheTTLConversation)
-		return f.NewInode(ctx, &ShelleyDirNode{state: f.state, clientMgr: f.clientMgr,  cloneTimeout: f.cloneTimeout, startTime: f.startTime, diag: f.Diag}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
+		return f.NewInode(ctx, &ShelleyDirNode{state: f.state, clientMgr: f.clientMgr, cloneTimeout: f.cloneTimeout, parsedCache: f.parsedCache, startTime: f.startTime, diag: f.Diag}, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
 	case "README.md":
 		setEntryTimeout(out, cacheTTLStatic)
 		return f.NewInode(ctx, &ReadmeNode{startTime: f.startTime}, fs.StableAttr{Mode: fuse.S_IFREG}), 0

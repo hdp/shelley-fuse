@@ -1,6 +1,6 @@
 ---
 id: sf-w15c
-status: open
+status: closed
 deps: [sf-b11n, sf-m13c]
 links: [sf-f14r]
 created: 2026-02-15T14:45:00Z

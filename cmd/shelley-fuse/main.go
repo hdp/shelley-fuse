@@ -106,15 +106,6 @@ func main() {
 	}
 	log.Printf("Using backend URL: %s", url)
 
-	// Create Shelley client with optional caching
-	baseClient := shelley.NewClient(url)
-	var client shelley.ShelleyClient
-	if *cacheTTL > 0 {
-		client = shelley.NewCachingClient(baseClient, *cacheTTL)
-	} else {
-		client = baseClient
-	}
-
 	// Create state store
 	store, err := state.NewStore(*statePath)
 	if err != nil {
@@ -126,8 +117,16 @@ func main() {
 		log.Fatalf("Failed to set backend URL: %v", err)
 	}
 
-	// Create FUSE filesystem
-	shelleyFS := shelleyfuse.NewFS(client, store, *cloneTimeout)
+	// Create ClientManager for multi-backend support
+	clientMgr := shelley.NewClientManager(*cacheTTL)
+
+	// Ensure the client for the default backend exists
+	if _, err := clientMgr.EnsureURL(state.DefaultBackendName, url); err != nil {
+		log.Fatalf("Failed to create client for default backend: %v", err)
+	}
+
+	// Create FUSE filesystem with backend support
+	shelleyFS := shelleyfuse.NewFSWithBackends(clientMgr, store, *cloneTimeout)
 
 	// Set up FUSE server options
 	opts := &fs.Options{}

@@ -2209,19 +2209,20 @@ func TestBackendDirectory(t *testing.T) {
 		t.Errorf("Expected 'new' symlink to point to 'model/default/new', got %q", newTarget)
 	}
 
-	// connected, model, conversation should return ENOENT when accessed
-	// (they are listed in Readdir but not implemented yet)
+	// connected should return ENOENT when accessed (not implemented yet - sf-u12r)
 	_, err = ioutil.ReadFile(filepath.Join(mountPoint, "shelley", "backend", "main", "connected"))
 	if err == nil {
 		t.Error("Expected ENOENT for 'connected' presence file")
 	}
+
+	// model and conversation should now work (sf-w15c)
 	_, err = ioutil.ReadDir(filepath.Join(mountPoint, "shelley", "backend", "main", "model"))
-	if err == nil {
-		t.Error("Expected ENOENT for 'model' directory")
+	if err != nil {
+		t.Errorf("Expected 'model' directory to be accessible: %v", err)
 	}
 	_, err = ioutil.ReadDir(filepath.Join(mountPoint, "shelley", "backend", "main", "conversation"))
-	if err == nil {
-		t.Error("Expected ENOENT for 'conversation' directory")
+	if err != nil {
+		t.Errorf("Expected 'conversation' directory to be accessible: %v", err)
 	}
 }
 
