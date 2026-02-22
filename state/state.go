@@ -104,6 +104,21 @@ func (s *Store) conversations() map[string]*ConversationState {
 	return s.defaultBackend().Conversations
 }
 
+// conversationsForBackend returns the conversation map for the named backend.
+// For the default backend, creates it if it doesn't exist.
+// For other backends, returns nil if the backend doesn't exist.
+func (s *Store) conversationsForBackend(backend string) map[string]*ConversationState {
+	// Special handling for default backend - auto-create like the old code
+	if backend == s.getDefaultBackend() {
+		return s.defaultBackend().Conversations
+	}
+	b := s.Backends[backend]
+	if b == nil {
+		return nil
+	}
+	return b.Conversations
+}
+
 // V1State represents the old state file format (flat conversation map).
 type V1State struct {
 	Conversations map[string]*ConversationState `json:"conversations"`
@@ -122,19 +137,29 @@ func (s *Store) migrateFromV1(v1 *V1State) error {
 
 // Clone allocates a new conversation with a short random hex ID and persists.
 func (s *Store) Clone() (string, error) {
+	return s.CloneForBackend(s.GetDefaultBackend())
+}
+
+// CloneForBackend allocates a new conversation on the specified backend.
+func (s *Store) CloneForBackend(backend string) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	id, err := s.generateID()
+	convs := s.conversationsForBackend(backend)
+	if convs == nil {
+		return "", fmt.Errorf("backend %q not found", backend)
+	}
+
+	id, err := s.generateIDForBackend(backend)
 	if err != nil {
 		return "", err
 	}
-	s.conversations()[id] = &ConversationState{
+	convs[id] = &ConversationState{
 		LocalID:   id,
 		CreatedAt: time.Now(),
 	}
 	if err := s.saveLocked(); err != nil {
-		delete(s.conversations(), id)
+		delete(convs, id)
 		return "", err
 	}
 	return id, nil
@@ -142,19 +167,38 @@ func (s *Store) Clone() (string, error) {
 
 // Get returns the state for a conversation, or nil if not found.
 func (s *Store) Get(id string) *ConversationState {
+	return s.GetForBackend(s.GetDefaultBackend(), id)
+}
+
+// GetForBackend returns the state for a conversation on the specified backend, or nil if not found.
+func (s *Store) GetForBackend(backend, id string) *ConversationState {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.conversations()[id]
+	convs := s.conversationsForBackend(backend)
+	if convs == nil {
+		return nil
+	}
+	return convs[id]
 }
 
 // SetModel sets the model display name and internal ID on an unconversed conversation.
 // displayName is the user-facing name; internalID is the API model ID.
 // Returns an error if the conversation doesn't exist or is already created.
 func (s *Store) SetModel(id, displayName, internalID string) error {
+	return s.SetModelForBackend(s.GetDefaultBackend(), id, displayName, internalID)
+}
+
+// SetModelForBackend sets the model on a conversation for the specified backend.
+func (s *Store) SetModelForBackend(backend, id, displayName, internalID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	cs, ok := s.conversations()[id]
+	convs := s.conversationsForBackend(backend)
+	if convs == nil {
+		return fmt.Errorf("backend %q not found", backend)
+	}
+
+	cs, ok := convs[id]
 	if !ok {
 		return fmt.Errorf("conversation %s not found", id)
 	}
@@ -170,10 +214,20 @@ func (s *Store) SetModel(id, displayName, internalID string) error {
 // SetCtl sets a key=value pair on an unconversed conversation.
 // Returns an error if the conversation doesn't exist or is already created.
 func (s *Store) SetCtl(id, key, value string) error {
+	return s.SetCtlForBackend(s.GetDefaultBackend(), id, key, value)
+}
+
+// SetCtlForBackend sets a key=value pair on a conversation for the specified backend.
+func (s *Store) SetCtlForBackend(backend, id, key, value string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	cs, ok := s.conversations()[id]
+	convs := s.conversationsForBackend(backend)
+	if convs == nil {
+		return fmt.Errorf("backend %q not found", backend)
+	}
+
+	cs, ok := convs[id]
 	if !ok {
 		return fmt.Errorf("conversation %s not found", id)
 	}
@@ -198,10 +252,20 @@ func (s *Store) SetCtl(id, key, value string) error {
 
 // MarkCreated marks a conversation as created with its Shelley backend ID and slug.
 func (s *Store) MarkCreated(id, shelleyConversationID, slug string) error {
+	return s.MarkCreatedForBackend(s.GetDefaultBackend(), id, shelleyConversationID, slug)
+}
+
+// MarkCreatedForBackend marks a conversation as created for the specified backend.
+func (s *Store) MarkCreatedForBackend(backend, id, shelleyConversationID, slug string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	cs, ok := s.conversations()[id]
+	convs := s.conversationsForBackend(backend)
+	if convs == nil {
+		return fmt.Errorf("backend %q not found", backend)
+	}
+
+	cs, ok := convs[id]
 	if !ok {
 		return fmt.Errorf("conversation %s not found", id)
 	}
@@ -213,11 +277,21 @@ func (s *Store) MarkCreated(id, shelleyConversationID, slug string) error {
 
 // List returns all known conversation IDs, sorted.
 func (s *Store) List() []string {
+	return s.ListForBackend(s.GetDefaultBackend())
+}
+
+// ListForBackend returns all known conversation IDs for the specified backend, sorted.
+func (s *Store) ListForBackend(backend string) []string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	ids := make([]string, 0, len(s.conversations()))
-	for id := range s.conversations() {
+	convs := s.conversationsForBackend(backend)
+	if convs == nil {
+		return nil
+	}
+
+	ids := make([]string, 0, len(convs))
+	for id := range convs {
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)
@@ -226,10 +300,20 @@ func (s *Store) List() []string {
 
 // GetByShelleyID returns the local ID for a given Shelley conversation ID, or empty string if not found.
 func (s *Store) GetByShelleyID(shelleyID string) string {
+	return s.GetByShelleyIDForBackend(s.GetDefaultBackend(), shelleyID)
+}
+
+// GetByShelleyIDForBackend returns the local ID for a Shelley conversation ID on the specified backend.
+func (s *Store) GetByShelleyIDForBackend(backend, shelleyID string) string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	for _, cs := range s.conversations() {
+	convs := s.conversationsForBackend(backend)
+	if convs == nil {
+		return ""
+	}
+
+	for _, cs := range convs {
 		if cs.ShelleyConversationID == shelleyID {
 			return cs.LocalID
 		}
@@ -239,13 +323,23 @@ func (s *Store) GetByShelleyID(shelleyID string) string {
 
 // GetBySlug returns the local ID for a given slug, or empty string if not found.
 func (s *Store) GetBySlug(slug string) string {
+	return s.GetBySlugForBackend(s.GetDefaultBackend(), slug)
+}
+
+// GetBySlugForBackend returns the local ID for a slug on the specified backend.
+func (s *Store) GetBySlugForBackend(backend, slug string) string {
 	if slug == "" {
 		return ""
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	for _, cs := range s.conversations() {
+	convs := s.conversationsForBackend(backend)
+	if convs == nil {
+		return ""
+	}
+
+	for _, cs := range convs {
 		if cs.Slug == slug {
 			return cs.LocalID
 		}
@@ -257,10 +351,20 @@ func (s *Store) GetBySlug(slug string) string {
 // Returns an error if the conversation doesn't exist or is already created.
 // This is used for cleaning up abandoned clone operations.
 func (s *Store) Delete(id string) error {
+	return s.DeleteForBackend(s.GetDefaultBackend(), id)
+}
+
+// DeleteForBackend removes an unconversed conversation from the specified backend.
+func (s *Store) DeleteForBackend(backend, id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	cs, ok := s.conversations()[id]
+	convs := s.conversationsForBackend(backend)
+	if convs == nil {
+		return fmt.Errorf("backend %q not found", backend)
+	}
+
+	cs, ok := convs[id]
 	if !ok {
 		return fmt.Errorf("conversation %s not found", id)
 	}
@@ -268,32 +372,52 @@ func (s *Store) Delete(id string) error {
 		return fmt.Errorf("cannot delete created conversation %s", id)
 	}
 
-	delete(s.conversations(), id)
+	delete(convs, id)
 	return s.saveLocked()
 }
 
 // ForceDelete removes a conversation from local state regardless of its created status.
 // Used when a conversation has been permanently deleted on the server.
 func (s *Store) ForceDelete(id string) error {
+	return s.ForceDeleteForBackend(s.GetDefaultBackend(), id)
+}
+
+// ForceDeleteForBackend removes a conversation from the specified backend regardless of created status.
+func (s *Store) ForceDeleteForBackend(backend, id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if _, ok := s.conversations()[id]; !ok {
+	convs := s.conversationsForBackend(backend)
+	if convs == nil {
+		return fmt.Errorf("backend %q not found", backend)
+	}
+
+	if _, ok := convs[id]; !ok {
 		return fmt.Errorf("conversation %s not found", id)
 	}
 
-	delete(s.conversations(), id)
+	delete(convs, id)
 	return s.saveLocked()
 }
 
 // ListMappings returns all conversations with their server IDs and slugs.
 // Used by FUSE to create symlinks for alternative access paths.
 func (s *Store) ListMappings() []ConversationState {
+	return s.ListMappingsForBackend(s.GetDefaultBackend())
+}
+
+// ListMappingsForBackend returns all conversations for the specified backend.
+func (s *Store) ListMappingsForBackend(backend string) []ConversationState {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	result := make([]ConversationState, 0, len(s.conversations()))
-	for _, cs := range s.conversations() {
+	convs := s.conversationsForBackend(backend)
+	if convs == nil {
+		return nil
+	}
+
+	result := make([]ConversationState, 0, len(convs))
+	for _, cs := range convs {
 		result = append(result, *cs)
 	}
 	return result
@@ -302,25 +426,45 @@ func (s *Store) ListMappings() []ConversationState {
 // Adopt creates a local conversation entry for an existing Shelley server conversation.
 // Returns the new local ID. If the Shelley ID is already tracked locally, returns the existing local ID.
 func (s *Store) Adopt(shelleyConversationID string) (string, error) {
-	return s.AdoptWithSlug(shelleyConversationID, "")
+	return s.AdoptForBackend(s.GetDefaultBackend(), shelleyConversationID)
+}
+
+// AdoptForBackend creates a local conversation entry for an existing Shelley conversation on the specified backend.
+func (s *Store) AdoptForBackend(backend, shelleyConversationID string) (string, error) {
+	return s.AdoptWithSlugForBackend(backend, shelleyConversationID, "")
 }
 
 // AdoptWithSlug creates a local conversation entry for an existing Shelley server conversation,
 // including the slug. Returns the new local ID. If the Shelley ID is already tracked locally,
 // returns the existing local ID and updates the slug if it was previously empty.
 func (s *Store) AdoptWithSlug(shelleyConversationID, slug string) (string, error) {
-	return s.AdoptWithMetadata(shelleyConversationID, slug, "", "", "", "")
+	return s.AdoptWithSlugForBackend(s.GetDefaultBackend(), shelleyConversationID, slug)
+}
+
+// AdoptWithSlugForBackend creates a local conversation entry with slug on the specified backend.
+func (s *Store) AdoptWithSlugForBackend(backend, shelleyConversationID, slug string) (string, error) {
+	return s.AdoptWithMetadataForBackend(backend, shelleyConversationID, slug, "", "", "", "")
 }
 
 // AdoptWithMetadata creates a local conversation entry for an existing Shelley server conversation,
 // including metadata from the API. Returns the new local ID. If the Shelley ID is already tracked
 // locally, returns the existing local ID and updates metadata if previously empty.
 func (s *Store) AdoptWithMetadata(shelleyConversationID, slug, apiCreatedAt, apiUpdatedAt, model, cwd string) (string, error) {
+	return s.AdoptWithMetadataForBackend(s.GetDefaultBackend(), shelleyConversationID, slug, apiCreatedAt, apiUpdatedAt, model, cwd)
+}
+
+// AdoptWithMetadataForBackend creates a local conversation entry with metadata on the specified backend.
+func (s *Store) AdoptWithMetadataForBackend(backend, shelleyConversationID, slug, apiCreatedAt, apiUpdatedAt, model, cwd string) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	convs := s.conversationsForBackend(backend)
+	if convs == nil {
+		return "", fmt.Errorf("backend %q not found", backend)
+	}
+
 	// Check if already tracked
-	for _, cs := range s.conversations() {
+	for _, cs := range convs {
 		if cs.ShelleyConversationID == shelleyConversationID {
 			updated := false
 			// Update slug if it was previously empty and a new slug is provided
@@ -353,12 +497,12 @@ func (s *Store) AdoptWithMetadata(shelleyConversationID, slug, apiCreatedAt, api
 	}
 
 	// Generate a new local ID
-	id, err := s.generateID()
+	id, err := s.generateIDForBackend(backend)
 	if err != nil {
 		return "", err
 	}
 
-	s.conversations()[id] = &ConversationState{
+	convs[id] = &ConversationState{
 		LocalID:               id,
 		ShelleyConversationID: shelleyConversationID,
 		Slug:                  slug,
@@ -371,7 +515,7 @@ func (s *Store) AdoptWithMetadata(shelleyConversationID, slug, apiCreatedAt, api
 	}
 
 	if err := s.saveLocked(); err != nil {
-		delete(s.conversations(), id)
+		delete(convs, id)
 		return "", err
 	}
 	return id, nil
@@ -435,13 +579,22 @@ func (s *Store) saveLocked() error {
 }
 
 func (s *Store) generateID() (string, error) {
+	return s.generateIDForBackend(s.getDefaultBackend())
+}
+
+// generateIDForBackend generates a unique 8-char hex ID for the named backend.
+func (s *Store) generateIDForBackend(backend string) (string, error) {
+	convs := s.conversationsForBackend(backend)
+	if convs == nil {
+		return "", fmt.Errorf("backend %q not found", backend)
+	}
 	for i := 0; i < 100; i++ {
 		buf := make([]byte, 4)
 		if _, err := rand.Read(buf); err != nil {
 			return "", fmt.Errorf("failed to generate random ID: %w", err)
 		}
 		id := hex.EncodeToString(buf)
-		if _, exists := s.conversations()[id]; !exists {
+		if _, exists := convs[id]; !exists {
 			return id, nil
 		}
 	}

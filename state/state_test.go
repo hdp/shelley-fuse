@@ -2008,3 +2008,589 @@ func TestDefaultBackendURLPersistence(t *testing.T) {
 		t.Errorf("expected URL=http://explicit-main:9999, got %s", b.URL)
 	}
 }
+
+// Tests for *ForBackend methods
+
+func TestCloneForBackend(t *testing.T) {
+	s, err := NewStore(tempStatePath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a backend
+	if err := s.CreateBackend("test-backend", "http://localhost:9999"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Clone on the specific backend
+	id, err := s.CloneForBackend("test-backend")
+	if err != nil {
+		t.Fatalf("CloneForBackend failed: %v", err)
+	}
+
+	// Verify the conversation exists on the backend
+	cs := s.GetForBackend("test-backend", id)
+	if cs == nil {
+		t.Fatal("expected conversation on test-backend")
+	}
+
+	// Verify it doesn't exist on the default backend
+	if s.Get(id) != nil {
+		t.Error("conversation should not exist on default backend")
+	}
+}
+
+func TestCloneForBackendNonexistentBackend(t *testing.T) {
+	s, err := NewStore(tempStatePath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = s.CloneForBackend("nonexistent")
+	if err == nil {
+		t.Error("expected error for nonexistent backend")
+	}
+}
+
+func TestGetForBackendNonexistentBackend(t *testing.T) {
+	s, err := NewStore(tempStatePath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cs := s.GetForBackend("nonexistent", "some-id")
+	if cs != nil {
+		t.Error("expected nil for nonexistent backend")
+	}
+}
+
+func TestListForBackendIsolation(t *testing.T) {
+	s, err := NewStore(tempStatePath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a backend
+	if err := s.CreateBackend("backend-a", "http://localhost:9999"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Clone on default backend
+	defaultID, _ := s.Clone()
+
+	// Clone on backend-a
+	backendAID, _ := s.CloneForBackend("backend-a")
+
+	// Verify List returns only default conversations
+	defaultList := s.List()
+	if len(defaultList) != 1 || defaultList[0] != defaultID {
+		t.Errorf("List() should only have default conversations, got %v", defaultList)
+	}
+
+	// Verify ListForBackend returns only backend-a conversations
+	backendAList := s.ListForBackend("backend-a")
+	if len(backendAList) != 1 || backendAList[0] != backendAID {
+		t.Errorf("ListForBackend(backend-a) should only have backend-a conversations, got %v", backendAList)
+	}
+
+	// Verify ListForBackend returns empty for empty backend
+	s.CreateBackend("backend-b", "http://localhost:8888")
+	backendBList := s.ListForBackend("backend-b")
+	if len(backendBList) != 0 {
+		t.Errorf("ListForBackend(backend-b) should be empty, got %v", backendBList)
+	}
+}
+
+func TestListForBackendNonexistentBackend(t *testing.T) {
+	s, err := NewStore(tempStatePath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	list := s.ListForBackend("nonexistent")
+	if list != nil {
+		t.Errorf("expected nil for nonexistent backend, got %v", list)
+	}
+}
+
+func TestConversationIsolationBetweenBackends(t *testing.T) {
+	s, err := NewStore(tempStatePath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Create two backends
+	if err := s.CreateBackend("backend-a", "http://localhost:9999"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateBackend("backend-b", "http://localhost:8888"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create conversations on each backend
+	idA, _ := s.CloneForBackend("backend-a")
+	idB, _ := s.CloneForBackend("backend-b")
+	idDefault, _ := s.Clone()
+
+	// Set model on each
+	s.SetModelForBackend("backend-a", idA, "model-a", "model-a")
+	s.SetModelForBackend("backend-b", idB, "model-b", "model-b")
+	s.SetModel(idDefault, "model-default", "model-default")
+
+	// Mark each as created
+	s.MarkCreatedForBackend("backend-a", idA, "shelley-a", "slug-a")
+	s.MarkCreatedForBackend("backend-b", idB, "shelley-b", "slug-b")
+	s.MarkCreated(idDefault, "shelley-default", "slug-default")
+
+	// Verify isolation: GetForBackend
+	if cs := s.GetForBackend("backend-a", idA); cs == nil || cs.Model != "model-a" {
+		t.Error("backend-a conversation not found or wrong model")
+	}
+	if cs := s.GetForBackend("backend-a", idB); cs != nil {
+		t.Error("backend-b conversation should not be visible on backend-a")
+	}
+	if cs := s.GetForBackend("backend-b", idA); cs != nil {
+		t.Error("backend-a conversation should not be visible on backend-b")
+	}
+
+	// Verify isolation: GetByShelleyIDForBackend
+	if got := s.GetByShelleyIDForBackend("backend-a", "shelley-a"); got != idA {
+		t.Errorf("GetByShelleyIDForBackend(backend-a, shelley-a) = %q, want %q", got, idA)
+	}
+	if got := s.GetByShelleyIDForBackend("backend-a", "shelley-b"); got != "" {
+		t.Errorf("GetByShelleyIDForBackend(backend-a, shelley-b) = %q, want empty", got)
+	}
+
+	// Verify isolation: GetBySlugForBackend
+	if got := s.GetBySlugForBackend("backend-b", "slug-b"); got != idB {
+		t.Errorf("GetBySlugForBackend(backend-b, slug-b) = %q, want %q", got, idB)
+	}
+	if got := s.GetBySlugForBackend("backend-b", "slug-a"); got != "" {
+		t.Errorf("GetBySlugForBackend(backend-b, slug-a) = %q, want empty", got)
+	}
+}
+
+func TestSetModelForBackendNonexistentBackend(t *testing.T) {
+	s, err := NewStore(tempStatePath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = s.SetModelForBackend("nonexistent", "some-id", "model", "model")
+	if err == nil {
+		t.Error("expected error for nonexistent backend")
+	}
+}
+
+func TestSetCtlForBackendNonexistentBackend(t *testing.T) {
+	s, err := NewStore(tempStatePath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = s.SetCtlForBackend("nonexistent", "some-id", "model", "value")
+	if err == nil {
+		t.Error("expected error for nonexistent backend")
+	}
+}
+
+func TestMarkCreatedForBackendNonexistentBackend(t *testing.T) {
+	s, err := NewStore(tempStatePath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = s.MarkCreatedForBackend("nonexistent", "some-id", "shelley-123", "slug")
+	if err == nil {
+		t.Error("expected error for nonexistent backend")
+	}
+}
+
+func TestDeleteForBackendNonexistentBackend(t *testing.T) {
+	s, err := NewStore(tempStatePath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = s.DeleteForBackend("nonexistent", "some-id")
+	if err == nil {
+		t.Error("expected error for nonexistent backend")
+	}
+}
+
+func TestForceDeleteForBackendNonexistentBackend(t *testing.T) {
+	s, err := NewStore(tempStatePath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = s.ForceDeleteForBackend("nonexistent", "some-id")
+	if err == nil {
+		t.Error("expected error for nonexistent backend")
+	}
+}
+
+func TestAdoptForBackend(t *testing.T) {
+	s, err := NewStore(tempStatePath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.CreateBackend("adopt-backend", "http://localhost:9999"); err != nil {
+		t.Fatal(err)
+	}
+
+	localID, err := s.AdoptForBackend("adopt-backend", "server-conv-123")
+	if err != nil {
+		t.Fatalf("AdoptForBackend failed: %v", err)
+	}
+
+	cs := s.GetForBackend("adopt-backend", localID)
+	if cs == nil {
+		t.Fatal("expected conversation on adopt-backend")
+	}
+	if cs.ShelleyConversationID != "server-conv-123" {
+		t.Errorf("expected ShelleyConversationID=server-conv-123, got %s", cs.ShelleyConversationID)
+	}
+
+	// Should not be visible on default backend
+	if s.Get(localID) != nil {
+		t.Error("conversation should not exist on default backend")
+	}
+}
+
+func TestAdoptForBackendNonexistentBackend(t *testing.T) {
+	s, err := NewStore(tempStatePath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = s.AdoptForBackend("nonexistent", "server-conv-123")
+	if err == nil {
+		t.Error("expected error for nonexistent backend")
+	}
+}
+
+func TestAdoptWithSlugForBackend(t *testing.T) {
+	s, err := NewStore(tempStatePath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.CreateBackend("slug-backend", "http://localhost:9999"); err != nil {
+		t.Fatal(err)
+	}
+
+	localID, err := s.AdoptWithSlugForBackend("slug-backend", "server-conv-456", "my-slug")
+	if err != nil {
+		t.Fatalf("AdoptWithSlugForBackend failed: %v", err)
+	}
+
+	cs := s.GetForBackend("slug-backend", localID)
+	if cs == nil {
+		t.Fatal("expected conversation")
+	}
+	if cs.Slug != "my-slug" {
+		t.Errorf("expected Slug=my-slug, got %s", cs.Slug)
+	}
+}
+
+func TestAdoptWithMetadataForBackend(t *testing.T) {
+	s, err := NewStore(tempStatePath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.CreateBackend("meta-backend", "http://localhost:9999"); err != nil {
+		t.Fatal(err)
+	}
+
+	localID, err := s.AdoptWithMetadataForBackend("meta-backend", "server-789", "test-slug", "2024-01-15T10:30:00Z", "2024-01-16T14:20:00Z", "claude-sonnet-4-5", "/home/user")
+	if err != nil {
+		t.Fatalf("AdoptWithMetadataForBackend failed: %v", err)
+	}
+
+	cs := s.GetForBackend("meta-backend", localID)
+	if cs == nil {
+		t.Fatal("expected conversation")
+	}
+	if cs.Slug != "test-slug" {
+		t.Errorf("expected Slug=test-slug, got %s", cs.Slug)
+	}
+	if cs.APICreatedAt != "2024-01-15T10:30:00Z" {
+		t.Errorf("expected APICreatedAt, got %s", cs.APICreatedAt)
+	}
+	if cs.Model != "claude-sonnet-4-5" {
+		t.Errorf("expected Model=claude-sonnet-4-5, got %s", cs.Model)
+	}
+	if cs.Cwd != "/home/user" {
+		t.Errorf("expected Cwd=/home/user, got %s", cs.Cwd)
+	}
+}
+
+func TestAdoptWithMetadataForBackendNonexistentBackend(t *testing.T) {
+	s, err := NewStore(tempStatePath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = s.AdoptWithMetadataForBackend("nonexistent", "server-789", "slug", "", "", "", "")
+	if err == nil {
+		t.Error("expected error for nonexistent backend")
+	}
+}
+
+func TestDeleteForBackendIsolation(t *testing.T) {
+	s, err := NewStore(tempStatePath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.CreateBackend("delete-backend", "http://localhost:9999"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create conversations on both backends with same ID (collision)
+	idDefault, _ := s.Clone()
+	idOther, _ := s.CloneForBackend("delete-backend")
+
+	// Delete from other backend shouldn't affect default
+	if err := s.DeleteForBackend("delete-backend", idOther); err != nil {
+		t.Fatalf("DeleteForBackend failed: %v", err)
+	}
+
+	// Default conversation should still exist
+	if s.Get(idDefault) == nil {
+		t.Error("default conversation should still exist")
+	}
+
+	// Other backend conversation should be gone
+	if s.GetForBackend("delete-backend", idOther) != nil {
+		t.Error("other backend conversation should be deleted")
+	}
+}
+
+func TestForceDeleteForBackendIsolation(t *testing.T) {
+	s, err := NewStore(tempStatePath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.CreateBackend("force-del-backend", "http://localhost:9999"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create and mark created on both
+	idDefault, _ := s.Clone()
+	s.MarkCreated(idDefault, "shelley-default", "slug-default")
+
+	idOther, _ := s.CloneForBackend("force-del-backend")
+	s.MarkCreatedForBackend("force-del-backend", idOther, "shelley-other", "slug-other")
+
+	// ForceDelete from other backend
+	if err := s.ForceDeleteForBackend("force-del-backend", idOther); err != nil {
+		t.Fatalf("ForceDeleteForBackend failed: %v", err)
+	}
+
+	// Default conversation should still exist
+	if s.Get(idDefault) == nil {
+		t.Error("default conversation should still exist")
+	}
+}
+
+func TestListMappingsForBackend(t *testing.T) {
+	s, err := NewStore(tempStatePath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.CreateBackend("mapping-backend", "http://localhost:9999"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create on default
+	defaultID, _ := s.Clone()
+	s.MarkCreated(defaultID, "shelley-default", "slug-default")
+
+	// Create on other backend
+	otherID, _ := s.CloneForBackend("mapping-backend")
+	s.MarkCreatedForBackend("mapping-backend", otherID, "shelley-other", "slug-other")
+
+	// Verify mappings are isolated
+	defaultMappings := s.ListMappings()
+	if len(defaultMappings) != 1 {
+		t.Errorf("expected 1 mapping on default, got %d", len(defaultMappings))
+	}
+
+	otherMappings := s.ListMappingsForBackend("mapping-backend")
+	if len(otherMappings) != 1 {
+		t.Errorf("expected 1 mapping on other backend, got %d", len(otherMappings))
+	}
+
+	// Verify content
+	found := false
+	for _, m := range otherMappings {
+		if m.LocalID == otherID {
+			found = true
+			if m.ShelleyConversationID != "shelley-other" {
+				t.Errorf("wrong ShelleyConversationID: %s", m.ShelleyConversationID)
+			}
+		}
+	}
+	if !found {
+		t.Error("otherID not found in mappings")
+	}
+}
+
+func TestListMappingsForBackendNonexistentBackend(t *testing.T) {
+	s, err := NewStore(tempStatePath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	mappings := s.ListMappingsForBackend("nonexistent")
+	if mappings != nil {
+		t.Errorf("expected nil for nonexistent backend, got %v", mappings)
+	}
+}
+
+func TestForBackendMethodsDefaultBackend(t *testing.T) {
+	// Verify that methods without ForBackend delegate to default backend
+	s, err := NewStore(tempStatePath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Create on default backend
+	id, _ := s.Clone()
+
+	// Verify Get == GetForBackend(default)
+	if s.Get(id) != s.GetForBackend(s.GetDefaultBackend(), id) {
+		t.Error("Get should delegate to GetForBackend with default backend")
+	}
+
+	// Verify List == ListForBackend(default)
+	defaultList := s.List()
+	forBackendList := s.ListForBackend(s.GetDefaultBackend())
+	if len(defaultList) != len(forBackendList) {
+		t.Error("List should delegate to ListForBackend with default backend")
+	}
+
+	// Verify ListMappings == ListMappingsForBackend(default)
+	defaultMappings := s.ListMappings()
+	forBackendMappings := s.ListMappingsForBackend(s.GetDefaultBackend())
+	if len(defaultMappings) != len(forBackendMappings) {
+		t.Error("ListMappings should delegate to ListMappingsForBackend with default backend")
+	}
+}
+
+func TestForBackendPersistence(t *testing.T) {
+	path := tempStatePath(t)
+
+	s1, err := NewStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Create backends
+	if err := s1.CreateBackend("persist-a", "http://localhost:9999"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create conversations on different backends
+	idA, _ := s1.CloneForBackend("persist-a")
+	s1.SetModelForBackend("persist-a", idA, "model-a", "model-a")
+	s1.MarkCreatedForBackend("persist-a", idA, "shelley-a", "slug-a")
+
+	idDefault, _ := s1.Clone()
+	s1.SetModel(idDefault, "model-default", "model-default")
+
+	// Load into fresh store
+	s2, err := NewStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify backend-a conversation persisted
+	csA := s2.GetForBackend("persist-a", idA)
+	if csA == nil {
+		t.Fatal("expected conversation on persist-a after reload")
+	}
+	if csA.Model != "model-a" {
+		t.Errorf("expected Model=model-a, got %s", csA.Model)
+	}
+	if csA.ShelleyConversationID != "shelley-a" {
+		t.Errorf("expected ShelleyConversationID=shelley-a, got %s", csA.ShelleyConversationID)
+	}
+
+	// Verify default conversation persisted
+	csDefault := s2.Get(idDefault)
+	if csDefault == nil {
+		t.Fatal("expected conversation on default after reload")
+	}
+	if csDefault.Model != "model-default" {
+		t.Errorf("expected Model=model-default, got %s", csDefault.Model)
+	}
+}
+
+func TestSameIDDifferentBackends(t *testing.T) {
+	// Verify that the same local ID can exist in different backends
+	// (they're isolated by backend)
+	s, err := NewStore(tempStatePath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.CreateBackend("backend-x", "http://localhost:9999"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create many conversations on each backend until we get a collision
+	// (this is probabilistic but with 8 hex chars we should hit one eventually)
+	defaultIDs := make(map[string]bool)
+	for i := 0; i < 100; i++ {
+		id, _ := s.Clone()
+		defaultIDs[id] = true
+	}
+
+	backendXIDs := make(map[string]bool)
+	for i := 0; i < 100; i++ {
+		id, _ := s.CloneForBackend("backend-x")
+		backendXIDs[id] = true
+	}
+
+	// Mark all as created with different server IDs
+	for id := range defaultIDs {
+		s.MarkCreated(id, "default-"+id, "default-slug-"+id)
+	}
+	for id := range backendXIDs {
+		s.MarkCreatedForBackend("backend-x", id, "x-"+id, "x-slug-"+id)
+	}
+
+	// Verify isolation: each backend's conversations are independent
+	for id := range defaultIDs {
+		cs := s.Get(id)
+		if cs == nil {
+			t.Errorf("default backend missing ID %s", id)
+		} else if cs.ShelleyConversationID != "default-"+id {
+			t.Errorf("wrong server ID for default backend %s: %s", id, cs.ShelleyConversationID)
+		}
+		// Should not be visible on backend-x
+		if s.GetForBackend("backend-x", id) != nil {
+			// If the ID exists on both backends, verify they're different conversations
+			csX := s.GetForBackend("backend-x", id)
+			if csX.ShelleyConversationID == cs.ShelleyConversationID {
+				t.Errorf("same ID %s has same server ID on both backends", id)
+			}
+		}
+	}
+
+	for id := range backendXIDs {
+		cs := s.GetForBackend("backend-x", id)
+		if cs == nil {
+			t.Errorf("backend-x missing ID %s", id)
+		} else if cs.ShelleyConversationID != "x-"+id {
+			t.Errorf("wrong server ID for backend-x %s: %s", id, cs.ShelleyConversationID)
+		}
+	}
+}
